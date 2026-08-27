@@ -140,6 +140,9 @@ peaksMCP profiles path [NAME]                           # print the profile file
 peaksMCP metadata translate path/to/datasheet.csv [--output metadata.json]
 peaksMCP convert <pxt-file-or-folder> [--metadata metadata.json] [--out OUT]
           [--filter SUBSTRING] [--cpu-limit PERCENT] [--force]
+peaksMCP load path/to/converted.nc     # load a NetCDF into the notebook as a
+                                        # visible data = load(...) cell (or use
+                                        # the dashboard Load button after convert)
 ```
 
 Examples:

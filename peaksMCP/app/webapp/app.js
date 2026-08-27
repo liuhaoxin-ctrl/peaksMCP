@@ -315,6 +315,40 @@ $('#convert').addEventListener('submit', async e => {
     }).then(r => r.json());
 
     $('#convert-result').textContent = pretty(r);
+    // Offer an explicit Load action for each successfully converted NetCDF.
+    const converted = Array.isArray(r.items) ? r.items.filter(x => x.status === 'converted') : [];
+    $('#load-actions').innerHTML = '';
+    if (converted.length > 0) {
+      const wrap = document.createElement('div');
+      wrap.style.marginTop = '8px';
+      converted.slice(0, 3).forEach(item => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'button';
+        b.textContent = `Load ${item.output.split('/').pop()}`;
+        b.addEventListener('click', async () => {
+          b.disabled = true;
+          $('#convert-result').textContent = 'Loading into notebook…';
+          try {
+            const resp = await fetch('/api/notebook/load', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ path: item.output })
+            });
+            const lr = await resp.json();
+            $('#convert-result').textContent = pretty(lr);
+            toast(lr.loaded ? 'Loaded into notebook' : 'Load failed', lr.loaded ? 'success' : 'error');
+          } catch (err) {
+            $('#convert-result').textContent = String(err);
+            toast('Load failed', 'error');
+          } finally {
+            b.disabled = false;
+          }
+        });
+        wrap.appendChild(b);
+      });
+      $('#load-actions').appendChild(wrap);
+    }
     toast('Conversion completed', 'success');
   } catch (e) {
     $('#convert-result').textContent = String(e);

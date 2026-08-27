@@ -268,6 +268,26 @@ def command_convert(args: argparse.Namespace) -> None:
     _json(report.model_dump(mode="json"))
 
 
+def command_load(args: argparse.Namespace) -> None:
+    """Explicitly load a converted NetCDF into the notebook as a visible cell.
+
+    Asks the dashboard to insert and run ``from peaks import load; data = load(...)``
+    in the live notebook (requires the supervisor / frontend Comm to be online).
+    """
+    data = _runfile()
+    try:
+        response = httpx.post(
+            f"{data['dashboard_url']}/api/notebook/load",
+            headers=_dashboard_headers(data),
+            json={"path": args.input},
+            timeout=120,
+        )
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise SystemExit(f"load failed: {exc}") from exc
+    _json(response.json())
+
+
 def command_open(args: argparse.Namespace) -> None:
     """Open the operator-console dashboard (default) or the managed notebook.
 
@@ -354,6 +374,9 @@ def build_parser() -> argparse.ArgumentParser:
     convert.add_argument("--cpu-limit", type=float, default=60)
     convert.add_argument("--force", action="store_true")
     convert.set_defaults(func=command_convert)
+    load_cmd = sub.add_parser("load", help="load a converted NetCDF into the notebook as a visible cell")
+    load_cmd.add_argument("input", help="path to the .nc file to load")
+    load_cmd.set_defaults(func=command_load)
     dash = sub.add_parser("dash", help="open the operator-console dashboard (or the managed notebook with --jupyter)")
     dash.add_argument("--jupyter", action="store_true")
     dash.set_defaults(func=command_open)

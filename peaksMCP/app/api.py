@@ -41,7 +41,7 @@ _INSPECTOR_ALLOWED = {
 _DASHBOARD_COOKIE = "peaksmcp_dashboard"
 
 
-def _auto_load_into_notebook(supervisor: RuntimeSupervisor, nc_path: str | None) -> bool:
+def load_into_notebook(supervisor: RuntimeSupervisor, nc_path: str | None) -> bool:
     """Load a converted NetCDF into the notebook as a visible cell.
 
     Asks the kernel to insert and run ``from peaks import load\ndata = load(...)``
@@ -296,17 +296,25 @@ def create_app(supervisor: RuntimeSupervisor) -> Starlette:
         except Exception as exc:
             return JSONResponse({"error_type": type(exc).__name__, "error": str(exc)}, status_code=400)
         payload = result.model_dump(mode="json")
-        # After a successful conversion, automatically load the first converted
-        # NetCDF into the notebook as a visible cell (``data = load(...)``) so
-        # the data appears in the analysis history and can be inspected.
-        converted = [item for item in result.items if item.status == "converted"]
-        loaded = False
-        if converted:
-            loaded = await asyncio.to_thread(_auto_load_into_notebook, supervisor, converted[0].output)
-        payload["auto_loaded"] = loaded
-        if loaded:
-            payload["loaded_in_notebook"] = converted[0].output
+        # Conversion does NOT auto-load: the user explicitly clicks the
+        # "Load" action (dashboard) or runs ``peaksMCP load`` to put the
+        # ``data = load(...)`` cell into the notebook.
         return JSONResponse(payload)
+
+    async def load_notebook(request: Request) -> JSONResponse:
+        """Insert and run a data = load(...) cell in the notebook for an
+        explicit NetCDF path (the converted output).  Requires the supervisor /
+        kernel to be online (the frontend Comm executes the cell)."""
+        require_auth(request, mutation=True)
+        body = await request.json()
+        path = body.get("path")
+        if not path:
+            return JSONResponse({"error": "path is required"}, status_code=400)
+        try:
+            ok = await asyncio.to_thread(load_into_notebook, supervisor, str(path))
+            return JSONResponse({"loaded": ok, "path": str(path)})
+        except Exception as exc:
+            return JSONResponse({"error_type": type(exc).__name__, "error": str(exc)}, status_code=409)
 
     async def snapshot_notebook(request: Request) -> JSONResponse:
         """Save the current notebook as a timestamped snapshot without touching
@@ -408,5 +416,6 @@ def create_app(supervisor: RuntimeSupervisor) -> Starlette:
         Route("/api/convert", convert, methods=["POST"]),
         Route("/api/choose-folder", choose_folder, methods=["POST"]),
         Route("/api/notebook/snapshot", snapshot_notebook, methods=["POST"]),
+        Route("/api/notebook/load", load_notebook, methods=["POST"]),
         WebSocketRoute("/ws/logs", log_socket),
     ])
