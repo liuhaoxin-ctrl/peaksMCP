@@ -11,6 +11,12 @@ from typing import Any
 
 MAX_DOC_CHARS = 6000
 
+# Runtime introspection imports the module to read ``inspect`` metadata.  Only
+# allow modules owned by this project or the installed peaks package; an index
+# entry pointing elsewhere must not trigger an arbitrary import on the FastMCP
+# background thread (import-lock risk and unexpected side effects).
+_ALLOWED_MODULE_PREFIXES = ("peaks.", "peaksMCP.")
+
 
 def _source_path(package_dir: str, module: str) -> Path | None:
     relative = module.split(".", 1)[1] if module.startswith("peaks.") else module
@@ -69,6 +75,8 @@ def _inspect_runtime(entry: dict[str, Any]) -> dict[str, Any] | None:
     module_name = str(entry.get("module") or "")
     name = str(entry.get("func_name") or entry.get("name") or "")
     if not module_name or not name:
+        return None
+    if not module_name.startswith(_ALLOWED_MODULE_PREFIXES):
         return None
     try:
         module = importlib.import_module(module_name)

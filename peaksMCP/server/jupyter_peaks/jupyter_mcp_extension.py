@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from typing import Any
 
 from IPython.core.magic import Magics, line_magic, magics_class
@@ -33,6 +34,14 @@ def _start(ipython: Any, host: str | None = None, port: int | None = None) -> Ju
             host=host or os.environ.get("PEAKSMCP_HOST", "127.0.0.1"),
             port=port or int(os.environ.get("PEAKSMCP_PORT", "8123")),
         )
+    # Pre-warm the peaks import on the main (extension-loading) thread. The first
+    # peaks_search_api call runs on the FastMCP background thread, where an import
+    # racing a concurrent main-thread import could deadlock on the import lock.
+    if "peaks" not in sys.modules:
+        try:
+            import peaks  # noqa: F401
+        except Exception:
+            pass
     _server.start()
     return _server
 

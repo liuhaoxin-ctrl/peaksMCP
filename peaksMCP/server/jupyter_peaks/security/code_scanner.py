@@ -1,4 +1,11 @@
-"""Alias-aware AST scanner for dangerous notebook code."""
+"""Alias-aware, AST-semantic scanner for dangerous notebook code.
+
+The scanner works on the parsed AST rather than on ``ast.unparse`` text so
+that aliased imports, keyword arguments, method calls on constructed objects
+(e.g. ``Path(...).unlink()``) and indirect fetches (``getattr(obj, "exec")``)
+cannot slip past the rules.  All matching is done on a canonical attribute
+chain with import aliases resolved.
+"""
 
 from __future__ import annotations
 
@@ -49,6 +56,8 @@ class ScanResult:
 
 
 class _Aliases(ast.NodeVisitor):
+    """Collect ``import`` aliases so ``import os as o`` resolves to ``os``."""
+
     def __init__(self) -> None:
         self.names: dict[str, str] = {}
 
@@ -62,26 +71,144 @@ class _Aliases(ast.NodeVisitor):
             self.names[item.asname or item.name] = f"{module}.{item.name}"
 
     def resolve(self, name: str) -> str:
-        root, dot, tail = name.partition(".")
-        return self.names.get(root, root) + (dot + tail if dot else "")
+        return self.names.get(name, name)
+
+
+# --------------------------------------------------------------------------- #
+# Canonical attribute-chain extraction                                         #
+# --------------------------------------------------------------------------- #
+def _func_text(call: ast.Call, aliases: _Aliases) -> str:
+    """Best-effort canonical name of a callable expression inside a Call node."""
+    func = call.func
+    if isinstance(func, ast.Name):
+        return aliases.resolve(func.id)
+    if isinstance(func, ast.Attribute):
+        chain = _chain(func, aliases)
+        return ".".join(chain) if chain else "(call)"
+    if isinstance(func, ast.Subscript):
+        return "(subscript)"
+    return "(call)"
+
+
+def _chain(node: ast.AST, aliases: _Aliases) -> list[str]:
+    """Canonical attribute chain of an expression with aliases resolved.
+
+    ``os.environ.update``            -> ``["os", "environ", "update"]``
+    ``Path('x').unlink`` (func part) -> ``["Path", "unlink"]``
+    ``o.environ['A']`` (subscript)   -> ``["os", "environ"]``
+    ``getattr(b, 'exec')`` (func)    -> ``["getattr", "exec"]``
+    """
+    parts: list[str] = []
+    cur = node
+    while isinstance(cur, ast.Attribute):
+        parts.append(cur.attr)
+        cur = cur.value
+    if isinstance(cur, ast.Name):
+        parts.append(aliases.resolve(cur.id))
+    elif isinstance(cur, ast.Call):
+        parts.append(_func_text(cur, aliases))
+    elif isinstance(cur, ast.Subscript):
+        # Fold os.environ['A'] -> os.environ; keep value chain only.
+        return _chain(cur.value, aliases)
+    elif isinstance(cur, ast.Constant):
+        parts.append(repr(cur.value))
+    elif isinstance(cur, ast.Starred):
+        parts.append("(starred)")
+    else:
+        parts.append(f"({type(cur).__name__})")
+    parts.reverse()
+    return parts
 
 
 def _call_name(node: ast.Call, aliases: _Aliases) -> str:
-    try:
-        return aliases.resolve(ast.unparse(node.func))
-    except Exception:
-        return ""
+    """Canonical dotted name of the called function, aliases resolved."""
+    return ".".join(_chain(node.func, aliases))
 
 
+# --------------------------------------------------------------------------- #
+# Rule sets                                                                    #
+# --------------------------------------------------------------------------- #
 _CRITICAL_CALLS = {"exec", "eval", "compile", "builtins.exec", "builtins.eval", "builtins.compile"}
 _SYSTEM_CALLS = {
-    "os.system", "os.popen", "subprocess.run", "subprocess.call", "subprocess.Popen",
-    "subprocess.check_call", "subprocess.check_output", "shutil.rmtree", "pathlib.Path.unlink",
-    "pathlib.Path.rmdir", "os.remove", "os.unlink", "os.rmdir", "os.removedirs",
+    "os.system", "os.popen", "os.remove", "os.unlink", "os.rmdir", "os.removedirs",
+    "os.replace", "os.rename",
+    "subprocess.run", "subprocess.call", "subprocess.Popen", "subprocess.check_call",
+    "subprocess.check_output", "subprocess.getoutput", "subprocess.getstatusoutput",
+    "shutil.rmtree", "shutil.rmdir", "shutil.move",
 }
-_DYNAMIC_IMPORTS = {"__import__", "importlib.import_module"}
+_DYNAMIC_IMPORTS = {"__import__", "builtins.__import__", "importlib.import_module"}
+_PATH_METHODS = {"unlink", "write_text", "write_bytes", "rmdir", "rename", "replace", "symlink_to", "hardlink_to"}
+_ENV_MUTATORS = {"update", "setdefault", "pop", "clear", "__setitem__", "__delitem__", "setdefault"}
+_DYN_BASES = {"globals", "locals", "vars", "__builtins__", "builtins"}
+_INDIRECT_TARGETS = {"exec", "eval", "compile", "__import__"}
 
 
+def _is_path_method_call(node: ast.Call, aliases: _Aliases) -> bool:
+    """``Path(...).unlink()`` / ``pathlib.Path('x').write_text(...)`` and friends."""
+    chain = _chain(node.func, aliases)
+    if not chain or chain[-1] not in _PATH_METHODS:
+        return False
+    # Chain forms: ['Path','unlink'], ['pathlib.Path','unlink'] or ['pathlib','Path','unlink']
+    return any(e == "Path" or e == "pathlib.Path" or e.endswith(".Path") for e in chain)
+
+
+def _is_env_mutation_call(node: ast.Call, aliases: _Aliases) -> bool:
+    """``os.environ.update/pop/clear/...`` regardless of aliasing."""
+    chain = _chain(node.func, aliases)
+    if len(chain) < 3 or chain[:2] != ["os", "environ"]:
+        return False
+    return chain[-1] in _ENV_MUTATORS
+
+
+def _is_env_assignment(target: ast.AST, aliases: _Aliases) -> bool:
+    """``os.environ[...] = ...`` / ``o.environ['A'] += ...`` / ``del os.environ['A']``."""
+    return _chain(target, aliases)[:2] == ["os", "environ"]
+
+
+def _open_modes(node: ast.Call) -> bool:
+    """Flag ``open`` in a modifying mode, positional or ``mode=`` keyword."""
+    flags = "wax+"
+    if len(node.args) > 1 and isinstance(node.args[1], ast.Constant):
+        if any(flag in str(node.args[1].value) for flag in flags):
+            return True
+    for keyword in node.keywords:
+        if keyword.arg == "mode" and isinstance(keyword.value, ast.Constant):
+            if any(flag in str(keyword.value.value) for flag in flags):
+                return True
+    return False
+
+
+def _dynamic_exec_target(node: ast.Call, aliases: _Aliases) -> str | None:
+    """Indirect fetch of a critical callable: ``getattr(b, 'exec')()``,
+    ``globals()['eval']()``, ``locals().get('compile')()``,
+    ``__builtins__['exec']()``, ``getattr(b, '__import__')('os')``."""
+    func = node.func
+    # getattr(obj, "exec") / getattr(obj, "__import__")
+    if isinstance(func, ast.Call) and _call_name(func, aliases) in {"getattr", "builtins.getattr"}:
+        if len(func.args) >= 2 and isinstance(func.args[1], ast.Constant):
+            target = str(func.args[1].value)
+            if target in _INDIRECT_TARGETS:
+                return target
+    # globals()["exec"] / locals()["eval"] / __builtins__["exec"]
+    if isinstance(func, ast.Subscript):
+        base = ".".join(_chain(func.value, aliases))
+        if base in _DYN_BASES and isinstance(func.slice, ast.Constant):
+            target = str(func.slice.value)
+            if target in _INDIRECT_TARGETS:
+                return target
+    # globals().get("exec") / locals().get("eval") / vars().get("compile")
+    if isinstance(func, ast.Attribute) and func.attr == "get" and isinstance(func.value, ast.Call):
+        base = ".".join(_chain(func.value, aliases))
+        if base in _DYN_BASES and len(node.args) >= 1 and isinstance(node.args[0], ast.Constant):
+            target = str(node.args[0].value)
+            if target in _INDIRECT_TARGETS:
+                return target
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# Public API                                                                   #
+# --------------------------------------------------------------------------- #
 def scan_code(code: str) -> ScanResult:
     """Detect the same broad classes of dangerous code guarded by instrMCP.
 
@@ -117,17 +244,29 @@ def scan_code(code: str) -> ScanResult:
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             name = _call_name(node, aliases)
-            if name in _CRITICAL_CALLS:
+            if name in _CRITICAL_CALLS or (name.split(".")[-1] in _CRITICAL_CALLS and name.startswith("builtins.")):
                 issues.append(SecurityIssue("EXEC001", f"dynamic code execution via {name}", RiskLevel.CRITICAL, getattr(node, "lineno", 0), ast.unparse(node)))
             elif name in _SYSTEM_CALLS:
                 issues.append(SecurityIssue("SYS001", f"system or destructive operation via {name}", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
             elif name in _DYNAMIC_IMPORTS:
                 issues.append(SecurityIssue("IMPORT001", f"dynamic import via {name}", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
-            elif name == "open" and len(node.args) > 1 and isinstance(node.args[1], ast.Constant) and any(flag in str(node.args[1].value) for flag in "wax+"):
+            elif name == "open" and _open_modes(node):
                 issues.append(SecurityIssue("FILE001", "file opened in a modifying mode", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+            elif _is_path_method_call(node, aliases):
+                issues.append(SecurityIssue("SYS001", f"destructive path operation via {name}", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+            elif _is_env_mutation_call(node, aliases):
+                issues.append(SecurityIssue("ENV001", "process environment modification", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+            target = _dynamic_exec_target(node, aliases)
+            if target:
+                issues.append(SecurityIssue("EXEC001", f"dynamic code execution via indirect fetch of {target}", RiskLevel.CRITICAL, getattr(node, "lineno", 0), ast.unparse(node)))
         if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
-            rendered = ast.unparse(node)
-            if "os.environ" in rendered:
-                issues.append(SecurityIssue("ENV001", "process environment modification", RiskLevel.HIGH, getattr(node, "lineno", 0), rendered))
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if _is_env_assignment(target, aliases):
+                    issues.append(SecurityIssue("ENV001", "process environment modification", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+        if isinstance(node, ast.Delete):
+            for target in node.targets:
+                if _is_env_assignment(target, aliases):
+                    issues.append(SecurityIssue("ENV001", "process environment modification", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
     reason = "; ".join(issue.description for issue in issues[:3]) if issues else None
     return ScanResult(bool(issues), issues, reason)

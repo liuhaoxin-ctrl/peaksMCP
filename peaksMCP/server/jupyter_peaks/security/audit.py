@@ -14,7 +14,8 @@ class AuditLogger:
     """Write privacy-conscious structured events to a user-owned log."""
 
     def __init__(self, path: str | os.PathLike[str] | None = None) -> None:
-        self.path = Path(path) if path else Path.home() / ".peaksMCP" / "audit" / "tool_audit.log"
+        home = Path(os.environ.get("PEAKSMCP_HOME", str(Path.home() / ".peaksMCP")))
+        self.path = Path(path) if path else home / "audit" / "tool_audit.log"
         self._lock = threading.Lock()
 
     def write(self, tool: str, outcome: str, details: dict[str, Any] | None = None) -> None:

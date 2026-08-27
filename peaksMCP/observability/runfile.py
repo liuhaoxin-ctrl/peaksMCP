@@ -26,6 +26,11 @@ def write_runfile(data: dict[str, Any]) -> Path:
     pathlib.Path
         Written runfile path.
 
+    Notes
+    -----
+    The runfile contains the Jupyter authentication token, so it is written
+    with ``0o600`` permissions (owner read/write only), mirroring the audit log.
+
     Examples
     --------
     >>> path = write_runfile({"pid": 1234})
@@ -37,6 +42,10 @@ def write_runfile(data: dict[str, Any]) -> Path:
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     temporary.replace(path)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
     return path
 
 

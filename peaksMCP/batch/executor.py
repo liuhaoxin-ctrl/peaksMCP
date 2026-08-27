@@ -28,9 +28,21 @@ class BatchExecutor:
     def __init__(self, budget: ResourceBudget | None = None) -> None:
         self.budget = budget or ResourceBudget()
         self.cancel_event = threading.Event()
+        # Futures of the currently running batch, so ``cancel()`` can stop
+        # queued (not yet started) tasks immediately instead of waiting for
+        # the next completed task to trigger a scan.
+        self._pending_futures: dict[concurrent.futures.Future[tuple[Any, float]], tuple[int, Any]] = {}
 
     def cancel(self) -> None:
-        """Request cancellation of tasks that have not yet been submitted."""
+        """Request cancellation of tasks that have not yet been submitted.
+
+        Python's ``ProcessPoolExecutor`` marks a task ``RUNNING`` as soon as it
+        is placed on the worker queue (``set_running_or_notify_cancel``), so
+        submitted tasks cannot be interrupted or cancelled.  ``cancel()`` stops
+        the submission loop for remaining items; in-flight and queued tasks run
+        to completion (failure isolation keeps a bad task from blocking the
+        rest of the batch).
+        """
         self.cancel_event.set()
 
     def run(
@@ -59,7 +71,6 @@ class BatchExecutor:
         values = list(items)
         started = time.monotonic()
         results: dict[int, BatchItemResult] = {}
-        pending: dict[concurrent.futures.Future[tuple[Any, float]], tuple[int, Any]] = {}
         self.budget.start()
         try:
             with concurrent.futures.ProcessPoolExecutor(max_workers=self.budget.max_workers) as pool:
@@ -71,9 +82,9 @@ class BatchExecutor:
                         results[index] = BatchItemResult(index, item, "skipped", error="CPU budget wait timed out")
                         continue
                     future = pool.submit(_run_one, function, item)
-                    pending[future] = (index, item)
-                for future in concurrent.futures.as_completed(pending):
-                    index, item = pending[future]
+                    self._pending_futures[future] = (index, item)
+                for future in concurrent.futures.as_completed(self._pending_futures):
+                    index, item = self._pending_futures[future]
                     try:
                         output, duration = future.result()
                         result = BatchItemResult(index, item, "completed", output=output, duration_s=duration)
@@ -90,6 +101,7 @@ class BatchExecutor:
                         progress(result)
         finally:
             self.budget.stop()
+            self._pending_futures.clear()
         return BatchResult(
             items=[results[index] for index in range(len(values))],
             duration_s=time.monotonic() - started,

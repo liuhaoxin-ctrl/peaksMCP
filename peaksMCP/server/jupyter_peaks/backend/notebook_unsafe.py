@@ -30,7 +30,6 @@ class UnsafeNotebookBackend:
 
     def execute_code(self, code: str, timeout: float = 120.0) -> dict[str, Any]:
         self._authorize("notebook_execute_code", code)
-        compile(code, "<peaksMCP>", "exec")
         return self.state.bridge.request("execute_code", {"code": code}, timeout=timeout)
 
     def execute_active_cell(self, timeout: float = 120.0) -> dict[str, Any]:
@@ -50,6 +49,5 @@ class UnsafeNotebookBackend:
 
     def apply_patch(self, index: int, source: str) -> dict[str, Any]:
         self._authorize("notebook_apply_patch", source)
-        compile(source, "<peaksMCP-cell>", "exec")
         return self.state.bridge.request("apply_patch", {"index": index, "source": source})
 

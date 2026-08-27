@@ -100,8 +100,11 @@ def command_stop(_args: argparse.Namespace) -> None:
 
 def command_restart(args: argparse.Namespace) -> None:
     data = _runfile()
-    response = httpx.post(f"{data['dashboard_url']}/api/restart/{args.component}", timeout=120)
-    response.raise_for_status()
+    try:
+        response = httpx.post(f"{data['dashboard_url']}/api/restart/{args.component}", timeout=120)
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise SystemExit(f"restart {args.component} failed: {exc}") from exc
     _json(response.json())
 
 

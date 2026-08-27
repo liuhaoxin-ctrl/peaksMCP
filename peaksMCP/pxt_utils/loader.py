@@ -113,21 +113,39 @@ def load_pxt(path: str | os.PathLike[str]) -> xr.DataArray:
 
 
 class L112PXTLoader:
-    """Compatibility facade exposing the direct L112 PXT loader."""
+    """Direct L112 PXT loader used by the conversion pipeline (``load_pxt``).
+
+    This facade intentionally does not register into ``peaks``'s ``LOC_REGISTRY``:
+    peaks' standard loading pipeline expects a full loader interface
+    (``_loc_name`` / ``_load_data`` / ``_load_metadata``) which the PXT extraction
+    does not provide.  The conversion path calls :func:`load_pxt` directly, which
+    is self-contained.
+    """
 
     @classmethod
     def load(cls, path: str | os.PathLike[str]) -> xr.DataArray:
-        """Load one PXT file as an xarray DataArray."""
+        """Load one PXT file as an xarray DataArray.
+
+        Parameters
+        ----------
+        path : str or os.PathLike
+            Path to the ``.pxt`` file.
+
+        Returns
+        -------
+        xarray.DataArray
+            The loaded data.
+        """
         return load_pxt(path)
 
 
 def ensure_loader_available() -> bool:
-    """Register an L112 PXT handler with Peaks when its registry is available.
+    """Check that the L112 PXT loader path is importable and usable.
 
     Returns
     -------
     bool
-        Whether the ``L112_PXT`` loader is present after registration.
+        Whether the conversion pipeline (``load_pxt``) is usable.
 
     Examples
     --------
@@ -135,12 +153,9 @@ def ensure_loader_available() -> bool:
     True
     """
     try:
-        from peaks.core.fileIO.loc_registry import LOC_REGISTRY, IdentifyLoc
+        import numpy as np  # noqa: F401
+        import xarray as xr  # noqa: F401
 
-        if not hasattr(IdentifyLoc, "_handler_pxt"):
-            IdentifyLoc._handler_pxt = staticmethod(lambda _filename: "L112_PXT")
-        if "L112_PXT" not in LOC_REGISTRY:
-            LOC_REGISTRY["L112_PXT"] = L112PXTLoader
-        return "L112_PXT" in LOC_REGISTRY
+        return callable(load_pxt)
     except Exception:
         return False

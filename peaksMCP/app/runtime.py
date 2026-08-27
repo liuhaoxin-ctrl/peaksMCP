@@ -156,7 +156,14 @@ class RuntimeSupervisor:
     def _start_dashboard(self) -> None:
         from .api import create_app
 
-        config = uvicorn.Config(create_app(self), host=self.profile.dashboard.host, port=self.profile.dashboard.port, log_level="warning")
+        host = self.profile.dashboard.host
+        if host not in ("127.0.0.1", "localhost", "::1"):
+            self._log(
+                "dashboard",
+                f"warning: dashboard bound to {host!r}; status/log endpoints are "
+                "unauthenticated and the notebook URL embeds the Jupyter token",
+            )
+        config = uvicorn.Config(create_app(self), host=host, port=self.profile.dashboard.port, log_level="warning")
         self._dashboard = uvicorn.Server(config)
         threading.Thread(target=self._dashboard.run, name="peaksMCP-dashboard", daemon=True).start()
 
@@ -247,8 +254,12 @@ class RuntimeSupervisor:
                 stages["tools_list"] = result.get("tool_count", 0) >= 12
                 stages["status_tool"] = result.get("status") is not None
                 stages["extension"] = stages["status_tool"]
-                status_text = str(result.get("status", ""))
-                stages["comm"] = "'comm_connected': True" in status_text or '"comm_connected":true' in status_text.replace(" ", "").lower()
+                # Structured read of the notebook server status instead of fragile
+                # string matching on the serialized status payload.
+                status_data = result.get("status")
+                stages["comm"] = bool(
+                    isinstance(status_data, dict) and status_data.get("comm_connected")
+                )
                 if all(value for key, value in stages.items() if key != "comm") and (stages["comm"] or not require_comm):
                     return {"ready": True, "stages": stages, "mcp": result, "diagnostics": diagnostics[-5:]}
             else:

@@ -41,3 +41,32 @@ def test_tool_metadata_is_nonempty():
     tools = asyncio.run(server.mcp.list_tools())
     assert all(tool.title and tool.description for tool in tools)
 
+
+def test_server_status_exposes_index_stale():
+    """server_status must expose ``index_stale`` so the model can self-diagnose
+    the INDEX_STALE_RESTART_REQUIRED condition instead of only search/get."""
+    from unittest.mock import MagicMock
+
+    from peaksMCP.server.jupyter_peaks.backend.notebook import NotebookBackend
+
+    state = SharedState(FakeIPython())
+    notebook = NotebookBackend(state)
+    status = notebook.server_status()
+    assert "index_stale" in status
+    # No index built yet -> not stale.
+    assert status["index_stale"] is False
+    # An index whose fingerprint no longer matches is reported stale.
+    stale_index = MagicMock()
+    stale_index.entries = []
+    stale_index.is_stale.return_value = True
+    state.api_index = stale_index
+    assert notebook.server_status()["index_stale"] is True
+    # A fresh index reports not stale.
+    fresh_index = MagicMock()
+    fresh_index.entries = [object()]
+    fresh_index.is_stale.return_value = False
+    state.api_index = fresh_index
+    status = notebook.server_status()
+    assert status["index_stale"] is False
+    assert status["api_count"] == 1
+

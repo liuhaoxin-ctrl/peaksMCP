@@ -183,11 +183,17 @@ def convert_path(
     """
     source = Path(input_path).expanduser().resolve()
     if source.is_file():
-        target = (
-            Path(output_dir).expanduser().resolve()
-            if output_dir
-            else source.with_suffix(".nc")
-        )
+        if output_dir:
+            destination = Path(output_dir).expanduser().resolve()
+            # A directory destination (existing, or a path with no extension)
+            # receives the source stem; an explicit file path is used as-is.
+            target = (
+                destination / f"{source.stem}.nc"
+                if destination.is_dir() or not destination.suffix
+                else destination
+            )
+        else:
+            target = source.with_suffix(".nc")
         return ConversionReport(
             items=[
                 convert_pxt(

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from peaksMCP.pxt_utils.converter import convert_pxt, index_from_path
+from peaksMCP.pxt_utils.converter import convert_path, convert_pxt, index_from_path
 from peaksMCP.pxt_utils.csv_translator import translate_datasheet
 from peaksMCP.pxt_utils.loader import load_pxt
 
@@ -73,3 +73,31 @@ def test_converter_embeds_matching_metadata_and_protects_output(monkeypatch, tmp
 @pytest.mark.parametrize(("name", "expected"), [("BP_0005.pxt", 5), ("scan_42.pxt", 42), ("scan.pxt", None)])
 def test_index_from_filename(name, expected):
     assert index_from_path(name) == expected
+
+
+def test_convert_path_single_file_to_directory(monkeypatch, tmp_path):
+    """convert_path with a single file and a directory output must place the
+    NetCDF inside the directory (stem + .nc) instead of treating the directory
+    itself as the target (which previously produced a silent 'skipped')."""
+    source = tmp_path / "BP_0003.pxt"
+    source.touch()
+    monkeypatch.setattr(
+        "peaksMCP.pxt_utils.converter.load_pxt",
+        lambda _path: xr.DataArray(np.ones((2, 3)), dims=("eV", "theta_par"), attrs={"units": "counts"}),
+    )
+    output_dir = tmp_path / "converted"
+    output_dir.mkdir()
+    report = convert_path(source, output_dir)
+    item = report.items[0]
+    assert item.status == "converted"
+    assert item.output == str(output_dir / "BP_0003.nc")
+    assert (output_dir / "BP_0003.nc").exists()
+    # An explicit file path is still honoured as-is.
+    explicit = tmp_path / "custom.nc"
+    report = convert_path(source, explicit)
+    assert report.items[0].status == "converted"
+    assert report.items[0].output == str(explicit)
+    # A not-yet-existing directory destination (no extension) is treated as a directory.
+    fresh = tmp_path / "fresh_dir"
+    report = convert_path(source, fresh)
+    assert report.items[0].output == str(fresh / "BP_0003.nc")

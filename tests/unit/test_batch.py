@@ -35,3 +35,50 @@ def test_pre_cancel_marks_every_item_cancelled():
     assert result.cancelled
     assert result.skipped == 2
 
+
+def _blocking_task(payload):
+    """Worker task that blocks until a release marker file appears (pickle-safe)."""
+    import time
+    from pathlib import Path
+
+    started_path, release_path, item = payload
+    Path(started_path).touch()
+    deadline = time.time() + 20
+    while not Path(release_path).exists() and time.time() < deadline:
+        time.sleep(0.05)
+    return item
+
+
+def test_cancel_mid_run_keeps_submitted_tasks_isolated(tmp_path):
+    """Cancelling mid-run does not interrupt already-submitted tasks
+    (``ProcessPoolExecutor`` marks queued tasks RUNNING), but every submitted
+    task still completes with failure isolation."""
+    import threading as th
+    import time
+
+    started = tmp_path / "started"
+    release = tmp_path / "release"
+    payloads = [(str(started), str(release), item) for item in range(1, 6)]
+    budget = ResourceBudget(sample_interval_s=0.02, worker_fraction=0.1)
+    executor = BatchExecutor(budget)
+    holder: dict[str, object] = {}
+
+    def run_batch():
+        holder["result"] = executor.run(_blocking_task, payloads)
+
+    thread = th.Thread(target=run_batch)
+    thread.start()
+    deadline = time.time() + 10
+    while not started.exists() and time.time() < deadline:
+        time.sleep(0.05)
+    assert started.exists(), "first task did not start"
+    time.sleep(0.5)
+    executor.cancel()
+    release.touch()
+    thread.join(timeout=25)
+    result = holder["result"]
+    statuses = [item.status for item in result.items]
+    # Submitted tasks always run to completion (cancellable only before submit).
+    assert statuses == ["completed"] * 5, statuses
+    assert result.cancelled
+

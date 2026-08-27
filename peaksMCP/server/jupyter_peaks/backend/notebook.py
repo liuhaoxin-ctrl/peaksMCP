@@ -140,6 +140,7 @@ class NotebookBackend:
             "comm_connected": bool(self.state.bridge and self.state.bridge.connected),
             "api_index_ready": self.state.api_index is not None,
             "api_count": len(self.state.api_index.entries) if self.state.api_index else 0,
+            "index_stale": bool(self.state.api_index and self.state.api_index.is_stale()),
         }
 
     def kernel_status(self) -> dict[str, Any]:
