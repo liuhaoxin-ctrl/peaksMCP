@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import statistics
 import threading
+import time
+from collections import deque
 from dataclasses import dataclass, field
 
 import psutil
@@ -38,16 +40,21 @@ class ResourceBudget:
     resume_percent: float = 50.0
     sample_interval_s: float = 1.0
     worker_fraction: float = 0.5
-    _samples: list[float] = field(default_factory=list, init=False)
+    moving_window_s: float = 10.0
+    _samples: deque[tuple[float, float]] = field(default_factory=deque, init=False)
+    _all_samples: list[float] = field(default_factory=list, init=False)
     _stop: threading.Event = field(default_factory=threading.Event, init=False)
     _thread: threading.Thread | None = field(default=None, init=False)
     _gate: threading.Event = field(default_factory=threading.Event, init=False)
+    _sample_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
 
     def __post_init__(self) -> None:
         if not 1 <= self.cpu_limit_percent <= 100:
             raise ValueError("cpu_limit_percent must be between 1 and 100")
         if not 0 <= self.resume_percent < self.cpu_limit_percent:
             raise ValueError("resume_percent must be lower than cpu_limit_percent")
+        if self.moving_window_s <= 0:
+            raise ValueError("moving_window_s must be positive")
         self._gate.set()
 
     @property
@@ -58,19 +65,26 @@ class ResourceBudget:
 
     @property
     def average_cpu_percent(self) -> float:
-        """Return the arithmetic mean of monitor samples."""
-        return statistics.fmean(self._samples) if self._samples else 0.0
+        """Return the trailing moving-window CPU average."""
+        with self._sample_lock:
+            values = [sample for _timestamp, sample in self._samples]
+        return statistics.fmean(values) if values else 0.0
 
     @property
     def peak_cpu_percent(self) -> float:
         """Return the highest monitor sample."""
-        return max(self._samples, default=0.0)
+        with self._sample_lock:
+            return max(self._all_samples, default=0.0)
 
     def start(self) -> None:
         """Start background CPU monitoring."""
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
+        self._gate.set()
+        with self._sample_lock:
+            self._samples.clear()
+            self._all_samples.clear()
         self._thread = threading.Thread(target=self._monitor, name="peaksMCP-cpu-budget", daemon=True)
         self._thread.start()
 
@@ -81,23 +95,45 @@ class ResourceBudget:
         if self._thread:
             self._thread.join(timeout=max(2.0, self.sample_interval_s * 2))
 
-    def wait_for_capacity(self, timeout: float | None = None) -> bool:
-        """Wait until system CPU is below the resume threshold."""
-        return self._gate.wait(timeout)
+    def wait_for_capacity(
+        self,
+        timeout: float | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> bool:
+        """Wait until CPU capacity is available or cancellation is requested."""
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            if cancel_event and cancel_event.is_set():
+                return False
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                return False
+            if self._gate.wait(0.1 if remaining is None else min(0.1, remaining)):
+                return True
+
+    def _record_sample(self, sample: float, timestamp: float | None = None) -> None:
+        """Record one sample and update the hysteresis gate."""
+        now = time.monotonic() if timestamp is None else timestamp
+        with self._sample_lock:
+            self._samples.append((now, sample))
+            self._all_samples.append(sample)
+            cutoff = now - self.moving_window_s
+            while self._samples and self._samples[0][0] < cutoff:
+                self._samples.popleft()
+            moving_average = statistics.fmean(value for _time, value in self._samples)
+        if sample >= self.cpu_limit_percent or moving_average >= self.cpu_limit_percent:
+            self._gate.clear()
+        elif moving_average <= self.resume_percent:
+            self._gate.set()
 
     def _monitor(self) -> None:
         psutil.cpu_percent(interval=None)
         while not self._stop.wait(self.sample_interval_s):
             sample = float(psutil.cpu_percent(interval=None))
-            self._samples.append(sample)
-            if sample >= self.cpu_limit_percent:
-                self._gate.clear()
-            elif sample <= self.resume_percent:
-                self._gate.set()
+            self._record_sample(sample)
 
     @staticmethod
     def configure_worker_threads() -> None:
         """Limit common native scientific runtimes to one worker thread."""
         for key in _THREAD_ENV_KEYS:
             os.environ[key] = "1"
-

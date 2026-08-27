@@ -137,6 +137,8 @@ class NotebookBackend:
             "status": "ready",
             "mode": self.state.mode.value,
             "uptime_s": round(time.time() - self.state.started_at, 3),
+            "kernel_instance_id": self.state.kernel_instance_id,
+            "extension_loaded": True,
             "comm_connected": bool(self.state.bridge and self.state.bridge.connected),
             "api_index_ready": self.state.api_index is not None,
             "api_count": len(self.state.api_index.entries) if self.state.api_index else 0,

@@ -13,6 +13,14 @@ class CommBridge:
 
     target_name = "peaksMCP:frontend"
 
+    #: A frontend is considered disconnected only after this long without a
+    #: heartbeat. The frontend heartbeats every 2s, but browsers throttle
+    #: ``setInterval`` in background tabs to ~1/min, so a tight timeout would
+    #: falsely drop a live but backgrounded notebook. 120s covers throttled
+    #: heartbeats and self-heals: the Comm stays open and reconnects on the next
+    #: heartbeat when the tab regains focus.
+    STALE_AFTER_S = 120.0
+
     def __init__(self, state: Any) -> None:
         self.state = state
         self.comm: Any | None = None
@@ -23,7 +31,10 @@ class CommBridge:
     @property
     def connected(self) -> bool:
         """Return whether a live frontend Comm is attached."""
-        recently_seen = self.last_seen is not None and time.time() - self.last_seen < 10
+        recently_seen = (
+            self.last_seen is not None
+            and time.time() - self.last_seen < self.STALE_AFTER_S
+        )
         return self.comm is not None and not getattr(self.comm, "_closed", False) and recently_seen
 
     def register(self) -> None:

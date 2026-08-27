@@ -1,5 +1,98 @@
+import { Dialog, showDialog } from '@jupyterlab/apputils';
 import { INotebookTracker, NotebookActions } from '@jupyterlab/notebook';
+import { Widget } from '@lumino/widgets';
 const TARGET = 'peaksMCP:frontend';
+function escapeHtml(text) {
+    return text.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+/**
+ * Structured consent dialog (JupyterLab-native), replacing window.confirm.
+ * Shows the operation, the exact code about to run, and any security notes
+ * (e.g. figure-save consent) before the user decides.
+ */
+async function showConsentDialog(operation, details, targetCell) {
+    const body = document.createElement('div');
+    body.style.maxWidth = '680px';
+    body.style.fontSize = '13px';
+    const header = document.createElement('div');
+    header.style.marginBottom = '10px';
+    header.innerHTML = `<strong>请求的操作:</strong> <code>${escapeHtml(operation)}</code>`;
+    body.appendChild(header);
+    // Which cell is being touched, and what does it currently contain?
+    const cell = details?.cell ?? {};
+    if (typeof cell.index === 'number') {
+        const target = document.createElement('div');
+        target.style.marginBottom = '10px';
+        target.style.padding = '8px 10px';
+        target.style.background = '#eef4ff';
+        target.style.border = '1px solid #b8cdf0';
+        target.style.borderRadius = '4px';
+        target.style.color = '#1a3a6b';
+        const actionText = cell.action === 'delete' ? '删除' : cell.action === 'overwrite' ? '覆盖' : '修改';
+        target.innerHTML = `<strong>目标 cell #${escapeHtml(String(cell.index))}（${actionText}）</strong>`;
+        body.appendChild(target);
+        if (targetCell) {
+            const current = document.createElement('div');
+            current.style.marginBottom = '10px';
+            const label = document.createElement('div');
+            label.innerHTML = '<strong>该 cell 当前内容:</strong>';
+            current.appendChild(label);
+            const pre = document.createElement('pre');
+            pre.textContent = String(targetCell);
+            pre.style.maxHeight = '160px';
+            pre.style.overflow = 'auto';
+            pre.style.background = '#f5f5f5';
+            pre.style.padding = '8px';
+            pre.style.borderRadius = '4px';
+            pre.style.border = '1px solid #ddd';
+            pre.style.whiteSpace = 'pre-wrap';
+            current.appendChild(pre);
+            body.appendChild(current);
+        }
+    }
+    const code = String(details?.code ?? '');
+    if (code) {
+        const label = document.createElement('div');
+        label.style.margin = '10px 0 6px';
+        label.innerHTML = '<strong>将执行的代码:</strong>';
+        body.appendChild(label);
+        const pre = document.createElement('pre');
+        pre.textContent = code;
+        pre.style.maxHeight = '280px';
+        pre.style.overflow = 'auto';
+        pre.style.background = '#f5f5f5';
+        pre.style.padding = '10px';
+        pre.style.borderRadius = '4px';
+        pre.style.border = '1px solid #ddd';
+        pre.style.whiteSpace = 'pre-wrap';
+        pre.style.wordBreak = 'break-word';
+        body.appendChild(pre);
+    }
+    const scan = details?.scan ?? {};
+    const consentIssues = Array.isArray(scan.requires_explicit_consent) ? scan.requires_explicit_consent : [];
+    for (const issue of consentIssues) {
+        const note = document.createElement('div');
+        note.style.marginTop = '10px';
+        note.style.padding = '10px';
+        note.style.background = '#fff3cd';
+        note.style.border = '1px solid #ffc107';
+        note.style.borderRadius = '4px';
+        note.style.color = '#856404';
+        note.innerHTML = `<strong>⚠️ ${escapeHtml(String(issue.description ?? '需要您确认的操作'))}</strong>`;
+        body.appendChild(note);
+    }
+    const widget = new Widget({ node: body });
+    const result = await showDialog({
+        title: `peaksMCP — 确认 ${operation}`,
+        body: widget,
+        buttons: [
+            Dialog.cancelButton({ label: '拒绝' }),
+            Dialog.okButton({ label: '允许' })
+        ],
+        defaultButton: 1
+    });
+    return result.button.label === '允许';
+}
 function cellJSON(panel) {
     const notebook = panel.content;
     const cell = notebook.activeCell;
@@ -37,9 +130,20 @@ async function handle(panel, comm, data) {
                 notebook.activeCellIndex = data.direction === 'index' ? data.index : Math.max(0, Math.min(notebook.widgets.length - 1, notebook.activeCellIndex + (data.direction === 'previous' ? -1 : 1)));
                 result = cellJSON(panel);
                 break;
-            case 'request_consent':
-                result = { approved: window.confirm(`peaksMCP requests ${data.requested_operation ?? 'a notebook change'}\n\n${data.details?.code ?? ''}`) };
+            case 'request_consent': {
+                // Pass the target cell's current source so the consent dialog can show
+                // exactly which cell will be deleted/overwritten and what it holds now.
+                const cellInfo = data.details?.cell;
+                let targetSource;
+                if (cellInfo && typeof cellInfo.index === 'number') {
+                    const targetWidget = notebook.widgets[cellInfo.index];
+                    if (targetWidget) {
+                        targetSource = targetWidget.model.sharedModel.getSource();
+                    }
+                }
+                result = { approved: await showConsentDialog(data.requested_operation ?? 'notebook operation', data.details ?? {}, targetSource) };
                 break;
+            }
             case 'execute_code':
                 NotebookActions.insertBelow(notebook);
                 notebook.activeCell?.model.sharedModel.setSource(data.code ?? '');
@@ -80,6 +184,14 @@ async function handle(panel, comm, data) {
                 result = { restarted: true, kernel: panel.sessionContext.session?.kernel?.id };
                 break;
             default: throw new Error(`Unsupported frontend operation: ${data.operation}`);
+        }
+        // Persist notebook mutations (executed / inserted / deleted / patched cells)
+        // to disk so the analysis history survives a supervisor or JupyterLab restart.
+        if (['execute_code', 'execute_active_cell', 'add_cell', 'delete_cell', 'apply_patch'].includes(data.operation)) {
+            try {
+                await panel.context.save();
+            }
+            catch { /* save is best-effort */ }
         }
         comm.send({ request_id, ok: true, result });
     }

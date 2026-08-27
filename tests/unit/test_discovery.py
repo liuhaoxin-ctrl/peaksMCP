@@ -88,8 +88,6 @@ class _StubNotebook:
 
 
 def test_stale_error_is_raised_by_search_and_get(monkeypatch):
-    import peaksMCP.discovery.index as index_module
-
     from peaksMCP.discovery.index import IndexStaleError
     from peaksMCP.server.jupyter_peaks.backend.base import ExecutionMode, SharedState
     from peaksMCP.server.jupyter_peaks.core.tools import register_safe_tools
@@ -125,4 +123,3 @@ def test_stale_error_is_raised_by_search_and_get(monkeypatch):
     # A fresh index is not stale and search works end to end.
     state.api_index = build_index()
     assert search("k_convert")["count"] >= 1
-

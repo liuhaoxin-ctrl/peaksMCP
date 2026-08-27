@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -36,6 +37,7 @@ class SharedState:
     active_cell_output: list[dict[str, Any]] = field(default_factory=list)
     lock: threading.RLock = field(default_factory=threading.RLock)
     started_at: float = field(default_factory=time.time)
+    kernel_instance_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
     @property
     def namespace(self) -> dict[str, Any]:
@@ -56,4 +58,3 @@ class SharedState:
         with self.lock:
             self.kernel_state = "idle"
             self.busy_since = None
-

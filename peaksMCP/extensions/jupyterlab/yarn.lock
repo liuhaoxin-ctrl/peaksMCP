@@ -439,7 +439,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@jupyterlab/apputils@npm:^4.7.3":
+"@jupyterlab/apputils@npm:^4.2.0, @jupyterlab/apputils@npm:^4.7.3":
   version: 4.7.3
   resolution: "@jupyterlab/apputils@npm:4.7.3"
   dependencies:
@@ -3913,6 +3913,7 @@ __metadata:
   resolution: "peaksmcp-jupyterlab@workspace:."
   dependencies:
     "@jupyterlab/application": ^4.2.0
+    "@jupyterlab/apputils": ^4.2.0
     "@jupyterlab/builder": ^4.2.0
     "@jupyterlab/notebook": ^4.2.0
     "@jupyterlab/services": ^7.2.0

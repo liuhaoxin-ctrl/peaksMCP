@@ -9,6 +9,7 @@ from typing import Any
 
 from peaksMCP.batch import BatchExecutor, ResourceBudget
 
+from .csv_translator import translate_datasheet
 from .loader import load_pxt
 from .models import (
     ConversionItem,
@@ -20,6 +21,22 @@ from .models import (
 _INDEX_RE = re.compile(r"(?:^|_)(\d+)$")
 
 
+def default_output_dir(source: Path) -> Path:
+    """Default destination for a folder conversion: a sibling ``<name>_netcdf/`` folder.
+
+    Parameters
+    ----------
+    source : pathlib.Path
+        The source PXT folder.
+
+    Returns
+    -------
+    pathlib.Path
+        ``source.parent / f"{source.name}_netcdf"``.
+    """
+    return source.parent / f"{source.name}_netcdf"
+
+
 def index_from_path(path: str | Path) -> int | None:
     """Extract the trailing integer index from a PXT filename stem."""
     match = _INDEX_RE.search(Path(path).stem)
@@ -29,7 +46,66 @@ def index_from_path(path: str | Path) -> int | None:
 def _load_metadata(path: str | Path | None) -> ExperimentMetadata | None:
     if path is None:
         return None
-    return ExperimentMetadata.model_validate_json(Path(path).read_text(encoding="utf-8"))
+    target = Path(path).expanduser().resolve()
+    if not target.is_file():
+        raise FileNotFoundError(f"experiment metadata file not found: {target}")
+    return ExperimentMetadata.model_validate_json(target.read_text(encoding="utf-8"))
+
+
+def _resolve_metadata_path(metadata_path: str | Path | None) -> str | None:
+    """Validate and normalise an optional experiment-metadata path.
+
+    Expands ``~``, resolves symlinks and fails fast with one clear error when the
+    file is missing or is a directory — so a bad metadata path cannot surface as
+    an identical per-file failure for every item in a batch.
+    """
+    if metadata_path is None or str(metadata_path) == "":
+        return None
+    target = Path(metadata_path).expanduser().resolve()
+    if not target.is_file():
+        raise FileNotFoundError(f"experiment metadata file not found: {target}")
+    return str(target)
+
+
+def _find_datasheet(source: Path) -> Path | None:
+    """Locate a ``datasheet.csv`` living next to the data.
+
+    The user keeps the datasheet and the raw data in the same folder, so for a
+    folder input we check the folder itself and then its parent; for a single
+    file we check the file's folder and then its parent.
+    """
+    roots = (
+        [source.parent, source.parent.parent]
+        if source.is_file()
+        else [source, source.parent]
+    )
+    for root in roots:
+        for name in ("datasheet.csv", "Datasheet.csv"):
+            candidate = root / name
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def _auto_metadata(metadata_path: str | None, source: Path, destination: Path) -> str | None:
+    """Translate the sibling ``datasheet.csv`` when no explicit metadata was given.
+
+    The translated document is written to ``destination/experiment_metadata.json``
+    so it is reused across runs. A malformed/irrelevant CSV is ignored and the
+    conversion proceeds without metadata rather than aborting.
+    """
+    if metadata_path is not None:
+        return metadata_path
+    datasheet = _find_datasheet(source)
+    if datasheet is None:
+        return None
+    try:
+        translated = translate_datasheet(datasheet)
+        target = destination / "experiment_metadata.json"
+        translated.write(target)
+        return str(target)
+    except Exception:
+        return None
 
 
 def _safe_attrs(attributes: dict[str, Any]) -> dict[str, Any]:
@@ -182,18 +258,20 @@ def convert_path(
     True
     """
     source = Path(input_path).expanduser().resolve()
+    # Validate the optional metadata file once, before any conversion runs, so a
+    # missing metadata document aborts with a single clear error instead of a
+    # per-file failure for the whole batch.
+    metadata_path = _resolve_metadata_path(metadata_path)
     if source.is_file():
-        if output_dir:
-            destination = Path(output_dir).expanduser().resolve()
-            # A directory destination (existing, or a path with no extension)
-            # receives the source stem; an explicit file path is used as-is.
-            target = (
-                destination / f"{source.stem}.nc"
-                if destination.is_dir() or not destination.suffix
-                else destination
-            )
-        else:
-            target = source.with_suffix(".nc")
+        destination = Path(output_dir).expanduser().resolve() if output_dir else source.parent
+        # The auto-translated metadata lives next to the data (never derived from
+        # an explicit single-file output path, which could be a .nc file).
+        metadata_path = _auto_metadata(metadata_path, source, source.parent)
+        target = (
+            destination / f"{source.stem}.nc"
+            if destination.is_dir() or not destination.suffix
+            else destination
+        )
         return ConversionReport(
             items=[
                 convert_pxt(
@@ -206,7 +284,15 @@ def convert_path(
         )
     if not source.is_dir():
         raise FileNotFoundError(source)
-    destination = Path(output_dir).expanduser().resolve() if output_dir else source
+    # Default output is a sibling folder named after the source folder
+    # (e.g. raw/ -> raw_netcdf/), created on demand.  An explicit output_dir
+    # is honoured as-is.
+    destination = (
+        Path(output_dir).expanduser().resolve()
+        if output_dir
+        else default_output_dir(source)
+    )
+    metadata_path = _auto_metadata(metadata_path, source, destination)
     files = [
         path
         for path in sorted(source.glob("*.pxt"))
@@ -216,7 +302,7 @@ def convert_path(
         ConversionTask(
             input_path=str(path),
             output_path=str(destination / f"{path.stem}.nc"),
-            metadata_path=str(Path(metadata_path).resolve()) if metadata_path else None,
+            metadata_path=metadata_path,
             force=force,
         )
         for path in files

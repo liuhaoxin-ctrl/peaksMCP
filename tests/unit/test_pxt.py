@@ -6,7 +6,12 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from peaksMCP.pxt_utils.converter import convert_path, convert_pxt, index_from_path
+from peaksMCP.pxt_utils.converter import (
+    convert_path,
+    convert_pxt,
+    default_output_dir,
+    index_from_path,
+)
 from peaksMCP.pxt_utils.csv_translator import translate_datasheet
 from peaksMCP.pxt_utils.loader import load_pxt
 
@@ -101,3 +106,55 @@ def test_convert_path_single_file_to_directory(monkeypatch, tmp_path):
     fresh = tmp_path / "fresh_dir"
     report = convert_path(source, fresh)
     assert report.items[0].output == str(fresh / "BP_0003.nc")
+
+
+def _fake_load_pxt(_path):
+    """Module-level stand-in for ``load_pxt`` so batch workers (spawn) can pickle it."""
+    return xr.DataArray(np.ones((2, 3)), dims=("eV", "theta_par"), attrs={"units": "counts"})
+
+
+def test_default_output_dir_is_sibling_netcdf(tmp_path):
+    """A folder conversion without an explicit output targets a sibling
+    ``<folder>_netcdf/`` directory (pure-function check; the batched worker
+    path itself needs a real PXT fixture)."""
+    source = tmp_path / "raw"
+    source.mkdir()
+    (source / "BP_0001.pxt").touch()
+    assert default_output_dir(source) == tmp_path / "raw_netcdf"
+    assert default_output_dir(tmp_path / "another") == tmp_path / "another_netcdf"
+
+
+def test_auto_datasheet_discovered_and_translated(tmp_path):
+    """A datasheet.csv next to the data is auto-translated into
+    <output>/experiment_metadata.json when no metadata path is supplied."""
+    from peaksMCP.pxt_utils.converter import _auto_metadata, _find_datasheet
+
+    data = tmp_path / "data"
+    data.mkdir()
+    csv = data / "datasheet.csv"
+    write_datasheet(csv, ["5,43,S,9.4,2.2,,2.7,400,5,note,extra"])
+
+    # Folder input: found in the folder itself; single-file input: in its parent.
+    assert _find_datasheet(data) == csv
+    assert _find_datasheet(data / "BP_0005.pxt") == csv
+
+    out = tmp_path / "out"
+    out.mkdir()
+    meta = _auto_metadata(None, data, out)
+    assert meta == str(out / "experiment_metadata.json")
+    assert (out / "experiment_metadata.json").is_file()
+    document = json.loads((out / "experiment_metadata.json").read_text())
+    assert document["records"]["5"]["polarization_angle_deg"] == 43
+
+    # An explicit metadata path wins over auto-discovery.
+    assert _auto_metadata("/custom.json", data, out) == "/custom.json"
+
+
+def test_auto_datasheet_malformed_is_ignored(tmp_path):
+    """A datasheet that does not parse must not abort conversion; it is skipped."""
+    from peaksMCP.pxt_utils.converter import _auto_metadata
+
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "datasheet.csv").write_text("not a valid datasheet\n", encoding="utf-8-sig")
+    assert _auto_metadata(None, data, data) is None

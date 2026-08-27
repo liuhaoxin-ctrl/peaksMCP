@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@jupyterlab/application": "^4.2.0",
+    "@jupyterlab/apputils": "^4.2.0",
     "@jupyterlab/notebook": "^4.2.0",
     "@jupyterlab/services": "^7.2.0"
   },
@@ -30,7 +31,7 @@
     "extension": true,
     "outputDir": "labextension",
     "_build": {
-      "load": "static/remoteEntry.ce53fb9d8b83e8293670.js",
+      "load": "static/remoteEntry.cd82ad5a135d43d0ee4d.js",
       "extension": "./extension"
     }
   }

@@ -54,7 +54,22 @@ def _tool_call(supervisor, name: str, arguments: dict):
 
 
 def _dashboard(supervisor, path: str):
-    return httpx.get(f"{supervisor.dashboard_url}{path}", timeout=10).json()
+    return httpx.get(
+        f"{supervisor.dashboard_url}{path}",
+        headers={"Authorization": f"Bearer {supervisor.dashboard_token}"},
+        timeout=10,
+    ).json()
+
+
+def _dashboard_tool(supervisor, name: str, arguments: dict):
+    response = httpx.post(
+        f"{supervisor.dashboard_url}/api/mcp/tool",
+        headers={"Authorization": f"Bearer {supervisor.dashboard_token}"},
+        json={"name": name, "arguments": arguments},
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json()["result"]
 
 
 @pytest.fixture(scope="module")
@@ -137,9 +152,14 @@ def test_comm_bridge_connects_and_restart_all(supervisor):
     notebook_url = supervisor.status()["notebook_url"] + f"?token={supervisor.token}"
     with sync_playwright() as playwright:
         try:
-            browser = playwright.chromium.launch(
-                headless=True, channel="chrome",
-                args=["--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows"],
+                browser = playwright.chromium.launch(
+                    headless=True, channel="chrome",
+                    args=[
+                        "--disable-background-timer-throttling",
+                        "--disable-backgrounding-occluded-windows",
+                        "--disable-gpu",
+                        "--renderer-process-limit=1",
+                    ],
             )
         except Exception as exc:  # pragma: no cover - environment dependent
             pytest.skip(f"Chrome not launchable: {exc}")
@@ -157,10 +177,23 @@ def test_comm_bridge_connects_and_restart_all(supervisor):
                 time.sleep(1)
             assert comm_ready, "JupyterLab Comm bridge did not connect"
 
-            response = httpx.post(f"{supervisor.dashboard_url}/api/restart/all", timeout=180)
+            supervisor.execute_kernel("peaksmcp_restart_all_marker = 42", timeout=30)
+            previous_generation = _dashboard(supervisor, "/api/status")["mcp"]["status"][
+                "kernel_instance_id"
+            ]
+            response = httpx.post(
+                f"{supervisor.dashboard_url}/api/restart/all",
+                headers={"Authorization": f"Bearer {supervisor.dashboard_token}"},
+                timeout=180,
+            )
             result = response.json()
             assert result.get("ready"), result
             assert result["stages"]["comm"], result
+            assert result["stages"]["kernel_restarted"], result
+            assert result["kernel_instance_id"] != previous_generation
+            listing = _dashboard_tool(supervisor, "notebook_list_variables", {})
+            names = [item["name"] for item in listing["variables"]]
+            assert "peaksmcp_restart_all_marker" not in names
         finally:
             browser.close()
 

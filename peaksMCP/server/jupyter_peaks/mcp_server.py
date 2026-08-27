@@ -35,30 +35,25 @@ class JupyterPeaksMCPServer:
             version=__version__,
             instructions=(
                 "Use peaks_search_api and peaks_get_api before writing unfamiliar Peaks code. "
-                "Inspect xarray variables before analysis and preserve units in every figure."
+                "Inspect xarray variables before analysis and preserve units in every figure. "
+                "Never save figures to disk (plt.savefig / fig.savefig) unless the user "
+                "explicitly asks for a saved file — figures are shown inline in the notebook. "
+                "Executing or editing notebook cells (notebook_execute_code, notebook_add_cell, "
+                "notebook_delete_cell, notebook_apply_patch, notebook_execute_active_cell) "
+                "requires explicit consent shown in the notebook."
             ),
             strict_input_validation=True,
         )
         register_safe_tools(mcp, self.state, self.notebook)
-        if self.state.mode is not ExecutionMode.SAFE:
-            register_unsafe_tools(mcp, self.unsafe)
+        # All tools are always exposed to the model. The security mode only
+        # controls whether execution/editing asks for in-notebook consent
+        # (safe/unsafe) or auto-approves after the static scan (dangerous).
+        register_unsafe_tools(mcp, self.unsafe)
         return mcp
 
     def set_mode(self, mode: str | ExecutionMode) -> None:
-        """Change the exposed tool set; restarting HTTP is not required."""
-        target = ExecutionMode(mode)
-        if target is self.state.mode:
-            return
-        previous = self.state.mode
-        self.state.mode = target
-        if previous is not ExecutionMode.SAFE:
-            for name in (
-                "notebook_execute_code", "notebook_execute_active_cell", "notebook_add_cell",
-                "notebook_delete_cell", "notebook_apply_patch",
-            ):
-                self.mcp.local_provider.remove_tool(name)
-        if target is not ExecutionMode.SAFE:
-            register_unsafe_tools(self.mcp, self.unsafe)
+        """Switch the consent policy without changing the exposed tool set."""
+        self.state.mode = ExecutionMode(mode)
 
     def start(self) -> None:
         """Start the HTTP MCP server on a daemon thread."""

@@ -1,15 +1,150 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>peaksMCP</title><link rel="stylesheet" href="/assets/style.css"></head>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>peaksMCP · Operator Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
 <body>
-  <header><div><span class="eyebrow">ARPES CONTROL PLANE</span><h1>peaksMCP</h1></div><div class="header-state"><span id="profile" class="pill">profile: …</span><span id="state" class="pill">LOADING</span><span id="connection" class="connection">●</span></div></header>
-  <main>
-    <section id="components" class="components wide"></section>
-    <section class="card wide"><h2>Actions</h2><div class="actions"><a id="open-lab" class="button" target="_blank" rel="noopener">Open managed Notebook</a><button id="doctor-button">Run Doctor</button><button data-restart="mcp">Restart MCP</button><button data-restart="kernel">Restart Kernel</button><button data-restart="all" class="primary">Restart All</button></div><pre id="action-result"></pre></section>
-    <section class="card inspector"><h2>MCP Inspector</h2><p>Calls the real tool in the notebook Kernel.</p><form id="search"><input id="query" placeholder="e.g. curvature or 动量转换" required><button class="primary">Search API</button></form><pre id="result"></pre><div id="images" class="images"></div></section>
-    <section class="card"><h2>PXT conversion</h2><form id="convert"><input id="pxt-input" placeholder="PXT file or folder" required><input id="pxt-output" placeholder="Output file or folder"><input id="pxt-metadata" placeholder="experiment_metadata.json"><button class="primary">Convert</button></form><pre id="convert-result"></pre></section>
-    <section class="card"><h2>Doctor</h2><pre id="doctor">Click “Run Doctor”.</pre><h2>Profiles</h2><pre id="profiles"></pre></section>
-    <section class="card wide"><h2>Logs <select id="log-filter"><option value="">all</option></select></h2><pre id="logs"></pre></section>
-  </main><script src="/assets/app.js"></script>
-</body></html>
+  <header>
+    <div class="brand">
+      <span class="eyebrow">ARPES Control Plane</span>
+      <h1>peaksMCP</h1>
+    </div>
+    <div class="header-state">
+      <span id="profile" class="pill">profile: …</span>
+      <span id="state" class="pill">LOADING</span>
+      <span id="connection" class="connection">●</span>
+    </div>
+  </header>
 
+  <main>
+    <!-- Control Panel: Components + Actions -->
+    <section class="card wide control-panel">
+      <div class="panel-header">
+        <h2>Active Components</h2>
+        <span id="components-status" class="status-badge unknown">Unknown</span>
+      </div>
+      <div id="components" class="components-grid"></div>
+
+      <div class="toolbar">
+        <a id="open-lab" class="button primary" target="_blank" rel="noopener" style="opacity:.4;pointer-events:none">
+          <span class="btn-icon">◈</span> Open Notebook
+        </a>
+        <button id="doctor-button" class="button">
+          <span class="btn-icon">◉</span> Run Doctor
+        </button>
+        <button id="snapshot-button" class="button">
+          <span class="btn-icon">💾</span> Save snapshot
+        </button>
+        <div class="toolbar-divider"></div>
+        <button id="start-mcp" class="button">
+          <span class="btn-icon">▶</span> Start MCP
+        </button>
+        <button id="restart-mcp" class="button" disabled style="opacity:.4">
+          <span class="btn-icon">↻</span> Restart MCP
+        </button>
+        <button id="restart-kernel" class="button">
+          <span class="btn-icon">↻</span> Restart Kernel
+        </button>
+        <button id="restart-all" class="button danger">
+          <span class="btn-icon">⚠</span> Restart All
+        </button>
+      </div>
+      <pre id="action-result" style="display:none;"></pre>
+    </section>
+
+    <!-- MCP Inspector -->
+    <section class="card wide inspector">
+      <div class="panel-header">
+        <h2>MCP Inspector</h2>
+        <span class="hint">Invoke tools in the notebook kernel</span>
+      </div>
+      <form id="search" class="search-form">
+        <input id="query" placeholder="e.g. curvature, momentum conversion, 动量转换…" required autocomplete="off">
+        <button type="submit" class="primary">
+          <span class="btn-icon">⌕</span> Search
+        </button>
+      </form>
+      <pre id="result" style="display:none;"></pre>
+      <div id="images" class="images" style="display:none;"></div>
+    </section>
+
+    <!-- CSV + PXT Conversion -->
+    <section class="card pxt-card">
+      <h2>CSV &amp; PXT Conversion</h2>
+      <p class="subtitle">Translate the sibling datasheet.csv to metadata, then convert PXT to NetCDF.</p>
+      <form id="convert">
+        <div class="form-row">
+          <input id="pxt-input" placeholder="PXT file or folder path" required>
+          <button type="button" id="pick-folder" class="button">
+            <span class="btn-icon">▣</span> Browse
+          </button>
+        </div>
+        <input id="pxt-output" placeholder="Output folder (default: sibling <folder>_netcdf/)">
+        <input id="pxt-metadata" placeholder="experiment_metadata.json (optional — auto-translates datasheet.csv next to the data)">
+        <button type="submit" class="primary full">
+          <span class="btn-icon">▶</span> Start Conversion
+        </button>
+      </form>
+      <pre id="convert-result" style="display:none;"></pre>
+    </section>
+
+    <!-- System Info -->
+    <section class="card system-card">
+      <div class="system-section">
+        <div class="panel-header compact">
+          <h2>Doctor</h2>
+          <span id="doctor-status" class="status-badge idle">Idle</span>
+        </div>
+        <pre id="doctor">Click "Run Doctor" to initiate system diagnostics.</pre>
+      </div>
+      <div class="divider"></div>
+      <div class="system-section">
+        <div class="panel-header compact">
+          <h2>Profiles</h2>
+        </div>
+        <pre id="profiles">Loading…</pre>
+      </div>
+    </section>
+
+    <!-- Logs -->
+    <section class="card wide logs-card">
+      <div class="logs-header">
+        <h2>System Logs</h2>
+        <div class="logs-controls">
+          <select id="log-filter">
+            <option value="">all components</option>
+          </select>
+          <button id="clear-logs" class="button small">
+            <span class="btn-icon">⌫</span> Clear
+          </button>
+          <button id="export-logs" class="button small">
+            <span class="btn-icon">⬇</span> Export
+          </button>
+        </div>
+      </div>
+      <pre id="logs">Awaiting log stream…</pre>
+    </section>
+  </main>
+
+  <div id="toast-container"></div>
+
+  <div id="confirm-modal" class="modal-overlay">
+    <div class="modal">
+      <div class="modal-header">Confirm Action</div>
+      <div class="modal-body" id="modal-body">Are you sure you want to proceed?</div>
+      <div class="modal-actions">
+        <button id="modal-cancel" class="button">Cancel</button>
+        <button id="modal-confirm" class="button danger">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/assets/app.js"></script>
+</body>
+</html>

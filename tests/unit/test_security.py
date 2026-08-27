@@ -62,6 +62,29 @@ def test_read_only_path_and_open_are_allowed(code):
 
 
 @pytest.mark.parametrize("code", [
+    "import matplotlib.pyplot as plt\nplt.savefig('out.png')",
+    "import matplotlib.pyplot as plt\nfig, ax = plt.subplots()\nfig.savefig('out.png')",
+    "import matplotlib.pyplot as plt\nplt.figure().savefig('out.pdf')",
+])
+def test_savefig_requires_explicit_consent_not_blocked(code):
+    """Figure saving is not hard-blocked (the user may deliberately approve it)
+    but must always be flagged for explicit consent, even in dangerous mode."""
+    result = scan_code(code)
+    assert result.is_safe  # never a hard block
+    assert any(issue.rule_id == "SAVE001" for issue in result.requires_explicit_consent)
+
+
+@pytest.mark.parametrize("code", [
+    # Non-figure uses must not be flagged as savefig consent.
+    "print('savefig is a word')",
+    "import os\nprint(os.path.exists('out.png'))",
+    "import matplotlib.pyplot as plt\nplt.show()",
+])
+def test_savefig_not_flagged_for_benign_text(code):
+    assert scan_code(code).requires_explicit_consent == []
+
+
+@pytest.mark.parametrize("code", [
     "data = data.sel(eV=slice(-1, 0))", "data.plot()", "import numpy as np\nx=np.arange(4)",
     "result = data.S.smooth({'eV': 2})", "print(data.dims)",
 ])
@@ -77,6 +100,43 @@ def test_syntax_errors_are_structured_and_blocked():
 
 def test_consent_fails_closed_without_frontend():
     assert ConsentManager().request("delete", {}) is False
+
+
+def test_destructive_cell_ops_require_consent_even_in_dangerous_mode():
+    """apply_patch / delete_cell must ask for explicit consent in every mode,
+    including dangerous: existing cells must never be deleted or overwritten
+    unless the user actively approves."""
+    from peaksMCP.server.jupyter_peaks.backend import ExecutionMode, SharedState, UnsafeNotebookBackend
+
+    class FakeIPython:
+        user_ns = {}
+
+    class FakeBridge:
+        connected = True
+
+        def request(self, *_args, **_kwargs):
+            return {"ok": True}
+
+    class DenyingConsent(ConsentManager):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls: list[str] = []
+
+        def request(self, operation, _details, timeout=60):
+            self.calls.append(operation)
+            return False
+
+    state = SharedState(FakeIPython())
+    state.bridge = FakeBridge()
+    state.mode = ExecutionMode.DANGEROUS
+    consent = DenyingConsent()
+    notebook = UnsafeNotebookBackend(state, consent, AuditLogger("/tmp/peaksmcp-test-audit.jsonl"))
+
+    with pytest.raises(PermissionError):
+        notebook.apply_patch(2, "x = 1")
+    with pytest.raises(PermissionError):
+        notebook.delete_cell(0)
+    assert consent.calls == ["notebook_apply_patch", "notebook_delete_cell"]
 
 
 def test_audit_is_jsonl_and_private(tmp_path):

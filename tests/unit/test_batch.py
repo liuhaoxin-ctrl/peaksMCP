@@ -28,6 +28,15 @@ def test_failure_isolation_results_and_cpu_statistics():
     assert result.peak_cpu_percent <= 100
 
 
+def test_cpu_gate_uses_trailing_window_and_hysteresis():
+    budget = ResourceBudget(cpu_limit_percent=60, resume_percent=50, moving_window_s=10)
+    budget._record_sample(80, timestamp=0)
+    assert not budget._gate.is_set()
+    budget._record_sample(40, timestamp=11)
+    assert budget._gate.is_set()
+    assert budget.average_cpu_percent == 40
+
+
 def test_pre_cancel_marks_every_item_cancelled():
     executor = BatchExecutor(ResourceBudget(sample_interval_s=0.02))
     executor.cancel()
@@ -49,17 +58,15 @@ def _blocking_task(payload):
     return item
 
 
-def test_cancel_mid_run_keeps_submitted_tasks_isolated(tmp_path):
-    """Cancelling mid-run does not interrupt already-submitted tasks
-    (``ProcessPoolExecutor`` marks queued tasks RUNNING), but every submitted
-    task still completes with failure isolation."""
+def test_cancel_mid_run_stops_future_submissions(tmp_path):
+    """Cancellation lets one in-flight task finish and marks the remainder cancelled."""
     import threading as th
     import time
 
     started = tmp_path / "started"
     release = tmp_path / "release"
     payloads = [(str(started), str(release), item) for item in range(1, 6)]
-    budget = ResourceBudget(sample_interval_s=0.02, worker_fraction=0.1)
+    budget = ResourceBudget(sample_interval_s=0.02, worker_fraction=0.0001)
     executor = BatchExecutor(budget)
     holder: dict[str, object] = {}
 
@@ -78,7 +85,6 @@ def test_cancel_mid_run_keeps_submitted_tasks_isolated(tmp_path):
     thread.join(timeout=25)
     result = holder["result"]
     statuses = [item.status for item in result.items]
-    # Submitted tasks always run to completion (cancellable only before submit).
-    assert statuses == ["completed"] * 5, statuses
+    assert statuses[0] == "completed"
+    assert statuses[1:] == ["cancelled"] * 4
     assert result.cancelled
-

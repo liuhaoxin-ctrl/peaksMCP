@@ -34,15 +34,7 @@ class BatchExecutor:
         self._pending_futures: dict[concurrent.futures.Future[tuple[Any, float]], tuple[int, Any]] = {}
 
     def cancel(self) -> None:
-        """Request cancellation of tasks that have not yet been submitted.
-
-        Python's ``ProcessPoolExecutor`` marks a task ``RUNNING`` as soon as it
-        is placed on the worker queue (``set_running_or_notify_cancel``), so
-        submitted tasks cannot be interrupted or cancelled.  ``cancel()`` stops
-        the submission loop for remaining items; in-flight and queued tasks run
-        to completion (failure isolation keeps a bad task from blocking the
-        rest of the batch).
-        """
+        """Stop future submissions and cancel futures not yet running."""
         self.cancel_event.set()
 
     def run(
@@ -74,31 +66,85 @@ class BatchExecutor:
         self.budget.start()
         try:
             with concurrent.futures.ProcessPoolExecutor(max_workers=self.budget.max_workers) as pool:
-                for index, item in enumerate(values):
+                next_index = 0
+                while next_index < len(values) or self._pending_futures:
+                    while (
+                        next_index < len(values)
+                        and len(self._pending_futures) < self.budget.max_workers
+                        and not self.cancel_event.is_set()
+                    ):
+                        item = values[next_index]
+                        if not self.budget.wait_for_capacity(
+                            timeout=60,
+                            cancel_event=self.cancel_event,
+                        ):
+                            if self.cancel_event.is_set():
+                                break
+                            result = BatchItemResult(
+                                next_index,
+                                item,
+                                "skipped",
+                                error="CPU budget wait timed out",
+                            )
+                            results[next_index] = result
+                            if progress:
+                                progress(result)
+                            next_index += 1
+                            continue
+                        future = pool.submit(_run_one, function, item)
+                        self._pending_futures[future] = (next_index, item)
+                        next_index += 1
+
                     if self.cancel_event.is_set():
-                        results[index] = BatchItemResult(index, item, "cancelled")
+                        while next_index < len(values):
+                            result = BatchItemResult(next_index, values[next_index], "cancelled")
+                            results[next_index] = result
+                            if progress:
+                                progress(result)
+                            next_index += 1
+                        for future, (index, item) in list(self._pending_futures.items()):
+                            if future.cancel():
+                                result = BatchItemResult(index, item, "cancelled")
+                                results[index] = result
+                                if progress:
+                                    progress(result)
+                                self._pending_futures.pop(future)
+
+                    if not self._pending_futures:
                         continue
-                    if not self.budget.wait_for_capacity(timeout=60):
-                        results[index] = BatchItemResult(index, item, "skipped", error="CPU budget wait timed out")
-                        continue
-                    future = pool.submit(_run_one, function, item)
-                    self._pending_futures[future] = (index, item)
-                for future in concurrent.futures.as_completed(self._pending_futures):
-                    index, item = self._pending_futures[future]
-                    try:
-                        output, duration = future.result()
-                        result = BatchItemResult(index, item, "completed", output=output, duration_s=duration)
-                    except Exception as exc:  # batch intentionally continues
-                        result = BatchItemResult(
-                            index,
-                            item,
-                            "failed",
-                            error_type=type(exc).__name__,
-                            error=str(exc),
-                        )
-                    results[index] = result
-                    if progress:
-                        progress(result)
+                    completed, _pending = concurrent.futures.wait(
+                        tuple(self._pending_futures),
+                        timeout=0.1,
+                        return_when=concurrent.futures.FIRST_COMPLETED,
+                    )
+                    for future in completed:
+                        index, item = self._pending_futures.pop(future)
+                        if future.cancelled():
+                            result = BatchItemResult(index, item, "cancelled")
+                            results[index] = result
+                            if progress:
+                                progress(result)
+                            continue
+                        try:
+                            output, duration = future.result()
+                            result = BatchItemResult(
+                                index,
+                                item,
+                                "completed",
+                                output=output,
+                                duration_s=duration,
+                            )
+                        except Exception as exc:  # batch intentionally continues
+                            result = BatchItemResult(
+                                index,
+                                item,
+                                "failed",
+                                error_type=type(exc).__name__,
+                                error=str(exc),
+                            )
+                        results[index] = result
+                        if progress:
+                            progress(result)
         finally:
             self.budget.stop()
             self._pending_futures.clear()
@@ -109,4 +155,3 @@ class BatchExecutor:
             peak_cpu_percent=self.budget.peak_cpu_percent,
             cancelled=self.cancel_event.is_set(),
         )
-

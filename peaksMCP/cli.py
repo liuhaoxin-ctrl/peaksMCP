@@ -38,6 +38,12 @@ def _runfile(required: bool = True) -> dict[str, Any] | None:
     return data
 
 
+def _dashboard_headers(data: dict[str, Any]) -> dict[str, str]:
+    """Return dashboard authentication headers, tolerating pre-auth runfiles."""
+    token = data.get("dashboard_token")
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 def command_launch(args: argparse.Namespace) -> None:
     current = _runfile(False)
     if current and not current.get("stale"):
@@ -78,7 +84,11 @@ def command_status(_args: argparse.Namespace) -> None:
         _json({**data, "status": "STALE"})
         return
     try:
-        status = httpx.get(f"{data['dashboard_url']}/api/status", timeout=3).json()
+        status = httpx.get(
+            f"{data['dashboard_url']}/api/status",
+            headers=_dashboard_headers(data),
+            timeout=3,
+        ).json()
     except Exception:
         status = {**data, "status": "DEGRADED", "error": "dashboard did not answer"}
     _json(status)
@@ -99,13 +109,51 @@ def command_stop(_args: argparse.Namespace) -> None:
 
 
 def command_restart(args: argparse.Namespace) -> None:
+    """Restart one component, or the whole stack when no component is given.
+
+    ``peaksMCP restart`` (no component) is equivalent to ``stop && launch``:
+    it stops the running supervisor and starts a fresh one (JupyterLab + kernel +
+    in-kernel MCP + dashboard).  ``restart kernel|mcp|all`` only touches the
+    kernel side inside the running supervisor.
+    """
+    if args.component is None:
+        _restart_stack(args)
+        return
     data = _runfile()
     try:
-        response = httpx.post(f"{data['dashboard_url']}/api/restart/{args.component}", timeout=120)
+        response = httpx.post(
+            f"{data['dashboard_url']}/api/restart/{args.component}",
+            headers=_dashboard_headers(data),
+            timeout=120,
+        )
         response.raise_for_status()
     except httpx.HTTPError as exc:
         raise SystemExit(f"restart {args.component} failed: {exc}") from exc
     _json(response.json())
+
+
+def _restart_stack(args: argparse.Namespace) -> None:
+    """Full-stack restart: stop the current supervisor, then launch a fresh one."""
+    from .observability import read_runfile
+
+    data = read_runfile()
+    if data and not data.get("stale"):
+        try:
+            os.kill(int(data["pid"]), signal.SIGTERM)
+        except ProcessLookupError:
+            pass  # already gone
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            try:
+                os.kill(int(data["pid"]), 0)
+            except OSError:
+                break
+            time.sleep(0.2)
+        else:
+            raise SystemExit("supervisor did not stop within 20 seconds")
+    # No supervisor running (or just stopped): launch a fresh stack, exactly
+    # like `peaksMCP launch`.
+    command_launch(args)
 
 
 def command_logs(args: argparse.Namespace) -> None:
@@ -209,10 +257,20 @@ def command_convert(args: argparse.Namespace) -> None:
 
 
 def command_open(args: argparse.Namespace) -> None:
+    """Open the operator-console dashboard (default) or the managed notebook.
+
+    Invoked via ``peaksMCP dash`` (primary name) or the legacy alias
+    ``peaksMCP open``.
+    """
     data = _runfile()
     target = (
         data["jupyter_url"] + f"/lab/tree/{data.get('notebook_path', 'peaksMCP-runtime.ipynb')}?token={data['token']}"
-        if args.jupyter else data["dashboard_url"]
+        if args.jupyter
+        else (
+            f"{data['dashboard_url']}/?token={data['dashboard_token']}"
+            if data.get("dashboard_token")
+            else data["dashboard_url"]
+        )
     )
     webbrowser.open(target)
     print(target)
@@ -231,8 +289,10 @@ def build_parser() -> argparse.ArgumentParser:
     serve.set_defaults(func=command_serve)
     sub.add_parser("status").set_defaults(func=command_status)
     sub.add_parser("stop").set_defaults(func=command_stop)
-    restart = sub.add_parser("restart")
-    restart.add_argument("component", choices=("kernel", "mcp", "all"))
+    restart = sub.add_parser("restart", help="restart the whole stack, or one component (kernel|mcp|all)")
+    restart.add_argument("component", nargs="?", choices=("kernel", "mcp", "all"), default=None, help="component to restart; omit to restart the whole stack (like launch)")
+    restart.add_argument("--profile", default="default")
+    restart.add_argument("--timeout", type=float, default=90)
     restart.set_defaults(func=command_restart)
     logs = sub.add_parser("logs")
     logs.add_argument("-n", "--lines", type=int, default=100)
@@ -275,7 +335,11 @@ def build_parser() -> argparse.ArgumentParser:
     convert.add_argument("--cpu-limit", type=float, default=60)
     convert.add_argument("--force", action="store_true")
     convert.set_defaults(func=command_convert)
-    opened = sub.add_parser("open")
+    dash = sub.add_parser("dash", help="open the operator-console dashboard (or the managed notebook with --jupyter)")
+    dash.add_argument("--jupyter", action="store_true")
+    dash.set_defaults(func=command_open)
+    # Legacy alias for the renamed command.
+    opened = sub.add_parser("open", help=argparse.SUPPRESS)
     opened.add_argument("--jupyter", action="store_true")
     opened.set_defaults(func=command_open)
     return parser

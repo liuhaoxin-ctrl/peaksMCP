@@ -16,13 +16,21 @@ class UnsafeNotebookBackend:
         self.consent = consent
         self.audit = audit
 
-    def _authorize(self, operation: str, code: str = "") -> None:
+    def _authorize(self, operation: str, code: str = "", force_consent: bool = False, cell: dict[str, Any] | None = None) -> None:
         scan = scan_code(code) if code else None
         if scan and scan.blocked:
             self.audit.write(operation, "blocked", {"scan": scan.to_dict()})
             raise PermissionError(scan.block_reason or "code was blocked by security scanner")
-        if self.state.mode is not ExecutionMode.DANGEROUS:
-            approved = self.consent.request(operation, {"code": code[:4000], "scan": scan.to_dict() if scan else None})
+        # Patterns such as ``plt.savefig``, and destructive cell operations
+        # (delete / patch existing cells), require an explicit, informed consent
+        # in every mode (including dangerous): existing cells must never be
+        # deleted or overwritten unless the user actively approves it.
+        requires_consent = force_consent or bool(scan and scan.requires_explicit_consent)
+        if self.state.mode is not ExecutionMode.DANGEROUS or requires_consent:
+            details: dict[str, Any] = {"code": code[:4000], "scan": scan.to_dict() if scan else None}
+            if cell is not None:
+                details["cell"] = cell
+            approved = self.consent.request(operation, details)
             if not approved:
                 self.audit.write(operation, "denied", {})
                 raise PermissionError("user did not approve the notebook operation")
@@ -44,10 +52,23 @@ class UnsafeNotebookBackend:
         return self.state.bridge.request("add_cell", {"source": source, "cell_type": cell_type, "position": position})
 
     def delete_cell(self, index: int | None = None) -> dict[str, Any]:
-        self._authorize("notebook_delete_cell")
+        # Deleting an existing cell is destructive: always require explicit
+        # user approval, even in dangerous mode, and state which cell is targeted.
+        self._authorize(
+            "notebook_delete_cell",
+            force_consent=True,
+            cell={"index": index, "action": "delete"},
+        )
         return self.state.bridge.request("delete_cell", {"index": index})
 
     def apply_patch(self, index: int, source: str) -> dict[str, Any]:
-        self._authorize("notebook_apply_patch", source)
+        # Overwriting an existing cell is destructive: always require explicit
+        # user approval, even in dangerous mode, and state which cell is targeted.
+        self._authorize(
+            "notebook_apply_patch",
+            source,
+            force_consent=True,
+            cell={"index": index, "action": "overwrite"},
+        )
         return self.state.bridge.request("apply_patch", {"index": index, "source": source})
 

@@ -38,6 +38,8 @@ dev = [
   "pytest-timeout>=2.3",
   "ruff>=0.6",
   "build>=1.2",
+  "playwright>=1.50",
+  "httpx2>=2.0.0",
 ]
 
 [project.scripts]
@@ -48,6 +50,9 @@ jupyter_peaks = "peaksMCP.server.jupyter_peaks.mcp_server:JupyterPeaksMCPServer"
 
 [project.entry-points."ipython.extensions"]
 peaksMCP = "peaksMCP.server.jupyter_peaks.jupyter_mcp_extension:load_ipython_extension"
+
+[tool.setuptools]
+include-package-data = false
 
 [tool.setuptools.packages.find]
 include = ["peaksMCP*"]

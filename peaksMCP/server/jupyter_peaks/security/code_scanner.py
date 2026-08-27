@@ -46,13 +46,21 @@ class ScanResult:
     issues: list[SecurityIssue] = field(default_factory=list)
     block_reason: str | None = None
     syntax_error: dict[str, Any] | None = None
+    # Patterns that are not hard-blocked but require an explicit, informed
+    # user consent even in dangerous mode (e.g. ``plt.savefig`` — figures are
+    # shown inline by default and must not be written unless the user asks).
+    requires_explicit_consent: list[SecurityIssue] = field(default_factory=list)
 
     @property
     def is_safe(self) -> bool:
         return not self.blocked
 
     def to_dict(self) -> dict[str, Any]:
-        return {"is_safe": self.is_safe, "blocked": self.blocked, "block_reason": self.block_reason, "syntax_error": self.syntax_error, "issues": [issue.to_dict() for issue in self.issues]}
+        return {
+            "is_safe": self.is_safe, "blocked": self.blocked, "block_reason": self.block_reason,
+            "syntax_error": self.syntax_error, "issues": [issue.to_dict() for issue in self.issues],
+            "requires_explicit_consent": [issue.to_dict() for issue in self.requires_explicit_consent],
+        }
 
 
 class _Aliases(ast.NodeVisitor):
@@ -138,7 +146,7 @@ _SYSTEM_CALLS = {
 }
 _DYNAMIC_IMPORTS = {"__import__", "builtins.__import__", "importlib.import_module"}
 _PATH_METHODS = {"unlink", "write_text", "write_bytes", "rmdir", "rename", "replace", "symlink_to", "hardlink_to"}
-_ENV_MUTATORS = {"update", "setdefault", "pop", "clear", "__setitem__", "__delitem__", "setdefault"}
+_ENV_MUTATORS = {"update", "setdefault", "pop", "clear", "__setitem__", "__delitem__"}
 _DYN_BASES = {"globals", "locals", "vars", "__builtins__", "builtins"}
 _INDIRECT_TARGETS = {"exec", "eval", "compile", "__import__"}
 
@@ -206,6 +214,20 @@ def _dynamic_exec_target(node: ast.Call, aliases: _Aliases) -> str | None:
     return None
 
 
+def _is_savefig(node: ast.Call, aliases: _Aliases) -> bool:
+    """Detect figure saving: ``plt.savefig`` / ``fig.savefig`` / ``figure.savefig``.
+
+    Figures are shown inline by default and must not be written to disk unless
+    the user explicitly asks.  This is reported as ``requires_explicit_consent``
+    (never a hard block) so the user can still approve a deliberate save.
+    """
+    chain = _chain(node.func, aliases)
+    if not chain or chain[-1] != "savefig":
+        return False
+    keywords = ("pyplot", "plt", "figure", "fig", "matplotlib")
+    return any(any(keyword in part for keyword in keywords) for part in chain)
+
+
 # --------------------------------------------------------------------------- #
 # Public API                                                                   #
 # --------------------------------------------------------------------------- #
@@ -230,6 +252,7 @@ def scan_code(code: str) -> ScanResult:
     True
     """
     issues: list[SecurityIssue] = []
+    consent_issues: list[SecurityIssue] = []
     ipython = scan_ipython(code)
     for item in ipython.issues:
         issues.append(SecurityIssue(item.rule_id, item.description, RiskLevel.CRITICAL, code=item.matched))
@@ -256,6 +279,8 @@ def scan_code(code: str) -> ScanResult:
                 issues.append(SecurityIssue("SYS001", f"destructive path operation via {name}", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
             elif _is_env_mutation_call(node, aliases):
                 issues.append(SecurityIssue("ENV001", "process environment modification", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+            elif _is_savefig(node, aliases):
+                consent_issues.append(SecurityIssue("SAVE001", "figure save (savefig); figures are shown inline by default — approve only to write to disk", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
             target = _dynamic_exec_target(node, aliases)
             if target:
                 issues.append(SecurityIssue("EXEC001", f"dynamic code execution via indirect fetch of {target}", RiskLevel.CRITICAL, getattr(node, "lineno", 0), ast.unparse(node)))
@@ -269,4 +294,4 @@ def scan_code(code: str) -> ScanResult:
                 if _is_env_assignment(target, aliases):
                     issues.append(SecurityIssue("ENV001", "process environment modification", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
     reason = "; ".join(issue.description for issue in issues[:3]) if issues else None
-    return ScanResult(bool(issues), issues, reason)
+    return ScanResult(bool(issues), issues, reason, requires_explicit_consent=consent_issues)

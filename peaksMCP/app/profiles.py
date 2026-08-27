@@ -30,6 +30,7 @@ class DashboardConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     host: str = "127.0.0.1"
     port: int = Field(8765, ge=1, le=65535)
+    allow_remote: bool = False
 
 
 class Profile(BaseModel):

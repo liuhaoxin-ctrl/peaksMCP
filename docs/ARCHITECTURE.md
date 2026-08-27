@@ -22,9 +22,17 @@ Supervisor      -> JupyterLab process, health, logs, dashboard and restart recov
 - `app`: profile-driven supervisor, status API and static dashboard.
 - `claude_plugin`: Claude Desktop MCP declaration and analysis skill.
 
+The dashboard is part of the supervisor lifecycle. It publishes the runfile only after
+Uvicorn has bound successfully, authenticates API/WebSocket access with a separate
+operator-console token, and rejects non-loopback binding unless a profile explicitly sets
+`dashboard.allow_remote: true`.
+
+Kernel restarts are verified with a per-kernel instance ID. Recovery cannot report READY
+until that ID changes and the extension, Comm, MCP initialize, tool inventory and status
+tool have all recovered.
+
 ## Development entry points
 
 - `peaksMCP launch`
 - `%load_ext peaksMCP.server.jupyter_peaks.jupyter_mcp_extension`
 - `pytest tests`
-

@@ -15,7 +15,9 @@ Ask the user through `askuserquestion` when a physical input such as photon ener
 polarization geometry, temperature or angle convention cannot be derived from notebook variables
 or experiment metadata. Never invent missing experimental values.
 
-Use Matplotlib inline output. Verify axis names, units, color normalization, labels, panel order and
+Use Matplotlib inline output. Never save figures to disk (`plt.savefig` / `fig.savefig`)
+unless the user explicitly asks for a saved file — saving triggers an extra consent prompt.
+Verify axis names, units, color normalization, labels, panel order and
 DPI before presenting a figure as publication-ready. Read `references/workflows.md` for workflow
 selection and recovery guidance.
 
