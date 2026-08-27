@@ -72,7 +72,56 @@ def test_converter_embeds_matching_metadata_and_protects_output(monkeypatch, tmp
     assert json.loads(opened.attrs["experiment_metadata_json"])["temperature"]["sample"] == 9.4
     opened.close()
     assert convert_pxt(source, target, metadata_path=metadata).status == "skipped"
-    assert not target.with_suffix(".nc.part").exists()
+    assert not list(tmp_path.glob(f".{target.name}.*.part"))
+
+
+def test_force_replaces_existing_output_without_unlinking_target(monkeypatch, tmp_path):
+    source = tmp_path / "BP_0005.pxt"
+    source.touch()
+    target = tmp_path / "BP_0005.nc"
+    target.write_bytes(b"previous-valid-output")
+    monkeypatch.setattr(
+        "peaksMCP.pxt_utils.converter.load_pxt",
+        lambda _path: xr.DataArray(
+            np.arange(6).reshape(2, 3),
+            dims=("eV", "theta_par"),
+            attrs={"units": "counts"},
+        ),
+    )
+    original_unlink = type(target).unlink
+
+    def reject_target_unlink(path, *args, **kwargs):
+        if path == target:
+            raise AssertionError("force conversion must not unlink the published target")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(type(target), "unlink", reject_target_unlink)
+    result = convert_pxt(source, target, force=True)
+    assert result.status == "converted"
+    with xr.open_dataarray(target) as opened:
+        assert opened.shape == (2, 3)
+    assert not list(tmp_path.glob(f".{target.name}.*.part"))
+
+
+def test_non_force_does_not_overwrite_concurrent_publisher(monkeypatch, tmp_path):
+    source = tmp_path / "BP_0005.pxt"
+    source.touch()
+    target = tmp_path / "BP_0005.nc"
+
+    def publish_competing_output(_path):
+        target.write_bytes(b"competing-output")
+        return xr.DataArray(
+            np.ones((2, 3)),
+            dims=("eV", "theta_par"),
+            attrs={"units": "counts"},
+        )
+
+    monkeypatch.setattr("peaksMCP.pxt_utils.converter.load_pxt", publish_competing_output)
+    result = convert_pxt(source, target, force=False)
+    assert result.status == "skipped"
+    assert result.warnings == ["output was created by another conversion"]
+    assert target.read_bytes() == b"competing-output"
+    assert not list(tmp_path.glob(f".{target.name}.*.part"))
 
 
 @pytest.mark.parametrize(("name", "expected"), [("BP_0005.pxt", 5), ("scan_42.pxt", 42), ("scan.pxt", None)])

@@ -107,7 +107,8 @@ def test_stale_error_is_raised_by_search_and_get(monkeypatch):
     state.api_index = build_index()
     state.api_index.fingerprint = "changed-after-build"  # simulate stale
     mcp = FakeMCP()
-    register_safe_tools(mcp, state, _StubNotebook())  # type: ignore[arg-type]
+    from peaksMCP.server.jupyter_peaks.security import AuditLogger
+    register_safe_tools(mcp, state, _StubNotebook(), AuditLogger("/tmp/test-audit.log"))  # type: ignore[arg-type]
     search = mcp.registered["peaks_search_api"]
     get = mcp.registered["peaks_get_api"]
     for call in (

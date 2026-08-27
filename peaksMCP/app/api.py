@@ -12,6 +12,7 @@ import asyncio
 import json
 import secrets
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
 _INSPECTOR_ALLOWED = {
     "peaks_search_api", "peaks_get_api", "notebook_server_status",
     "notebook_kernel_status", "notebook_list_variables", "notebook_read_variable",
+    "notebook_read_active_cell", "notebook_read_active_cell_output",
 }
 _DASHBOARD_COOKIE = "peaksmcp_dashboard"
 
@@ -51,16 +53,23 @@ def _auto_load_into_notebook(supervisor: RuntimeSupervisor, nc_path: str | None)
     if not nc_path:
         return False
     load_code = f"from peaks import load\ndata = load({json.dumps(str(nc_path))})"
-    bridge_code = (
-        "import threading as _t;"
-        "from peaksMCP.server.jupyter_peaks.jupyter_mcp_extension import get_server as _gs;"
-        "def _do():"
-        "    try:"
-        f"        _gs().state.bridge.request('execute_code', {{'code': {json.dumps(load_code)}}}, timeout=30)"
-        "    except Exception as _e:"
-        "        print('auto-load skipped:', _e)"
-        "_t.Thread(target=_do, daemon=True).start()"
-    )
+    # Real multi-line source (a single-line ``def _do(): try:`` chain is invalid
+    # Python and would be silently swallowed by the except below).
+    bridge_code = f'''import threading as _t
+from peaksMCP.server.jupyter_peaks.jupyter_mcp_extension import get_server as _gs
+
+def _do():
+    try:
+        _gs().state.bridge.request('execute_code', {{'code': {json.dumps(load_code)}}}, timeout=30)
+    except Exception as _e:
+        print('auto-load skipped:', _e)
+
+_t.Thread(target=_do, daemon=True).start()
+'''
+    try:
+        compile(bridge_code, "<peaksMCP-auto-load>", "exec")
+    except SyntaxError:
+        return False
     try:
         supervisor.execute_kernel(bridge_code, timeout=10)
         return True
@@ -300,6 +309,19 @@ def create_app(supervisor: RuntimeSupervisor) -> Starlette:
             payload["loaded_in_notebook"] = converted[0].output
         return JSONResponse(payload)
 
+    async def stop(request: Request) -> JSONResponse:
+        """Stop the whole stack (supervisor + JupyterLab + kernel + MCP + dashboard)."""
+        require_auth(request, mutation=True)
+
+        def _shutdown() -> None:
+            try:
+                supervisor.stop()
+            except Exception:
+                pass
+
+        threading.Thread(target=_shutdown, daemon=True).start()
+        return JSONResponse({"stopping": True})
+
     async def snapshot_notebook(request: Request) -> JSONResponse:
         """Save the current notebook as a timestamped snapshot without touching
         the original file (no delete / no overwrite), so a half-finished session
@@ -395,6 +417,7 @@ def create_app(supervisor: RuntimeSupervisor) -> Starlette:
         Route("/api/logs", logs), Route("/api/doctor", doctor), Route("/api/profiles", profiles),
         Route("/api/start-mcp", start_mcp, methods=["POST"]),
         Route("/api/restart/{component}", restart, methods=["POST"]),
+        Route("/api/stop", stop, methods=["POST"]),
         Route("/api/mcp/tool", tool_call, methods=["POST"]),
         Route("/api/metadata/translate", translate, methods=["POST"]),
         Route("/api/convert", convert, methods=["POST"]),

@@ -27,9 +27,11 @@ Uvicorn has bound successfully, authenticates API/WebSocket access with a separa
 operator-console token, and rejects non-loopback binding unless a profile explicitly sets
 `dashboard.allow_remote: true`.
 
-Kernel restarts are verified with a per-kernel instance ID. Recovery cannot report READY
-until that ID changes and the extension, Comm, MCP initialize, tool inventory and status
-tool have all recovered.
+Kernel restarts are verified with a per-kernel instance ID. With a live frontend
+(``require_comm``) recovery reports READY only after that ID changes and the extension,
+Comm, MCP initialize, tool inventory and status tool have all recovered; when the
+frontend is offline the restart degrades to a plain REST restart and reports READY
+without the Comm stage (kernel + MCP still fully recovered).
 
 ## Development entry points
 

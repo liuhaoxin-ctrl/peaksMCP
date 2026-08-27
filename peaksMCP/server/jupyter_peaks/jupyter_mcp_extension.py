@@ -33,6 +33,7 @@ def _start(ipython: Any, host: str | None = None, port: int | None = None) -> Ju
             _state,
             host=host or os.environ.get("PEAKSMCP_HOST", "127.0.0.1"),
             port=port or int(os.environ.get("PEAKSMCP_PORT", "8123")),
+            allow_remote=os.environ.get("PEAKSMCP_ALLOW_REMOTE", "false").lower() == "true",
         )
     # Pre-warm the peaks import on the main (extension-loading) thread. The first
     # peaks_search_api call runs on the FastMCP background thread, where an import
@@ -102,9 +103,15 @@ class PeaksMCPMagics(Magics):
 
 
 def load_ipython_extension(ipython: Any) -> None:
-    """Register magics, Comm target and start the HTTP MCP server."""
+    """Register magics and (unless autostart is disabled) start the MCP server.
+
+    ``PEAKSMCP_AUTOSTART=false`` (baked into the kernelspec startup script when
+    the profile has ``autostart: false``) registers the magics only; the user
+    starts the MCP explicitly with ``%peaksMCP_start``.
+    """
     ipython.register_magics(PeaksMCPMagics)
-    _start(ipython)
+    if os.environ.get("PEAKSMCP_AUTOSTART", "true").lower() != "false":
+        _start(ipython)
 
 
 def unload_ipython_extension(ipython: Any) -> None:

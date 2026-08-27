@@ -16,4 +16,10 @@ jobs:
         with:
           name: peaksMCP-dist
           path: dist/*
+      # The Claude plugin (skills + .mcp.json) is not part of the Python wheel;
+      # ship it as its own release artifact.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: peaksMCP-claude-plugin
+          path: claude_plugin/*
 

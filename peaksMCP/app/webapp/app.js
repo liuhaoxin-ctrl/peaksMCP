@@ -169,6 +169,24 @@ function renderImages(value) {
   ).join('');
 }
 
+$('#read-output-button').addEventListener('click', async () => {
+  $('#result').style.display = 'block';
+  $('#result').textContent = 'Reading output…';
+  try {
+    const r = await fetch('/api/mcp/tool', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'notebook_read_active_cell_output', arguments: {} })
+    }).then(x => x.json());
+    $('#result').textContent = pretty(r);
+    renderImages(r);
+    toast('Output read', 'success');
+  } catch (e) {
+    $('#result').textContent = String(e);
+    toast('Read failed: ' + e.message, 'error');
+  }
+});
+
 // =====================
 // Search
 // =====================
@@ -215,7 +233,14 @@ async function postAction(path, label, options = {}) {
     $('#action-result').style.display = 'block';
     $('#action-result').textContent = `${label}…`;
     try {
-      const r = await fetch(path, { method: 'POST' }).then(x => x.json());
+      const resp = await fetch(path, { method: 'POST' });
+      const r = await resp.json();
+      if (!resp.ok) {
+        $('#action-result').textContent = pretty(r);
+        toast(`${label} failed`, 'error');
+        refresh();
+        return;
+      }
       $('#action-result').textContent = pretty(r);
       toast(`${label} completed`, 'success');
     } catch (e) {
@@ -241,6 +266,10 @@ $('#restart-all').addEventListener('click', () => postAction('/api/restart/all',
 }));
 
 $('#snapshot-button').addEventListener('click', () => postAction('/api/notebook/snapshot', 'Save snapshot'));
+$('#stop-button').addEventListener('click', () => postAction('/api/stop', 'Stop', {
+  confirm: true,
+  confirmMsg: 'Stop the whole stack (JupyterLab + kernel + MCP + dashboard)?',
+}));
 
 $('#doctor-button').addEventListener('click', async () => {
   const status = $('#doctor-status');

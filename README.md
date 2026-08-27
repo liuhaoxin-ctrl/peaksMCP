@@ -38,7 +38,7 @@ pip install -e '.[dev]'
 ### 4. Build and install the JupyterLab extension
 
 ```bash
-cd extensions/jupyterlab && jlpm install && jlpm build:prod && cd ../..
+cd peaksMCP/extensions/jupyterlab && jlpm install && jlpm build:prod && cd ../..
 peaksMCP install-extension
 ```
 

@@ -39,10 +39,29 @@ def test_dangerous_patterns_are_blocked(code):
     "getattr(__builtins__, 'exec')('x=1')",
     "globals()['eval']('1+1')",
     "vars()['compile']('x=1', '', 'exec')",
+    # indirect fetch of system / file calls (P0).
+    "import os\ngetattr(os, 'system')('id')",
+    "import os\nf = os.system\nf('id')",
+    "import builtins\ngetattr(builtins, 'open')('/tmp/x', 'w')",
 ])
 def test_bypass_patterns_are_blocked(code):
     """Regression: every previously-reported scanner bypass must now be blocked."""
     assert scan_code(code).blocked
+
+
+@pytest.mark.parametrize("code", [
+    # File writes / network egress require explicit consent (never hard-block).
+    "import numpy as np\nnp.save('/tmp/x.npy', data)",
+    "import pandas as pd\ndf.to_csv('out.csv')",
+    "import json\njson.dump(data, f)",
+    "import requests\nrequests.post('http://example.com', data=data)",
+    "import requests\nrequests.get('http://example.com')",
+    "import httpx\nhttpx.post('http://example.com')",
+])
+def test_file_write_and_network_require_explicit_consent(code):
+    result = scan_code(code)
+    assert result.is_safe  # never a hard block
+    assert any(issue.rule_id in {"SAVE002", "NET001"} for issue in result.requires_explicit_consent)
 
 
 @pytest.mark.parametrize("code", [
@@ -106,7 +125,11 @@ def test_destructive_cell_ops_require_consent_even_in_dangerous_mode():
     """apply_patch / delete_cell must ask for explicit consent in every mode,
     including dangerous: existing cells must never be deleted or overwritten
     unless the user actively approves."""
-    from peaksMCP.server.jupyter_peaks.backend import ExecutionMode, SharedState, UnsafeNotebookBackend
+    from peaksMCP.server.jupyter_peaks.backend import (
+        ExecutionMode,
+        SharedState,
+        UnsafeNotebookBackend,
+    )
 
     class FakeIPython:
         user_ns = {}
@@ -137,6 +160,56 @@ def test_destructive_cell_ops_require_consent_even_in_dangerous_mode():
     with pytest.raises(PermissionError):
         notebook.delete_cell(0)
     assert consent.calls == ["notebook_apply_patch", "notebook_delete_cell"]
+
+
+def test_execute_active_cell_scans_live_source_not_cache():
+    """execute_active_cell must read the LIVE cell source through the frontend
+    and scan/authorise that same source (TOCTOU: the cached active_cell goes
+    stale when the user edits a cell without switching away)."""
+    from peaksMCP.server.jupyter_peaks.backend import (
+        ExecutionMode,
+        SharedState,
+        UnsafeNotebookBackend,
+    )
+
+    class FakeIPython:
+        user_ns = {}
+
+    live_source = "print('live edited code')"
+    executed: list[dict] = []
+
+    class FakeBridge:
+        connected = True
+
+        def request(self, operation, payload=None, timeout=60):
+            if operation == "read_active_cell":
+                return {"id": "cell-42", "source": live_source, "index": 3}
+            executed.append({"operation": operation, "payload": payload or {}})
+            return {"ok": True}
+
+    state = SharedState(FakeIPython())
+    state.bridge = FakeBridge()
+    state.mode = ExecutionMode.UNSAFE  # non-dangerous so consent is actually invoked
+    # The stale cache deliberately differs from the live source.
+    state.active_cell = {"id": "cell-42", "source": "print('old cached code')", "index": 3}
+
+    class TrackingConsent(ConsentManager):
+        def __init__(self) -> None:
+            super().__init__()
+            self.seen_codes: list[str] = []
+
+        def request(self, _operation, details, timeout=60):
+            self.seen_codes.append(str(details.get("code")))
+            return True
+
+    consent = TrackingConsent()
+    notebook = UnsafeNotebookBackend(state, consent, AuditLogger("/tmp/peaksmcp-test-audit.jsonl"))
+    notebook.execute_active_cell(timeout=5)
+
+    # The scanned/authorised source is the LIVE one, not the stale cache.
+    assert consent.seen_codes == [live_source]
+    # And the frontend receives the expected id + source for its TOCTOU re-check.
+    assert executed[0]["payload"] == {"expected_id": "cell-42", "expected_source": live_source}
 
 
 def test_audit_is_jsonl_and_private(tmp_path):

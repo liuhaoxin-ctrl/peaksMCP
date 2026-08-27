@@ -7,6 +7,38 @@ from starlette.testclient import TestClient
 from peaksMCP.app.api import create_app
 
 
+def test_auto_load_bridge_code_is_valid_multiline_python():
+    """The kernel bridge code generated for convert→auto-load must compile as
+    exec (a single-line ``def _do(): try:`` chain is invalid Python and used to
+    be silently swallowed, making auto_loaded always False)."""
+    from peaksMCP.app.api import _auto_load_into_notebook
+
+    captured: dict[str, str] = {}
+
+    class FakeSupervisor:
+        def execute_kernel(self, code, timeout=10):
+            captured["code"] = code
+            return {}
+
+    result = _auto_load_into_notebook(FakeSupervisor(), "/data/BP_0001.nc")
+    assert result is True
+    code = captured["code"]
+    compile(code, "<auto-load>", "exec")  # must be valid Python
+    assert "def _do():" in code
+    assert "from peaks import load" in code
+    assert "data = load(" in code
+
+
+def test_auto_load_skips_without_output():
+    from peaksMCP.app.api import _auto_load_into_notebook
+
+    class _Never:
+        def execute_kernel(self, *_a, **_k):
+            raise AssertionError("execute_kernel must not be called without an output")
+
+    assert _auto_load_into_notebook(_Never(), None) is False
+
+
 class _FakeJupyter:
     def poll(self):  # process alive -> None
         return None

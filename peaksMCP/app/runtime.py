@@ -23,7 +23,7 @@ from jupyter_client.connect import find_connection_file
 from peaksMCP.observability import remove_runfile, write_runfile
 from peaksMCP.transport import check_http_mcp_server
 
-from .kernel import install_kernel, kernel_installed
+from .kernel import install_kernel, kernel_installed, kernel_spec_state
 from .profiles import Profile
 
 
@@ -70,6 +70,15 @@ class RuntimeSupervisor:
         """Start JupyterLab, create the managed kernel and serve the dashboard."""
         if not kernel_installed(self.profile.jupyter.kernel_name):
             install_kernel(self.profile)
+        else:
+            # Reinstall the kernelspec when the baked mode/autostart no longer
+            # match the profile: otherwise a profile switched from dangerous
+            # back to safe would keep starting with the old dangerous kernelspec.
+            installed = kernel_spec_state(self.profile.jupyter.kernel_name)
+            expected = {"mode": self.profile.mcp.mode, "autostart": self.profile.mcp.autostart}
+            if installed is None or installed.get("mode") != expected["mode"] or installed.get("autostart") != expected["autostart"]:
+                self._log("supervisor", f"kernelspec mode/autostart changed; reinstalling {self.profile.jupyter.kernel_name}")
+                install_kernel(self.profile, replace=True)
         command = [
             sys.executable, "-m", "jupyterlab", "--no-browser",
             f"--ServerApp.ip={self.profile.jupyter.host}",
@@ -219,6 +228,11 @@ class RuntimeSupervisor:
     def _kernel_client(self, timeout: float = 20) -> BlockingKernelClient:
         if not self.kernel_id:
             raise RuntimeError("no managed kernel")
+        # The managed JupyterLab runs with JUPYTER_CONFIG_DIR under PEAKSMCP_HOME;
+        # find_connection_file must look there or it may resolve a stale kernel
+        # from the default runtime dir (wrong kernel, wrong extension state).
+        home = Path(os.environ.get("PEAKSMCP_HOME", Path.home() / ".peaksMCP"))
+        os.environ.setdefault("JUPYTER_CONFIG_DIR", str(home / "jupyter"))
         connection = find_connection_file(f"kernel-{self.kernel_id}.json")
         client = BlockingKernelClient(connection_file=connection)
         client.load_connection_file()

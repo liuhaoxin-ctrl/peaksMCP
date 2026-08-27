@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from functools import wraps
 from typing import Any
 
 from fastmcp import FastMCP
@@ -13,6 +14,7 @@ from peaksMCP.discovery.index import IndexStaleError, build_index
 from peaksMCP.discovery.signatures import describe_api
 
 from ..backend import NotebookBackend, SharedState, UnsafeNotebookBackend
+from ..security import AuditLogger
 
 
 def _require_index(state: SharedState):
@@ -28,9 +30,38 @@ def _require_index(state: SharedState):
     return state.api_index
 
 
-def _register(mcp: FastMCP, name: str, function: Any) -> None:
+def _summarize_arguments(args: tuple, kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Compact, JSON-safe argument summary for the audit trail."""
+    summary: dict[str, Any] = {}
+    for index, value in enumerate(args):
+        text = str(value)
+        summary[str(index)] = text[:200]
+    for key, value in kwargs.items():
+        text = str(value)
+        summary[str(key)] = text[:200]
+    return summary
+
+
+def _register(mcp: FastMCP, name: str, function: Any, audit: AuditLogger) -> None:
     metadata = tool_metadata(name)
-    mcp.tool(name=name, title=metadata["title"], description=metadata["description"])(function)
+
+    @wraps(function)
+    def audited(*args, **kwargs):
+        # Every tool call is audited (called/ok/error), not only authorisation
+        # decisions — the audit log is the full tool-call trail.
+        audit.write(name, "called", {"args": _summarize_arguments(args, kwargs)})
+        try:
+            result = function(*args, **kwargs)
+        except Exception as exc:
+            audit.write(
+                name, "error",
+                {"error_type": type(exc).__name__, "error": str(exc)[:500]},
+            )
+            raise
+        audit.write(name, "ok", {})
+        return result
+
+    mcp.tool(name=name, title=metadata["title"], description=metadata["description"])(audited)
 
 
 def _output_content(notebook: NotebookBackend) -> list[TextContent | ImageContent]:
@@ -55,7 +86,7 @@ def _output_content(notebook: NotebookBackend) -> list[TextContent | ImageConten
     return blocks or [TextContent(type="text", text="No active-cell output.")]
 
 
-def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBackend) -> None:
+def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBackend, audit: AuditLogger) -> None:
     """Register the twelve read-only and guidance tools.
 
     Parameters
@@ -101,10 +132,10 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
         "notebook_wait_for_kernel": notebook.wait_for_kernel,
     }
     for name, function in functions.items():
-        _register(mcp, name, function)
+        _register(mcp, name, function, audit)
 
 
-def register_unsafe_tools(mcp: FastMCP, notebook: UnsafeNotebookBackend) -> None:
+def register_unsafe_tools(mcp: FastMCP, notebook: UnsafeNotebookBackend, audit: AuditLogger) -> None:
     """Register the five consent-gated mutation tools.
 
     Parameters
@@ -126,4 +157,4 @@ def register_unsafe_tools(mcp: FastMCP, notebook: UnsafeNotebookBackend) -> None
         "notebook_apply_patch": notebook.apply_patch,
     }
     for name, function in functions.items():
-        _register(mcp, name, function)
+        _register(mcp, name, function, audit)

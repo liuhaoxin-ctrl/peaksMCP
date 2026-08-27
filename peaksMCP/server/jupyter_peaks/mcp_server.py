@@ -17,10 +17,13 @@ from .security import AuditLogger, ConsentManager
 class JupyterPeaksMCPServer:
     """Own FastMCP, notebook backends and its in-kernel HTTP listener."""
 
-    def __init__(self, state: SharedState, host: str = "127.0.0.1", port: int = 8123) -> None:
+    _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+
+    def __init__(self, state: SharedState, host: str = "127.0.0.1", port: int = 8123, allow_remote: bool = False) -> None:
         self.state = state
         self.host = host
         self.port = int(port)
+        self.allow_remote = allow_remote
         self.audit = AuditLogger()
         self.consent = ConsentManager(state.bridge)
         self.notebook = NotebookBackend(state)
@@ -44,11 +47,11 @@ class JupyterPeaksMCPServer:
             ),
             strict_input_validation=True,
         )
-        register_safe_tools(mcp, self.state, self.notebook)
+        register_safe_tools(mcp, self.state, self.notebook, self.audit)
         # All tools are always exposed to the model. The security mode only
         # controls whether execution/editing asks for in-notebook consent
         # (safe/unsafe) or auto-approves after the static scan (dangerous).
-        register_unsafe_tools(mcp, self.unsafe)
+        register_unsafe_tools(mcp, self.unsafe, self.audit)
         return mcp
 
     def set_mode(self, mode: str | ExecutionMode) -> None:
@@ -59,6 +62,12 @@ class JupyterPeaksMCPServer:
         """Start the HTTP MCP server on a daemon thread."""
         if self.is_running():
             return
+        if self.host not in self._LOOPBACK and not self.allow_remote:
+            raise RuntimeError(
+                f"MCP refuses to bind to non-loopback host {self.host!r}: the in-kernel "
+                "listener has no authentication and would expose the notebook to the "
+                "network. Set `mcp.allow_remote: true` only with auth/TLS in front."
+            )
         app = self.mcp.http_app(path="/mcp", stateless_http=False)
         config = uvicorn.Config(app, host=self.host, port=self.port, log_level="warning", lifespan="on")
         self._uvicorn = uvicorn.Server(config)

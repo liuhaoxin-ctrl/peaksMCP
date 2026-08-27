@@ -79,7 +79,12 @@ def supervisor(tmp_path_factory):
 
     home = tmp_path_factory.mktemp("peaksmcp_e2e_home")
     saved_home = os.environ.get("PEAKSMCP_HOME")
+    saved_cwd = os.getcwd()
     os.environ["PEAKSMCP_HOME"] = str(home)
+    # Isolate the notebook working directory: JupyterLab runs with the
+    # supervisor's cwd, so without this the e2e would mutate the real
+    # peaksMCP-runtime.ipynb (test cells leaking into the user notebook).
+    os.chdir(str(home))
     profile = Profile(
         name="e2e",
         jupyter={"host": "127.0.0.1", "port": _free_port(), "kernel_name": "peaksmcp"},
@@ -94,10 +99,105 @@ def supervisor(tmp_path_factory):
         raise
     yield supervisor
     supervisor.stop()
+    os.chdir(saved_cwd)
     if saved_home is None:
         os.environ.pop("PEAKSMCP_HOME", None)
     else:
         os.environ["PEAKSMCP_HOME"] = saved_home
+
+
+def test_plot_cell_image_flows_through_comm_to_mcp(supervisor):
+    """Real image pipeline: execute a Matplotlib cell -> Jupyter produces a PNG
+    output -> frontend Comm pushes it -> MCP ImageContent is served.
+
+    Guards against stale ``active_cell_output`` (previously only published on
+    activeCellChanged, so a freshly inserted cell's late-arriving image was
+    never synced).
+    """
+    import concurrent.futures
+
+    from playwright.sync_api import sync_playwright
+
+    def _tool_call_thread(name, arguments):
+        # asyncio.run cannot run inside sync_playwright's event loop; run the
+        # MCP call on a worker thread instead.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(_tool_call, supervisor, name, arguments).result(timeout=90)
+
+    # Wait until the extension has loaded and the in-kernel MCP is serving.
+    ready = supervisor.wait_ready(timeout=120, require_comm=False)
+    assert ready["ready"], ready
+    # Dangerous mode: execution/editing tools auto-approve, so no consent dialog.
+    supervisor.execute_kernel(
+        "from peaksMCP.server.jupyter_peaks.jupyter_mcp_extension import get_server as _g; _g().set_mode('dangerous')",
+        timeout=30,
+    )
+    notebook_url = supervisor.status()["notebook_url"] + f"?token={supervisor.token}"
+    with sync_playwright() as playwright:
+        try:
+            browser = playwright.chromium.launch(
+                headless=True, channel="chrome",
+                args=["--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows", "--disable-gpu"],
+            )
+        except Exception as exc:  # pragma: no cover - environment dependent
+            pytest.skip(f"Chrome not launchable: {exc}")
+        page = browser.new_page()
+        page.goto(notebook_url, wait_until="domcontentloaded")
+        page.wait_for_selector(".jp-Notebook", timeout=90000)
+        try:
+            deadline = time.monotonic() + 90
+            while time.monotonic() < deadline:
+                status = _dashboard(supervisor, "/api/status")
+                if (status.get("components") or {}).get("comm", {}).get("state") == "ready":
+                    break
+                time.sleep(1)
+            # Execute a plotting cell through the MCP tool (frontend runs it).
+            # New kernels have no matplotlib backend configured; enable inline so
+            # the PNG lands in the cell output (matches the user notebooks that
+            # call matplotlib.use(inline) explicitly).
+            # Execute a plotting cell through the MCP tool (frontend runs it).
+            # matplotlib inline display needs IPython integration; to keep the
+            # executed code plain-Python (scanner-parsable) we render the PNG via
+            # canvas.print_png and display it as an IPython Image — this exercises
+            # the exact pipeline: cell produces an image/png output -> frontend
+            # Comm push -> MCP ImageContent.
+            result = _tool_call_thread("notebook_execute_code", {
+                "code": (
+                    "import io\n"
+                    "import matplotlib.pyplot as plt\n"
+                    "from IPython.display import Image, display\n"
+                    "fig = plt.figure(); plt.plot([1, 2, 3])\n"
+                    "buf = io.BytesIO()\n"
+                    "fig.canvas.print_png(buf)\n"
+                    "display(Image(data=buf.getvalue(), format='png'))\n"
+                    "print('png bytes:', len(buf.getvalue()))"
+                ),
+            })
+            assert result is not None
+            # Wait for the PNG output to arrive and be served as ImageContent.
+            deadline = time.monotonic() + 60
+            image_seen = False
+            while time.monotonic() < deadline:
+                output = _tool_call_thread("notebook_read_active_cell_output", {})
+                # With image data the tool returns a list of content objects;
+                # without any output it returns {"content": [text]}.
+                blocks = (
+                    output
+                    if isinstance(output, list)
+                    else (output.get("content", []) if isinstance(output, dict) else [])
+                )
+                if any(
+                    (isinstance(b, dict) and b.get("type") == "image")
+                    or (hasattr(b, "type") and b.type == "image")
+                    or (isinstance(b, str) and "type='image'" in b)
+                    for b in blocks
+                ):
+                    image_seen = True
+                    break
+                time.sleep(1)
+            assert image_seen, f"no image served; output={output!r}"
+        finally:
+            browser.close()
 
 
 def test_bringup_reaches_ready(supervisor):

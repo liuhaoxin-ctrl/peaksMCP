@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -118,6 +120,41 @@ def _safe_attrs(attributes: dict[str, Any]) -> dict[str, Any]:
     return safe
 
 
+def _temporary_output(target: Path) -> Path:
+    """Reserve a unique temporary file in the destination filesystem."""
+    descriptor, name = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".part",
+        dir=target.parent,
+    )
+    os.close(descriptor)
+    return Path(name)
+
+
+def _publish_output(temporary: Path, target: Path, *, force: bool) -> bool:
+    """Atomically publish a completed NetCDF without violating overwrite policy.
+
+    ``force=True`` uses ``os.replace`` so an existing valid output remains in
+    place until the new file is complete. Without force, a same-filesystem hard
+    link provides an atomic create-if-absent operation; it returns ``False`` if
+    another conversion published the target while this worker was running.
+    """
+    if force:
+        os.replace(temporary, target)
+        return True
+    try:
+        os.link(temporary, target)
+    except FileExistsError:
+        return False
+    try:
+        temporary.unlink()
+    except OSError:
+        # The target already references the complete inode; failure to remove the
+        # private staging name must not turn a successful conversion into failure.
+        pass
+    return True
+
+
 def convert_pxt(
     input_path: str | Path,
     output_path: str | Path | None = None,
@@ -164,7 +201,7 @@ def convert_pxt(
             status="skipped",
             warnings=["output exists"],
         )
-    temporary = target.with_suffix(target.suffix + ".part")
+    temporary: Path | None = None
     try:
         data = load_pxt(source)
         document = _load_metadata(metadata_path)
@@ -185,12 +222,18 @@ def convert_pxt(
         for coordinate in data.coords.values():
             coordinate.attrs = _safe_attrs(dict(coordinate.attrs))
         target.parent.mkdir(parents=True, exist_ok=True)
-        if temporary.exists():
-            temporary.unlink()
+        temporary = _temporary_output(target)
         data.to_netcdf(temporary, engine="h5netcdf")
-        if target.exists() and force:
-            target.unlink()
-        temporary.replace(target)
+        if not _publish_output(temporary, target, force=force):
+            temporary.unlink()
+            return ConversionItem(
+                input=str(source),
+                output=str(target),
+                index=index,
+                status="skipped",
+                warnings=["output was created by another conversion"],
+            )
+        temporary = None
         return ConversionItem(
             input=str(source),
             output=str(target),
@@ -199,7 +242,7 @@ def convert_pxt(
             warnings=warnings,
         )
     except Exception as exc:
-        if temporary.exists():
+        if temporary is not None and temporary.exists():
             temporary.unlink()
         return ConversionItem(
             input=str(source),

@@ -244,10 +244,20 @@ def command_ping(args: argparse.Namespace) -> None:
 
 
 def command_translate(args: argparse.Namespace) -> None:
-    from .pxt_utils import translate_datasheet
+    from .pxt_utils import convert_path, translate_datasheet
     output = args.output or str(Path(args.csv).with_name("experiment_metadata.json"))
     result = translate_datasheet(args.csv, output)
-    _json({"output": output, "records": len(result.records), "warnings": result.warnings})
+    payload = {"output": output, "records": len(result.records), "warnings": result.warnings}
+    if args.pxt_dir:
+        # --pxt-dir: immediately convert the folder with the freshly translated
+        # metadata (default sibling <folder>_netcdf output).
+        report = convert_path(args.pxt_dir, metadata_path=output)
+        payload["converted"] = {
+            "matched": len(report.items),
+            "converted": report.converted,
+            "failed": report.failed,
+        }
+    _json(payload)
 
 
 def command_convert(args: argparse.Namespace) -> None:

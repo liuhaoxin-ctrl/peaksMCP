@@ -24,6 +24,11 @@ class MCPConfig(BaseModel):
     port: int = Field(8123, ge=1, le=65535)
     mode: Literal["safe", "unsafe", "dangerous"] = "safe"
     autostart: bool = True
+    # The in-kernel MCP listener has no authentication.  Binding to anything
+    # other than loopback exposes notebook contents and (in dangerous mode)
+    # code execution to the network; this requires an explicit opt-in and the
+    # operator is responsible for adding auth/TLS in front of the listener.
+    allow_remote: bool = False
 
 
 class DashboardConfig(BaseModel):

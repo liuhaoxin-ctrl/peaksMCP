@@ -81,6 +81,30 @@ class _Aliases(ast.NodeVisitor):
     def resolve(self, name: str) -> str:
         return self.names.get(name, name)
 
+    def collect_assignments(self, tree: ast.AST) -> None:
+        """Track assignment aliases such as ``f = os.system`` so that ``f("id")``
+        resolves to ``os.system``.  Iterated to a fixpoint for chains like
+        ``g = f; f = os.system``."""
+        for _ in range(3):
+            changed = False
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+                    continue
+                target = node.targets[0]
+                if not isinstance(target, ast.Name):
+                    continue
+                if isinstance(node.value, ast.Attribute):
+                    resolved = ".".join(_chain(node.value, self))
+                elif isinstance(node.value, ast.Name):
+                    resolved = self.resolve(node.value.id)
+                else:
+                    continue
+                if self.names.get(target.id) != resolved:
+                    self.names[target.id] = resolved
+                    changed = True
+            if not changed:
+                break
+
 
 # --------------------------------------------------------------------------- #
 # Canonical attribute-chain extraction                                         #
@@ -150,6 +174,21 @@ _ENV_MUTATORS = {"update", "setdefault", "pop", "clear", "__setitem__", "__delit
 _DYN_BASES = {"globals", "locals", "vars", "__builtins__", "builtins"}
 _INDIRECT_TARGETS = {"exec", "eval", "compile", "__import__"}
 
+# Dangerous callables fetched indirectly (getattr / globals()['x'] / .get()).
+_SYSTEM_METHOD_NAMES = {name.rsplit(".", 1)[-1] for name in _SYSTEM_CALLS} | {"system", "popen", "run"}
+_FILE_WRITERS = {
+    "np.save", "numpy.save", "np.savetxt", "numpy.savetxt", "np.savez", "numpy.savez",
+    "np.savez_compressed", "numpy.savez_compressed", "plt.imsave", "matplotlib.pyplot.imsave",
+    "pd.to_csv", "pandas.DataFrame.to_csv", "xr.to_netcdf", "xarray.DataArray.to_netcdf",
+    "xarray.Dataset.to_netcdf", "json.dump", "pickle.dump", "joblib.dump",
+}
+_FILE_WRITE_METHOD_NAMES = {"save", "savetxt", "savez", "savez_compressed", "imsave", "to_csv", "to_netcdf", "dump"}
+_NETWORK_CALLS = {
+    "requests.get", "requests.post", "requests.put", "requests.patch", "requests.delete",
+    "requests.head", "requests.options", "urllib.request.urlopen", "urllib.request.Request",
+    "httpx.get", "httpx.post", "httpx.put", "httpx.patch", "httpx.delete",
+}
+
 
 def _is_path_method_call(node: ast.Call, aliases: _Aliases) -> bool:
     """``Path(...).unlink()`` / ``pathlib.Path('x').write_text(...)`` and friends."""
@@ -186,31 +225,21 @@ def _open_modes(node: ast.Call) -> bool:
     return False
 
 
-def _dynamic_exec_target(node: ast.Call, aliases: _Aliases) -> str | None:
-    """Indirect fetch of a critical callable: ``getattr(b, 'exec')()``,
-    ``globals()['eval']()``, ``locals().get('compile')()``,
-    ``__builtins__['exec']()``, ``getattr(b, '__import__')('os')``."""
+def _indirect_call_target(node: ast.Call, aliases: _Aliases) -> str | None:
+    """Name of a callable fetched indirectly: ``getattr(obj, 'x')()``,
+    ``globals()['x']()``, ``globals().get('x')()``, ``__builtins__['x']()``."""
     func = node.func
-    # getattr(obj, "exec") / getattr(obj, "__import__")
     if isinstance(func, ast.Call) and _call_name(func, aliases) in {"getattr", "builtins.getattr"}:
         if len(func.args) >= 2 and isinstance(func.args[1], ast.Constant):
-            target = str(func.args[1].value)
-            if target in _INDIRECT_TARGETS:
-                return target
-    # globals()["exec"] / locals()["eval"] / __builtins__["exec"]
+            return str(func.args[1].value)
     if isinstance(func, ast.Subscript):
         base = ".".join(_chain(func.value, aliases))
         if base in _DYN_BASES and isinstance(func.slice, ast.Constant):
-            target = str(func.slice.value)
-            if target in _INDIRECT_TARGETS:
-                return target
-    # globals().get("exec") / locals().get("eval") / vars().get("compile")
+            return str(func.slice.value)
     if isinstance(func, ast.Attribute) and func.attr == "get" and isinstance(func.value, ast.Call):
         base = ".".join(_chain(func.value, aliases))
         if base in _DYN_BASES and len(node.args) >= 1 and isinstance(node.args[0], ast.Constant):
-            target = str(node.args[0].value)
-            if target in _INDIRECT_TARGETS:
-                return target
+            return str(node.args[0].value)
     return None
 
 
@@ -264,6 +293,7 @@ def scan_code(code: str) -> ScanResult:
 
     aliases = _Aliases()
     aliases.visit(tree)
+    aliases.collect_assignments(tree)
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             name = _call_name(node, aliases)
@@ -281,9 +311,20 @@ def scan_code(code: str) -> ScanResult:
                 issues.append(SecurityIssue("ENV001", "process environment modification", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
             elif _is_savefig(node, aliases):
                 consent_issues.append(SecurityIssue("SAVE001", "figure save (savefig); figures are shown inline by default — approve only to write to disk", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
-            target = _dynamic_exec_target(node, aliases)
+            elif name in _FILE_WRITERS or name.rsplit(".", 1)[-1] in _FILE_WRITE_METHOD_NAMES:
+                consent_issues.append(SecurityIssue("SAVE002", f"file write via {name}; approve only to write to disk", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+            elif name in _NETWORK_CALLS:
+                consent_issues.append(SecurityIssue("NET001", f"network request via {name}; approve only to send data externally", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+            target = _indirect_call_target(node, aliases)
             if target:
-                issues.append(SecurityIssue("EXEC001", f"dynamic code execution via indirect fetch of {target}", RiskLevel.CRITICAL, getattr(node, "lineno", 0), ast.unparse(node)))
+                if target in _INDIRECT_TARGETS:
+                    issues.append(SecurityIssue("EXEC001", f"dynamic code execution via indirect fetch of {target}", RiskLevel.CRITICAL, getattr(node, "lineno", 0), ast.unparse(node)))
+                elif target in _SYSTEM_METHOD_NAMES:
+                    issues.append(SecurityIssue("SYS001", f"system or destructive operation via indirect fetch of {target}", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+                elif target == "open" and _open_modes(node):
+                    issues.append(SecurityIssue("FILE001", "file opened in a modifying mode via indirect fetch", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+                elif target in _FILE_WRITE_METHOD_NAMES:
+                    consent_issues.append(SecurityIssue("SAVE002", f"file write via indirect fetch of {target}; approve only to write to disk", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
         if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             for target in targets:

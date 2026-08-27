@@ -41,9 +41,20 @@ class UnsafeNotebookBackend:
         return self.state.bridge.request("execute_code", {"code": code}, timeout=timeout)
 
     def execute_active_cell(self, timeout: float = 120.0) -> dict[str, Any]:
-        code = str(self.state.active_cell.get("source") or "")
-        self._authorize("notebook_execute_active_cell", code)
-        return self.state.bridge.request("execute_active_cell", timeout=timeout)
+        # Read the LIVE cell source through the frontend instead of trusting the
+        # cached ``state.active_cell`` (which goes stale when the user edits a
+        # cell without switching away from it).  The very same source is used
+        # for scanning, authorisation and execution, and the frontend re-checks
+        # the cell id + source before running to close the TOCTOU window.
+        fresh = self.state.bridge.request("read_active_cell", timeout=10)
+        source = str(fresh.get("source") or "")
+        cell_id = fresh.get("id")
+        self._authorize("notebook_execute_active_cell", source)
+        return self.state.bridge.request(
+            "execute_active_cell",
+            {"expected_id": cell_id, "expected_source": source},
+            timeout=timeout,
+        )
 
     def add_cell(self, source: str = "", cell_type: str = "code", position: str = "below") -> dict[str, Any]:
         if cell_type not in {"code", "markdown", "raw"}:

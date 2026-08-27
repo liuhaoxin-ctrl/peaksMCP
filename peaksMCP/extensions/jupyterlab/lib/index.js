@@ -113,6 +113,15 @@ async function handle(panel, comm, data) {
     }
     const request_id = data.request_id;
     const notebook = panel.content;
+    // Push the live cell + its latest outputs so the backend cache (and therefore
+    // the MCP notebook_read_active_cell_output tool) never serves stale output.
+    const publishLive = (cellData) => {
+        const cell = cellData ?? cellJSON(panel);
+        try {
+            comm.send({ type: 'active_cell', cell: cell, outputs: cell.outputs });
+        }
+        catch { /* noop */ }
+    };
     try {
         let result = {};
         switch (data.operation) {
@@ -144,16 +153,74 @@ async function handle(panel, comm, data) {
                 result = { approved: await showConsentDialog(data.requested_operation ?? 'notebook operation', data.details ?? {}, targetSource) };
                 break;
             }
-            case 'execute_code':
+            case 'execute_code': {
                 NotebookActions.insertBelow(notebook);
-                notebook.activeCell?.model.sharedModel.setSource(data.code ?? '');
+                const executed = notebook.activeCell; // the cell we are about to run
+                executed?.model.sharedModel.setSource(data.code ?? '');
                 await NotebookActions.run(notebook, panel.sessionContext);
-                result = cellJSON(panel);
+                // run() moves the active cell to the next one; read the EXECUTED cell.
+                const executedJSON = () => ({
+                    id: executed?.model.id, index: notebook.widgets.findIndex(w => w.model.id === executed?.model.id),
+                    cell_type: executed?.model.type, source: executed?.model.sharedModel.getSource(),
+                    outputs: executed && executed.model.type === 'code' ? executed.model.outputs?.toJSON() ?? [] : [],
+                });
+                result = executedJSON();
+                publishLive(result);
+                // Matplotlib images can arrive at the outputs model after the cell
+                // finishes; poll the executed cell and re-push so the backend cache
+                // never serves stale (empty) output. outputs.changed is the long-tail
+                // fallback for user-driven edits.
+                (() => {
+                    const deadline = Date.now() + 30000;
+                    const poll = () => {
+                        const latest = executedJSON();
+                        if (latest.outputs.length > 0 || Date.now() > deadline) {
+                            publishLive(latest);
+                        }
+                        else {
+                            window.setTimeout(poll, 400);
+                        }
+                    };
+                    poll();
+                })();
                 break;
-            case 'execute_active_cell':
+            }
+            case 'execute_active_cell': {
+                // TOCTOU guard: the scanned/authorised source must match the live cell
+                // right now.  If the user edited the cell after the scan, refuse and ask
+                // the agent to re-run instead of executing unchecked code.
+                const cell = notebook.activeCell;
+                if (!cell) {
+                    throw new Error('no active cell');
+                }
+                if (data.expected_id && cell.model.id !== data.expected_id) {
+                    throw new Error('active cell changed since scan — please re-run');
+                }
+                if (typeof data.expected_source === 'string' && cell.model.sharedModel.getSource() !== data.expected_source) {
+                    throw new Error('cell content changed since scan — please re-run');
+                }
                 await NotebookActions.run(notebook, panel.sessionContext);
-                result = cellJSON(panel);
+                // run() moves the active cell; report the executed cell's outputs.
+                const executedJSON = () => ({
+                    id: cell.model.id, index: notebook.widgets.findIndex(w => w.model.id === cell.model.id),
+                    cell_type: cell.model.type, source: cell.model.sharedModel.getSource(),
+                    outputs: cell.model.type === 'code' ? cell.model.outputs?.toJSON() ?? [] : [],
+                });
+                result = executedJSON();
+                publishLive(result);
+                const deadline = Date.now() + 30000;
+                const poll = () => {
+                    const latest = executedJSON();
+                    if (latest.outputs.length > 0 || Date.now() > deadline) {
+                        publishLive(latest);
+                    }
+                    else {
+                        window.setTimeout(poll, 400);
+                    }
+                };
+                poll();
                 break;
+            }
             case 'add_cell':
                 NotebookActions.insertBelow(notebook);
                 if (data.cell_type === 'markdown') {
@@ -205,135 +272,247 @@ const plugin = {
         let comm = null;
         let connectedKernel = '';
         let heartbeatTimer = null;
-        const attach = (panel) => {
-            if (!panel) {
+        let activePanel = null;
+        let panelDisconnectors = [];
+        let disconnectKernelStatus = null;
+        let disconnectOutputs = null;
+        const isTransitional = (status) => ['restarting', 'autorestarting', 'starting', 'connecting'].includes(String(status ?? ''));
+        const clearOutputBinding = () => {
+            if (disconnectOutputs) {
+                try {
+                    disconnectOutputs();
+                }
+                catch { /* noop */ }
+                disconnectOutputs = null;
+            }
+        };
+        const teardown = (why, notify = false) => {
+            console.log(`[peaksmcp] teardown comm (${why})`);
+            clearOutputBinding();
+            if (heartbeatTimer !== null) {
+                window.clearInterval(heartbeatTimer);
+                heartbeatTimer = null;
+            }
+            const current = comm;
+            comm = null;
+            connectedKernel = '';
+            if (current) {
+                if (notify) {
+                    try {
+                        current.send({ type: 'frontend_closing' });
+                    }
+                    catch { /* noop */ }
+                }
+                try {
+                    void current.close();
+                }
+                catch { /* noop */ }
+            }
+        };
+        const cleanupPanelBindings = () => {
+            for (const disconnect of panelDisconnectors.splice(0)) {
+                try {
+                    disconnect();
+                }
+                catch { /* noop */ }
+            }
+            if (disconnectKernelStatus) {
+                try {
+                    disconnectKernelStatus();
+                }
+                catch { /* noop */ }
+                disconnectKernelStatus = null;
+            }
+            clearOutputBinding();
+        };
+        const publish = (panel, current) => {
+            if (activePanel !== panel || panel.isDisposed || comm !== current) {
                 return;
             }
-            const teardown = (why) => {
-                console.log(`[peaksmcp] teardown comm (${why})`);
-                // Clear the shared heartbeat first: a stale interval from a previous
-                // connection would otherwise fire on the dead Comm and tear down the
-                // freshly reconnected one.
-                if (heartbeatTimer !== null) {
-                    window.clearInterval(heartbeatTimer);
-                    heartbeatTimer = null;
+            const cell = cellJSON(panel);
+            try {
+                current.send({ type: 'active_cell', cell, outputs: cell.outputs ?? [] });
+            }
+            catch {
+                if (comm === current) {
+                    teardown('publish send failed');
                 }
-                if (comm) {
-                    try {
-                        comm.close();
-                    }
-                    catch { /* noop */ }
-                    comm = null;
+            }
+        };
+        const bindActiveOutputs = (panel, current) => {
+            clearOutputBinding();
+            if (activePanel !== panel || comm !== current) {
+                return;
+            }
+            const active = panel.content.activeCell;
+            const outputs = active && active.model.type === 'code' ? active.model.outputs : null;
+            if (!outputs) {
+                return;
+            }
+            const onOutputsChanged = () => { publish(panel, current); };
+            outputs.changed.connect(onOutputsChanged);
+            disconnectOutputs = () => { outputs.changed.disconnect(onOutputsChanged); };
+        };
+        const connect = async () => {
+            const panel = activePanel;
+            const kernel = panel?.sessionContext.session?.kernel;
+            if (!panel || panel.isDisposed || !kernel || kernel.isDisposed) {
+                return;
+            }
+            const status = String(kernel.status);
+            console.log(`[peaksmcp] connect status=${status} connected=${connectedKernel === kernel.id && !!comm}`);
+            if (isTransitional(status)) {
+                teardown(`kernel ${status}`);
+                return;
+            }
+            if (connectedKernel === kernel.id && comm) {
+                return;
+            }
+            teardown('kernel changed');
+            let newComm;
+            try {
+                newComm = kernel.createComm(TARGET);
+            }
+            catch (error) {
+                console.error('[peaksmcp] createComm failed:', String(error));
+                return;
+            }
+            comm = newComm;
+            connectedKernel = kernel.id;
+            newComm.onMsg = msg => {
+                if (activePanel === panel && comm === newComm) {
+                    void handle(panel, newComm, msg.content.data ?? {});
                 }
-                connectedKernel = '';
             };
-            const connect = async () => {
-                const kernel = panel?.sessionContext.session?.kernel;
-                if (!kernel || kernel.isDisposed) {
-                    return;
-                }
-                const status = String(kernel.status);
-                console.log(`[peaksmcp] connect status=${status} connected=${connectedKernel === kernel.id && !!comm}`);
-                // The kernel id stays identical across a restart, so the id+comm guard
-                // alone cannot detect a stale Comm. Tear down on every transitional
-                // status and rebuild once the new kernel reaches idle.
-                if (status === 'restarting' || status === 'autorestarting' || status === 'starting' || status === 'connecting') {
-                    teardown(`kernel ${status}`);
-                    return;
-                }
-                if (connectedKernel === kernel.id && comm) {
-                    return;
-                }
-                teardown('kernel changed');
-                connectedKernel = kernel.id;
-                let newComm = null;
-                try {
-                    newComm = kernel.createComm(TARGET);
-                }
-                catch (error) {
-                    console.error('[peaksmcp] createComm failed:', String(error));
-                    teardown('createComm failed');
-                    return;
-                }
-                newComm.onMsg = msg => { void handle(panel, newComm, msg.content.data ?? {}); };
-                newComm.onClose = () => { if (comm === newComm) {
+            newComm.onClose = () => {
+                if (comm === newComm) {
                     teardown('comm closed');
-                } };
-                comm = newComm;
-                try {
-                    await newComm.open({ kernel_id: kernel.id });
                 }
-                catch (error) {
-                    console.error('[peaksmcp] comm open failed:', String(error));
+            };
+            try {
+                await newComm.open({ kernel_id: kernel.id });
+            }
+            catch (error) {
+                console.error('[peaksmcp] comm open failed:', String(error));
+                if (comm === newComm) {
                     teardown('open failed');
+                }
+                return;
+            }
+            if (activePanel !== panel || panel.isDisposed || comm !== newComm) {
+                try {
+                    void newComm.close();
+                }
+                catch { /* noop */ }
+                return;
+            }
+            console.log(`[peaksmcp] comm open ok for kernel ${kernel.id}`);
+            heartbeatTimer = window.setInterval(() => {
+                if (activePanel !== panel || comm !== newComm) {
                     return;
                 }
-                console.log(`[peaksmcp] comm open ok for kernel ${kernel.id}`);
-                const publish = () => {
-                    try {
-                        newComm?.send({ type: 'active_cell', cell: cellJSON(panel), outputs: cellJSON(panel).outputs });
-                    }
-                    catch {
-                        teardown('publish send failed');
-                    }
-                };
-                heartbeatTimer = window.setInterval(() => {
-                    try {
-                        newComm?.send({ type: 'heartbeat' });
-                    }
-                    catch {
+                try {
+                    newComm.send({ type: 'heartbeat' });
+                }
+                catch {
+                    if (comm === newComm) {
                         teardown('heartbeat send failed');
                     }
-                }, 2000);
-                const close = () => {
-                    if (heartbeatTimer !== null) {
-                        window.clearInterval(heartbeatTimer);
-                        heartbeatTimer = null;
-                    }
-                    try {
-                        newComm?.send({ type: 'frontend_closing' });
-                    }
-                    catch { /* noop */ }
-                    try {
-                        void newComm?.close();
-                    }
-                    catch { /* noop */ }
-                    if (comm === newComm) {
-                        comm = null;
-                        connectedKernel = '';
-                    }
-                };
-                panel.disposed.connect(close);
-                window.addEventListener('beforeunload', close, { once: true });
-                panel.content.activeCellChanged.connect(publish);
-                publish();
-            };
-            // Reconnect on any kernel object change, transitional status, or when a
-            // stale Comm is closed — so an external/frontend restart always recovers.
-            panel.sessionContext.kernelChanged.connect(() => { teardown('kernelChanged'); void connect(); });
-            panel.sessionContext.statusChanged.connect((_sc, status) => {
-                const value = String(status ?? '');
-                if (value === 'restarting' || value === 'autorestarting' || value === 'starting' || value === 'connecting') {
-                    teardown(`session ${value}`);
+                }
+            }, 2000);
+            publish(panel, newComm);
+            bindActiveOutputs(panel, newComm);
+        };
+        const bindKernelStatus = (panel) => {
+            if (disconnectKernelStatus) {
+                try {
+                    disconnectKernelStatus();
+                }
+                catch { /* noop */ }
+                disconnectKernelStatus = null;
+            }
+            const kernel = panel.sessionContext.session?.kernel;
+            if (!kernel || kernel.isDisposed) {
+                return;
+            }
+            const onKernelStatus = (_kernel, status) => {
+                if (activePanel !== panel) {
+                    return;
+                }
+                if (isTransitional(status)) {
+                    teardown(`kernel ${String(status)}`);
                 }
                 else {
                     void connect();
                 }
-            });
-            const kernel = panel.sessionContext.session?.kernel;
-            if (kernel && !kernel.isDisposed) {
-                kernel.statusChanged.connect((_k, status) => {
-                    const value = String(status ?? '');
-                    if (value === 'restarting' || value === 'autorestarting' || value === 'starting' || value === 'connecting') {
-                        teardown(`kernel ${value}`);
-                    }
-                    else {
-                        void connect();
-                    }
-                });
+            };
+            kernel.statusChanged.connect(onKernelStatus);
+            disconnectKernelStatus = () => { kernel.statusChanged.disconnect(onKernelStatus); };
+        };
+        const attach = (panel) => {
+            if (panel === activePanel) {
+                if (panel) {
+                    void connect();
+                }
+                return;
             }
+            cleanupPanelBindings();
+            teardown('active notebook changed');
+            activePanel = panel;
+            if (!panel) {
+                return;
+            }
+            const onKernelChanged = () => {
+                if (activePanel !== panel) {
+                    return;
+                }
+                teardown('kernelChanged');
+                bindKernelStatus(panel);
+                void connect();
+            };
+            const onSessionStatus = (_context, status) => {
+                if (activePanel !== panel) {
+                    return;
+                }
+                if (isTransitional(status)) {
+                    teardown(`session ${String(status)}`);
+                }
+                else {
+                    void connect();
+                }
+            };
+            const onActiveCellChanged = () => {
+                const current = comm;
+                if (activePanel !== panel || !current) {
+                    return;
+                }
+                publish(panel, current);
+                bindActiveOutputs(panel, current);
+            };
+            const onDisposed = () => {
+                if (activePanel !== panel) {
+                    return;
+                }
+                cleanupPanelBindings();
+                activePanel = null;
+                teardown('active notebook disposed', true);
+            };
+            panel.sessionContext.kernelChanged.connect(onKernelChanged);
+            panelDisconnectors.push(() => panel.sessionContext.kernelChanged.disconnect(onKernelChanged));
+            panel.sessionContext.statusChanged.connect(onSessionStatus);
+            panelDisconnectors.push(() => panel.sessionContext.statusChanged.disconnect(onSessionStatus));
+            panel.content.activeCellChanged.connect(onActiveCellChanged);
+            panelDisconnectors.push(() => panel.content.activeCellChanged.disconnect(onActiveCellChanged));
+            panel.disposed.connect(onDisposed);
+            panelDisconnectors.push(() => panel.disposed.disconnect(onDisposed));
+            bindKernelStatus(panel);
             void connect();
         };
+        window.addEventListener('beforeunload', () => {
+            cleanupPanelBindings();
+            activePanel = null;
+            teardown('frontend closing', true);
+        }, { once: true });
         tracker.currentChanged.connect((_sender, panel) => { attach(panel); });
         if (tracker.currentWidget) {
             attach(tracker.currentWidget);
