@@ -1,0 +1,54 @@
+version: 1
+tools:
+  peaks_search_api:
+    title: Search Peaks API
+    description: Search the live Peaks API index before writing unfamiliar ARPES analysis code.
+  peaks_get_api:
+    title: Get Peaks API
+    description: Return the exact signature, source-backed documentation and examples for one canonical API ID.
+  askuserquestion:
+    title: Ask User Question
+    description: Report missing experimental information so Claude can ask the user in the next conversation turn.
+  notebook_list_variables:
+    title: List Notebook Variables
+    description: List useful variables in the live kernel without reading array values.
+  notebook_read_variable:
+    title: Read Notebook Variable
+    description: Summarize a variable; xarray results include dims, coordinates, units, attrs, chunks and Peaks accessors.
+  notebook_read_active_cell:
+    title: Read Active Cell
+    description: Read the source and identity of the currently selected JupyterLab cell.
+  notebook_read_active_cell_output:
+    title: Read Active Cell Output
+    description: Read text and inline image outputs from the current cell.
+  notebook_read_content:
+    title: Read Notebook Content
+    description: Read the current notebook cell structure through the JupyterLab Comm bridge.
+  notebook_move_cursor:
+    title: Move Notebook Cursor
+    description: Select the previous, next or numbered notebook cell.
+  notebook_server_status:
+    title: MCP Server Status
+    description: Return mode, API-index and Comm-bridge readiness for this kernel MCP server.
+  notebook_kernel_status:
+    title: Kernel Status
+    description: Return the kernel busy or idle state and busy start time.
+  notebook_wait_for_kernel:
+    title: Wait for Kernel
+    description: Wait for the current kernel to become idle up to a bounded timeout.
+  notebook_execute_code:
+    title: Execute Notebook Code
+    description: With consent, execute scanned Python code as a visible Jupyter cell operation.
+  notebook_execute_active_cell:
+    title: Execute Active Cell
+    description: With consent, execute the currently selected notebook cell.
+  notebook_add_cell:
+    title: Add Notebook Cell
+    description: With consent, insert a code, Markdown or raw cell.
+  notebook_delete_cell:
+    title: Delete Notebook Cell
+    description: With consent, delete the active or numbered notebook cell.
+  notebook_apply_patch:
+    title: Replace Notebook Cell
+    description: With consent, replace a cell source after Python syntax and security scanning.
+

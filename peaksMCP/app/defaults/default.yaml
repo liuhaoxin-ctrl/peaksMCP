@@ -1,0 +1,15 @@
+name: default
+jupyter:
+  host: 127.0.0.1
+  port: 8888
+  kernel_name: peaksmcp
+  disabled_extensions:
+    - jupyterlab-peaks-agent
+mcp:
+  host: 127.0.0.1
+  port: 8123
+  mode: safe
+  autostart: true
+dashboard:
+  host: 127.0.0.1
+  port: 8765

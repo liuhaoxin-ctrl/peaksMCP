@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "peaksMCP": {
+      "type": "stdio",
+      "command": "peaksMCP",
+      "args": ["stdio-proxy"]
+    }
+  }
+}
+

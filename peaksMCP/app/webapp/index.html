@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>peaksMCP</title><link rel="stylesheet" href="/assets/style.css"></head>
+<body>
+  <header><div><span class="eyebrow">ARPES CONTROL PLANE</span><h1>peaksMCP</h1></div><div class="header-state"><span id="profile" class="pill">profile: …</span><span id="state" class="pill">LOADING</span><span id="connection" class="connection">●</span></div></header>
+  <main>
+    <section id="components" class="components wide"></section>
+    <section class="card wide"><h2>Actions</h2><div class="actions"><a id="open-lab" class="button" target="_blank" rel="noopener">Open managed Notebook</a><button id="doctor-button">Run Doctor</button><button data-restart="mcp">Restart MCP</button><button data-restart="kernel">Restart Kernel</button><button data-restart="all" class="primary">Restart All</button></div><pre id="action-result"></pre></section>
+    <section class="card inspector"><h2>MCP Inspector</h2><p>Calls the real tool in the notebook Kernel.</p><form id="search"><input id="query" placeholder="e.g. curvature or 动量转换" required><button class="primary">Search API</button></form><pre id="result"></pre><div id="images" class="images"></div></section>
+    <section class="card"><h2>PXT conversion</h2><form id="convert"><input id="pxt-input" placeholder="PXT file or folder" required><input id="pxt-output" placeholder="Output file or folder"><input id="pxt-metadata" placeholder="experiment_metadata.json"><button class="primary">Convert</button></form><pre id="convert-result"></pre></section>
+    <section class="card"><h2>Doctor</h2><pre id="doctor">Click “Run Doctor”.</pre><h2>Profiles</h2><pre id="profiles"></pre></section>
+    <section class="card wide"><h2>Logs <select id="log-filter"><option value="">all</option></select></h2><pre id="logs"></pre></section>
+  </main><script src="/assets/app.js"></script>
+</body></html>
+

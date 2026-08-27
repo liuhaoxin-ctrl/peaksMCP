@@ -1,0 +1,6 @@
+{
+  "name": "peaksMCP",
+  "version": "0.1.0",
+  "description": "Natural-language ARPES analysis and publication plotting through peaksMCP",
+  "license": "MIT"
+}

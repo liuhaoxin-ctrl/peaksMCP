@@ -1,0 +1,170 @@
+# peaksMCP search benchmark dataset.
+#
+# Each case is a natural-language task phrase (English or Chinese) that a user
+# or agent might type, mapped to the API ``name`` that MUST be returned by
+# ``peaks_search_api`` / ``search_index`` for the task. Used by
+# ``tools/benchmark_search.py`` to measure Top-1 / Top-3 / MRR and guard
+# against ranking regressions.
+version: 1
+cases:
+  # --- load / save / conversion -----------------------------------------
+  - query: "加载一个pxt文件"
+    expect: load
+  - query: "读取实验数据"
+    expect: load
+  - query: "open a pxt file"
+    expect: load
+  - query: "load the dataset from disk"
+    expect: load
+  - query: "保存成netcdf文件"
+    expect: save
+  - query: "保存处理后的数据"
+    expect: save
+  - query: "export the result to a file"
+    expect: save
+  - query: "write the data out"
+    expect: save
+  - query: "保存数据到nc文件"
+    expect: save
+  # --- cuts / selection --------------------------------------------------
+  - query: "提取一条线cut"
+    expect: extract_cut
+  - query: "slice the spectrum along a line"
+    expect: extract_cut
+  - query: "crop a region of the data"
+    expect: extract_cut
+  - query: "选区截取一段数据"
+    expect: extract_cut
+  - query: "mask out a region of interest"
+    expect: mask_data
+  - query: "屏蔽某块区域"
+    expect: mask_data
+  - query: "radial cuts around a centre"
+    expect: radial_cuts
+  - query: "沿中心做径向切片"
+    expect: radial_cuts
+  - query: "density of states"
+    expect: DOS
+  - query: "态密度"
+    expect: DOS
+  - query: "total spectral weight"
+    expect: tot
+  - query: "sum all the data together"
+    expect: sum_data
+  # --- EDC / MDC ---------------------------------------------------------
+  - query: "画一条能量分布曲线"
+    expect: EDC
+  - query: "energy distribution curve at a fixed momentum"
+    expect: EDC
+  - query: "提取edc"
+    expect: EDC
+  - query: "动量分布曲线"
+    expect: MDC
+  - query: "momentum distribution curve at the fermi level"
+    expect: MDC
+  - query: "取一条mdc"
+    expect: MDC
+  # --- k-space -----------------------------------------------------------
+  - query: "把数据转换到k空间"
+    expect: k_convert
+  - query: "动量转换"
+    expect: k_convert
+  - query: "convert to momentum space"
+    expect: k_convert
+  - query: "k space conversion"
+    expect: k_convert
+  - query: "做k空间转换"
+    expect: k_convert
+  # --- processing --------------------------------------------------------
+  - query: "归一化数据"
+    expect: norm
+  - query: "normalize the spectrum"
+    expect: norm
+  - query: "把谱图归一化"
+    expect: norm
+  - query: "对数据做平滑"
+    expect: smooth
+  - query: "smooth the data"
+    expect: smooth
+  - query: "滤波去掉噪声"
+    expect: smooth
+  - query: "扣除背景"
+    expect: bgs
+  - query: "background subtraction"
+    expect: bgs
+  - query: "去除背景信号"
+    expect: bgs
+  - query: "subtract the background"
+    expect: bgs
+  - query: "对能量求导"
+    expect: deriv
+  - query: "derivative along the energy axis"
+    expect: deriv
+  - query: "计算曲率"
+    expect: curvature
+  - query: "curvature analysis"
+    expect: curvature
+  - query: "把数据分箱"
+    expect: bin_data
+  - query: "bin the pixels"
+    expect: bin_data
+  - query: "coarsen the data by binning"
+    expect: bin_data
+  - query: "对称化谱图"
+    expect: sym
+  - query: "symmetrize the spectrum"
+    expect: sym
+  - query: "镜像对称处理"
+    expect: sym
+  - query: "旋转一下图像"
+    expect: rotate
+  - query: "rotate the image"
+    expect: rotate
+  - query: "去除扫描条纹网格"
+    expect: degrid
+  - query: "remove the mesh grid from fft"
+    expect: degrid
+  - query: "sum two scans together"
+    expect: sum_data
+  - query: "把两个光谱相加"
+    expect: sum_data
+  - query: "subtract one scan from another"
+    expect: subtract_data
+  - query: "两个光谱相减"
+    expect: subtract_data
+  - query: "merge multiple scans"
+    expect: merge_data
+  - query: "把多个光谱合并"
+    expect: merge_data
+  - query: "correct the bad pixels"
+    expect: correct_isolated_bad_pixels
+  - query: "修掉孤立坏点"
+    expect: correct_isolated_bad_pixels
+  - query: "estimate the symmetry point"
+    expect: estimate_sym_point
+  - query: "找对称中心"
+    expect: estimate_sym_point
+  - query: "drift correction between maps"
+    expect: drift_correction
+  - query: "校正两张图的漂移"
+    expect: drift_correction
+  - query: "dispersion from photon energy"
+    expect: disp_from_hv
+  - query: "由光子能算色散"
+    expect: disp_from_hv
+  # --- calibration / fitting ----------------------------------------------
+  - query: "估计费米能级"
+    expect: estimate_EF
+  - query: "find the fermi level"
+    expect: estimate_EF
+  - query: "用金数据拟合费米边"
+    expect: fit_gold
+  - query: "fit the fermi edge from a gold reference"
+    expect: fit_gold
+  # --- plotting -----------------------------------------------------------
+  - query: "批量画一组谱图"
+    expect: plot_grid
+  - query: "plot a grid of spectra"
+    expect: plot_grid
+  - query: "画一个panel图网格"
+    expect: plot_grid

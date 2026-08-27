@@ -1,0 +1,37 @@
+{
+  "name": "peaksmcp-jupyterlab",
+  "version": "0.1.0",
+  "description": "Active-cell, consent and inline-output bridge for peaksMCP",
+  "license": "MIT",
+  "files": [
+    "lib/**/*.{d.ts,js,js.map}"
+  ],
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "scripts": {
+    "build": "jlpm run build:lib && jlpm run build:labextension:dev",
+    "build:prod": "jlpm run build:lib && jlpm run build:labextension",
+    "build:lib": "tsc --sourceMap",
+    "build:labextension": "jupyter labextension build .",
+    "build:labextension:dev": "jupyter labextension build --development True .",
+    "clean": "rimraf lib labextension tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@jupyterlab/application": "^4.2.0",
+    "@jupyterlab/notebook": "^4.2.0",
+    "@jupyterlab/services": "^7.2.0"
+  },
+  "devDependencies": {
+    "@jupyterlab/builder": "^4.2.0",
+    "rimraf": "^5.0.0",
+    "typescript": "^5.5.0"
+  },
+  "jupyterlab": {
+    "extension": true,
+    "outputDir": "labextension",
+    "_build": {
+      "load": "static/remoteEntry.ce53fb9d8b83e8293670.js",
+      "extension": "./extension"
+    }
+  }
+}
