@@ -113,22 +113,24 @@ def command_restart(args: argparse.Namespace) -> None:
 
     ``peaksMCP restart`` (no component) is equivalent to ``stop && launch``:
     it stops the running supervisor and starts a fresh one (JupyterLab + kernel +
-    in-kernel MCP + dashboard).  ``restart kernel|mcp|all`` only touches the
-    kernel side inside the running supervisor.
+    in-kernel MCP + dashboard).  ``restart kernel|mcp|kernel&mcp`` only touches
+    the kernel side inside the running supervisor (``kernel&mcp`` = kernel + the
+    in-kernel MCP; its legacy name is ``all``).
     """
     if args.component is None:
         _restart_stack(args)
         return
+    component = "all" if args.component == "kernel&mcp" else args.component
     data = _runfile()
     try:
         response = httpx.post(
-            f"{data['dashboard_url']}/api/restart/{args.component}",
+            f"{data['dashboard_url']}/api/restart/{component}",
             headers=_dashboard_headers(data),
             timeout=120,
         )
         response.raise_for_status()
     except httpx.HTTPError as exc:
-        raise SystemExit(f"restart {args.component} failed: {exc}") from exc
+        raise SystemExit(f"restart {component} failed: {exc}") from exc
     _json(response.json())
 
 
@@ -299,8 +301,15 @@ def build_parser() -> argparse.ArgumentParser:
     serve.set_defaults(func=command_serve)
     sub.add_parser("status").set_defaults(func=command_status)
     sub.add_parser("stop").set_defaults(func=command_stop)
-    restart = sub.add_parser("restart", help="restart the whole stack, or one component (kernel|mcp|all)")
-    restart.add_argument("component", nargs="?", choices=("kernel", "mcp", "all"), default=None, help="component to restart; omit to restart the whole stack (like launch)")
+    restart = sub.add_parser("restart", help="restart the whole stack, or one component (kernel|mcp|kernel&mcp)")
+    restart.add_argument(
+        "component", nargs="?",
+        choices=("kernel", "mcp", "all", "kernel&mcp"),
+        default=None,
+        help="component to restart: kernel, mcp, or kernel&mcp (kernel + in-kernel MCP; "
+        "legacy name: all). Omit to restart the whole stack (like launch). "
+        "Note: the & must be quoted in most shells, e.g. peaksMCP restart 'kernel&mcp'.",
+    )
     restart.add_argument("--profile", default="default")
     restart.add_argument("--timeout", type=float, default=90)
     restart.set_defaults(func=command_restart)

@@ -108,7 +108,7 @@ peaksMCP launch [--profile NAME] [--timeout SECONDS]   # single entry: superviso
 peaksMCP status                                         # supervisor status
 peaksMCP stop                                           # stop the supervisor (and the dashboard)
 peaksMCP restart                                   # restart the whole stack (like launch)
-peaksMCP restart {kernel|mcp|all}                   # restart a kernel-side component only
+peaksMCP restart {kernel|mcp|'kernel&mcp'}          # kernel-side only (kernel&mcp = kernel + MCP; legacy: all)
 peaksMCP logs [-n LINES] [-f]                           # show / follow supervisor logs
 ```
 
