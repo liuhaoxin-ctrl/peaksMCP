@@ -321,7 +321,10 @@ $('#convert').addEventListener('submit', async e => {
     if (converted.length > 0) {
       const wrap = document.createElement('div');
       wrap.style.marginTop = '8px';
-      converted.slice(0, 3).forEach(item => {
+      wrap.style.display = 'flex';
+      wrap.style.flexWrap = 'wrap';
+      wrap.style.gap = '8px';
+      converted.forEach(item => {
         const b = document.createElement('button');
         b.type = 'button';
         b.className = 'button';

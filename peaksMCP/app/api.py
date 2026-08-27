@@ -47,8 +47,11 @@ def load_into_notebook(supervisor: RuntimeSupervisor, nc_path: str | None) -> bo
     Asks the kernel to insert and run ``from peaks import load\ndata = load(...)``
     through the frontend Comm bridge (so the cell appears in the notebook and is
     saved), instead of silently loading into the kernel namespace.  Returns
-    ``False`` when the frontend/kernel is unavailable.
+    ``True`` only after the ``data`` variable is verifiably present in the
+    kernel namespace (the load cell actually executed), ``False`` otherwise.
     """
+    import time as _time
+
     if not nc_path:
         return False
     load_code = f"from peaks import load\ndata = load({json.dumps(str(nc_path))})"
@@ -71,9 +74,28 @@ _t.Thread(target=_do, daemon=True).start()
         return False
     try:
         supervisor.execute_kernel(bridge_code, timeout=10)
-        return True
     except Exception:
         return False
+    # The load cell runs asynchronously through the frontend Comm; verify it
+    # actually executed by waiting for ``data`` to appear in the kernel
+    # namespace (execute_kernel raises on an error-status reply, so the guard
+    # below makes the polling observable).
+    deadline = _time.monotonic() + 20
+    while _time.monotonic() < deadline:
+        try:
+            supervisor.execute_kernel(
+                "if 'data' not in get_ipython().user_ns: raise RuntimeError('data not loaded yet')",
+                timeout=5,
+            )
+            return True
+        except RuntimeError as exc:
+            if "not loaded yet" in str(exc):
+                _time.sleep(0.5)
+                continue
+            return False
+        except Exception:
+            return False
+    return False
 
 
 async def _jupyter_kernel_state(supervisor: RuntimeSupervisor) -> str:

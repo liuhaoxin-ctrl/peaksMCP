@@ -13,20 +13,22 @@ def test_auto_load_bridge_code_is_valid_multiline_python():
     be silently swallowed)."""
     from peaksMCP.app.api import load_into_notebook
 
-    captured: dict[str, str] = {}
+    captured: dict[str, list[str]] = {"codes": []}
 
     class FakeSupervisor:
         def execute_kernel(self, code, timeout=10):
-            captured["code"] = code
+            captured["codes"].append(code)
             return {}
 
     result = load_into_notebook(FakeSupervisor(), "/data/BP_0001.nc")
     assert result is True
-    code = captured["code"]
-    compile(code, "<load-into-notebook>", "exec")  # must be valid Python
-    assert "def _do():" in code
-    assert "from peaks import load" in code
-    assert "data = load(" in code
+    bridge_code = captured["codes"][0]
+    compile(bridge_code, "<load-into-notebook>", "exec")  # must be valid Python
+    assert "def _do():" in bridge_code
+    assert "from peaks import load" in bridge_code
+    assert "data = load(" in bridge_code
+    # The verification step checks the data variable actually landed.
+    assert any("data not loaded yet" in code for code in captured["codes"])
 
 
 def test_auto_load_skips_without_output():

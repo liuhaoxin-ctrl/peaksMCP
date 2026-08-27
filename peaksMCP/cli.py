@@ -275,11 +275,14 @@ def command_load(args: argparse.Namespace) -> None:
     in the live notebook (requires the supervisor / frontend Comm to be online).
     """
     data = _runfile()
+    # Resolve the path against the CLI's cwd so a relative path does not get
+    # interpreted inside the dashboard/supervisor process (different cwd).
+    path = str(Path(args.input).expanduser().resolve())
     try:
         response = httpx.post(
             f"{data['dashboard_url']}/api/notebook/load",
             headers=_dashboard_headers(data),
-            json={"path": args.input},
+            json={"path": path},
             timeout=120,
         )
         response.raise_for_status()
