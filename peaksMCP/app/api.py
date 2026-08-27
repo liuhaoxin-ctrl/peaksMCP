@@ -12,7 +12,6 @@ import asyncio
 import json
 import secrets
 import subprocess
-import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -309,19 +308,6 @@ def create_app(supervisor: RuntimeSupervisor) -> Starlette:
             payload["loaded_in_notebook"] = converted[0].output
         return JSONResponse(payload)
 
-    async def stop(request: Request) -> JSONResponse:
-        """Stop the whole stack (supervisor + JupyterLab + kernel + MCP + dashboard)."""
-        require_auth(request, mutation=True)
-
-        def _shutdown() -> None:
-            try:
-                supervisor.stop()
-            except Exception:
-                pass
-
-        threading.Thread(target=_shutdown, daemon=True).start()
-        return JSONResponse({"stopping": True})
-
     async def snapshot_notebook(request: Request) -> JSONResponse:
         """Save the current notebook as a timestamped snapshot without touching
         the original file (no delete / no overwrite), so a half-finished session
@@ -417,7 +403,6 @@ def create_app(supervisor: RuntimeSupervisor) -> Starlette:
         Route("/api/logs", logs), Route("/api/doctor", doctor), Route("/api/profiles", profiles),
         Route("/api/start-mcp", start_mcp, methods=["POST"]),
         Route("/api/restart/{component}", restart, methods=["POST"]),
-        Route("/api/stop", stop, methods=["POST"]),
         Route("/api/mcp/tool", tool_call, methods=["POST"]),
         Route("/api/metadata/translate", translate, methods=["POST"]),
         Route("/api/convert", convert, methods=["POST"]),

@@ -266,10 +266,6 @@ $('#restart-all').addEventListener('click', () => postAction('/api/restart/all',
 }));
 
 $('#snapshot-button').addEventListener('click', () => postAction('/api/notebook/snapshot', 'Save snapshot'));
-$('#stop-button').addEventListener('click', () => postAction('/api/stop', 'Stop', {
-  confirm: true,
-  confirmMsg: 'Stop the whole stack (JupyterLab + kernel + MCP + dashboard)?',
-}));
 
 $('#doctor-button').addEventListener('click', async () => {
   const status = $('#doctor-status');

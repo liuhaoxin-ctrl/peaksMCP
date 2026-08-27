@@ -96,9 +96,9 @@ credential in an HttpOnly, SameSite cookie. Opening port 8765 directly is intent
 rejected. Control APIs require the same credential and reject cross-origin requests.
 
 In the console: **Start MCP** (when the in-kernel MCP is down), **Restart MCP** (kernel
-variables preserved), **Restart Kernel**, **Restart All**, **Open managed Notebook** and
-**Stop** (shuts down the whole stack). PXT conversion and datasheet translation are pure
-file operations and always available.
+variables preserved), **Restart Kernel**, **Restart All** and **Open managed Notebook**.
+Stopping the whole stack is done from the CLI with . PXT conversion and
+datasheet translation are pure file operations and always available.
 
 ### CLI reference
 
