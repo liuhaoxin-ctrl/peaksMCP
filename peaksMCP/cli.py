@@ -115,7 +115,7 @@ def command_restart(args: argparse.Namespace) -> None:
     it stops the running supervisor and starts a fresh one (JupyterLab + kernel +
     in-kernel MCP + dashboard).  ``restart kernel|mcp|kernel&mcp`` only touches
     the kernel side inside the running supervisor (``kernel&mcp`` = kernel + the
-    in-kernel MCP; its legacy name is ``all``).
+    in-kernel MCP).
     """
     if args.component is None:
         _restart_stack(args)
@@ -304,10 +304,10 @@ def build_parser() -> argparse.ArgumentParser:
     restart = sub.add_parser("restart", help="restart the whole stack, or one component (kernel|mcp|kernel&mcp)")
     restart.add_argument(
         "component", nargs="?",
-        choices=("kernel", "mcp", "all", "kernel&mcp"),
+        choices=("kernel", "mcp", "kernel&mcp"),
         default=None,
-        help="component to restart: kernel, mcp, or kernel&mcp (kernel + in-kernel MCP; "
-        "legacy name: all). Omit to restart the whole stack (like launch). "
+        help="component to restart: kernel, mcp, or kernel&mcp (kernel + in-kernel MCP). "
+        "Omit to restart the whole stack (like launch). "
         "Note: the & must be quoted in most shells, e.g. peaksMCP restart 'kernel&mcp'.",
     )
     restart.add_argument("--profile", default="default")
