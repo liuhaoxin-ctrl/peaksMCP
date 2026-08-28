@@ -87,6 +87,18 @@ def source_signature(pkg_dir: str | os.PathLike[str] | None = None) -> tuple[Any
                 continue
             path = os.path.join(root, filename)
             signature.append((path, _stat_signature(path)))
+    # peaksMCP's own analysis API is indexed too, so its source must be part of
+    # the fingerprint (an index built before a plotting/workflow change would
+    # otherwise never be flagged stale).
+    import peaksMCP
+
+    for root, dirs, files in os.walk(os.path.dirname(peaksMCP.__file__)):
+        dirs[:] = sorted(d for d in dirs if d not in _SKIP_DIRS)
+        for filename in sorted(files):
+            if not filename.endswith(".py"):
+                continue
+            path = os.path.join(root, filename)
+            signature.append((path, _stat_signature(path)))
     for relative in _ADAPTER_SOURCES:
         path = str(_INDEX_PACKAGE / relative)
         signature.append((path, _stat_signature(path)))
@@ -204,13 +216,23 @@ def scan_runtime() -> list[dict[str, Any]]:
     return entries
 
 
-def scan_modules(package_dir: str | os.PathLike[str]) -> list[dict[str, Any]]:
-    """Statically scan public module functions without importing every Peaks module.
+def scan_modules(
+    package_dir: str | os.PathLike[str],
+    package_name: str = "peaks",
+    include_prefixes: tuple[str, ...] | None = None,
+) -> list[dict[str, Any]]:
+    """Statically scan public module functions without importing every module.
 
     Parameters
     ----------
     package_dir : path-like
-        Root directory of the installed ``peaks`` package.
+        Root directory of the package to scan (e.g. the installed ``peaks`` or
+        the ``peaksMCP`` package).
+    package_name : str, default "peaks"
+        Import name used to build canonical module ids (e.g. ``peaksMCP``).
+    include_prefixes : tuple of str, optional
+        Only keep entries whose module starts with one of these prefixes
+        (e.g. ``("peaksMCP.plotting",)``); ``None`` keeps everything.
 
     Returns
     -------
@@ -226,9 +248,11 @@ def scan_modules(package_dir: str | os.PathLike[str]) -> list[dict[str, Any]]:
                 continue
             path = os.path.join(root, filename)
             relative = os.path.relpath(root, package_dir)
-            module = "peaks" if relative == "." else "peaks." + relative.replace(os.sep, ".")
+            module = package_name if relative == "." else f"{package_name}." + relative.replace(os.sep, ".")
             module += "." + filename[:-3]
             if module.startswith("peaks.SARPES") or "._lazy_import" in module:
+                continue
+            if include_prefixes is not None and not module.startswith(include_prefixes):
                 continue
             try:
                 source = Path(path).read_text(encoding="utf-8", errors="replace")
@@ -293,6 +317,27 @@ def build_index() -> ApiIndex:
 
     package_dir = os.path.dirname(peaks.__file__)
     entries = _merge_duplicates([*scan_runtime(), *scan_modules(package_dir)])
+    # The agent should also discover peaksMCP's own analysis API (plotting /
+    # workflows / conversion) without relying on the skill file: scan the core
+    # data layer of this package into the same index.
+    import peaksMCP
+
+    peaksmcp_dir = os.path.dirname(peaksMCP.__file__)
+    entries = _merge_duplicates(
+        [
+            *entries,
+            *scan_modules(
+                peaksmcp_dir,
+                package_name="peaksMCP",
+                include_prefixes=(
+                    "peaksMCP.plotting",
+                    "peaksMCP.workflows",
+                    "peaksMCP.pxt_utils",
+                    "peaksMCP.batch",
+                ),
+            ),
+        ]
+    )
     overrides = load_overrides()
     aliases = overrides.get("aliases") or {}
     per_api = overrides.get("overrides") or {}

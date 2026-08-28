@@ -9,11 +9,11 @@ version: 1
 cases:
   # --- load / save / conversion -----------------------------------------
   - query: "加载一个pxt文件"
-    expect: load
+    expect: load_pxt
   - query: "读取实验数据"
     expect: load
   - query: "open a pxt file"
-    expect: load
+    expect: load_pxt
   - query: "load the dataset from disk"
     expect: load
   - query: "保存成netcdf文件"

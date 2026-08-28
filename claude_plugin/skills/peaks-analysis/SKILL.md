@@ -1,6 +1,6 @@
 ---
 name: peaks-analysis
-description: Use for ARPES loading, calibration, cuts, fitting, momentum conversion, batch processing, and publication-quality plotting with a live peaksMCP Jupyter notebook.
+description: Use for ARPES loading, cuts, fitting, momentum conversion, batch processing, and publication-quality plotting with a live peaksMCP Jupyter notebook.
 version: 0.1.0
 ---
 
