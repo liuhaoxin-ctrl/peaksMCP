@@ -439,6 +439,15 @@ const plugin: JupyterFrontEndPlugin<void> = {
       teardown('active notebook changed');
       activePanel = panel;
       if (!panel) { return; }
+      // Initial positioning: when the notebook already has cells (e.g. restored
+      // from a snapshot), work starts AFTER the existing cells — park the
+      // active cell on the last one so read/execute continue from the end.
+      try {
+        const widgets = panel.content.widgets;
+        if (widgets.length > 0) {
+          panel.content.activeCellIndex = widgets.length - 1;
+        }
+      } catch { /* positioning is best-effort */ }
 
       const onKernelChanged = (): void => {
         if (activePanel !== panel) { return; }
