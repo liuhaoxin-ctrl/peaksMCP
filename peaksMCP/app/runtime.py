@@ -267,7 +267,13 @@ class RuntimeSupervisor:
         client = BlockingKernelClient(connection_file=connection)
         client.load_connection_file()
         client.start_channels()
-        client.wait_for_ready(timeout=timeout)
+        try:
+            client.wait_for_ready(timeout=timeout)
+        except Exception:
+            # Do not leak the shell/iopub channels when the kernel never became
+            # ready (start_channels() already opened them).
+            client.stop_channels()
+            raise
         return client
 
     def execute_kernel(self, code: str, timeout: float = 30) -> dict[str, Any]:
@@ -331,7 +337,11 @@ class RuntimeSupervisor:
         """
         previous_generation = self._mcp_generation()
         if require_comm and previous_generation is None:
-            raise RuntimeError("cannot verify restart all because the current MCP generation is unavailable")
+            # MCP is offline, so there is no generation to compare AND no Comm
+            # coordination possible.  Degrade to a plain REST restart instead of
+            # refusing to restart at all (a restart is exactly what can bring
+            # the MCP back).
+            require_comm = False
         if require_comm and not self._comm_connected():
             # The browser frontend is offline, so Comm-coordinated restart cannot
             # proceed; fall back to a REST restart to avoid hanging for timeout.

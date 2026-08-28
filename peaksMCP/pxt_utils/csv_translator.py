@@ -151,9 +151,15 @@ def translate_datasheet(
                 warnings.append(f"line {line_number}: non-empty row without Index was skipped")
             continue
         try:
-            index = int(float(index_text))
+            numeric = float(index_text)
         except ValueError as exc:
             raise ValueError(f"line {line_number}: invalid Index {index_text!r}") from exc
+        if not numeric.is_integer():
+            raise ValueError(
+                f"line {line_number}: Index {index_text!r} is not an integer "
+                "(1.9 would silently truncate to 1 and attach the wrong record)"
+            )
+        index = int(numeric)
         key = str(index)
         if key in records:
             raise ValueError(f"line {line_number}: duplicate Index {index}")

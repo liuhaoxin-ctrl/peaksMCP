@@ -238,6 +238,15 @@ async function handle(panel, comm, data) {
                 notebook.activeCell?.model.sharedModel.setSource(data.source ?? '');
                 result = cellJSON(panel);
                 break;
+            case 'save_notebook':
+                try {
+                    await panel.context.save();
+                    result = { saved: true };
+                }
+                catch (saveErr) {
+                    result = { saved: false, error: saveErr instanceof Error ? saveErr.message : String(saveErr) };
+                }
+                break;
             case 'read_cell_at': {
                 const idx = typeof data.index === 'number' ? data.index : notebook.activeCellIndex;
                 if (!Number.isInteger(idx) || idx < 0 || idx >= notebook.widgets.length) {
@@ -292,11 +301,17 @@ async function handle(panel, comm, data) {
         }
         // Persist notebook mutations (executed / inserted / deleted / patched cells)
         // to disk so the analysis history survives a supervisor or JupyterLab restart.
+        // A failed save is reported to the caller instead of being silently swallowed:
+        // "executed" and "persisted" are distinct outcomes.
         if (['execute_code', 'execute_active_cell', 'add_cell', 'delete_cell', 'apply_patch'].includes(data.operation)) {
             try {
                 await panel.context.save();
+                result.saved = true;
             }
-            catch { /* save is best-effort */ }
+            catch (saveErr) {
+                result.saved = false;
+                result.save_error = saveErr instanceof Error ? saveErr.message : String(saveErr);
+            }
         }
         comm.send({ request_id, ok: true, result });
     }

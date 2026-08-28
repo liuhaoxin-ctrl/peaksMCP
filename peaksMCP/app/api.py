@@ -41,6 +41,20 @@ _INSPECTOR_ALLOWED = {
 _DASHBOARD_COOKIE = "peaksmcp_dashboard"
 
 
+def _flush_frontend_save(supervisor: RuntimeSupervisor) -> None:
+    """Ask the frontend Comm bridge to persist the notebook (context.save()).
+    Best-effort: when the frontend is offline there is nothing to flush."""
+    code = (
+        "from peaksMCP.server.jupyter_peaks.jupyter_mcp_extension import get_server as _gs;"
+        "b = _gs().state.bridge;"
+        "b.request('save_notebook', {}, timeout=10)"
+    )
+    try:
+        supervisor.execute_kernel(code, timeout=12)
+    except Exception:
+        pass
+
+
 def load_into_notebook(supervisor: RuntimeSupervisor, nc_path: str | None, *, timeout: float = 45) -> bool:
     """Load a converted NetCDF into the notebook as a visible cell.
 
@@ -78,7 +92,6 @@ def load_into_notebook(supervisor: RuntimeSupervisor, nc_path: str | None, *, ti
         return False
     load_code = f"from peaks import load\ndata = load({json.dumps(str(nc_path))})"
     slot = f"_peaksMCP_load_{secrets.token_hex(16)}"
-    pending_marker = f"{slot}:pending"
     # Each request gets an independent job, captured by the worker closure.
     # The shell must be released so Jupyter can execute the frontend's cell.
     bridge_code = f'''def _peaksMCP_start_load():
@@ -118,10 +131,15 @@ finally:
                 reply = supervisor.execute_kernel(probe_code, timeout=min(5, deadline - time.monotonic()))
                 return reply.get("status") == "ok"
             except RuntimeError as exc:
-                if pending_marker not in str(exc):
+                if ":failed" in str(exc):
+                    # The load cell itself reported a failure: permanent.
                     return False
-            except TimeoutError:
-                # A busy kernel may still be executing the requested Load cell.
+                # Otherwise the cell is still pending / the kernel is busy.
+            except Exception:
+                # A busy kernel or channel timeouts surface as various exception
+                # types (TimeoutError, queue.Empty, ...); they are transient and
+                # must be retried — never report failure while the queued Load
+                # may still succeed (a retry would duplicate the execution).
                 pass
             time.sleep(min(0.25, max(0, deadline - time.monotonic())))
         return False
@@ -383,6 +401,10 @@ def create_app(supervisor: RuntimeSupervisor) -> Starlette:
         notebook_name = supervisor.notebook_path
         content_url = f"{supervisor.jupyter_url}/api/contents/{notebook_name}"
         try:
+            # Flush the frontend's latest edits to disk first: the Contents API
+            # serves the saved file, so unsaved cell edits would be missing from
+            # the snapshot otherwise.
+            await asyncio.to_thread(_flush_frontend_save, supervisor)
             current = httpx.get(content_url, headers=supervisor._headers(), timeout=15)
             current.raise_for_status()
             snapshot = f"peaksMCP-snapshot-{time.strftime('%Y%m%d-%H%M%S')}.ipynb"

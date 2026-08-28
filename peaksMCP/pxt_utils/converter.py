@@ -106,7 +106,18 @@ def _auto_metadata(metadata_path: str | None, source: Path, destination: Path) -
         target = destination / "experiment_metadata.json"
         translated.write(target)
         return str(target)
-    except Exception:
+    except Exception as exc:
+        # Never silently drop translated metadata: duplicate Index, parse or
+        # write failures must be visible so the user knows the conversion ran
+        # without metadata and can fix the datasheet.
+        import warnings
+
+        warnings.warn(
+            f"datasheet translation failed for {datasheet.name}: "
+            f"{type(exc).__name__}: {exc}",
+            UserWarning,
+            stacklevel=2,
+        )
         return None
 
 

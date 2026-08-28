@@ -241,6 +241,14 @@ async function postAction(path, label, options = {}) {
         refresh();
         return;
       }
+      // Some endpoints answer 200 but carry an explicit failure (restart
+      // ready:false, doctor ok:false, load loaded:false, snapshot errors).
+      if (r && (r.ready === false || r.ok === false || r.loaded === false || r.error)) {
+        $('#action-result').textContent = pretty(r);
+        toast(`${label} failed (partial or unsuccessful)`, 'error');
+        refresh();
+        return;
+      }
       $('#action-result').textContent = pretty(r);
       toast(`${label} completed`, 'success');
     } catch (e) {
@@ -277,9 +285,15 @@ $('#doctor-button').addEventListener('click', async () => {
   try {
     const r = await fetch('/api/doctor').then(r => r.json());
     pre.textContent = pretty(r);
-    status.className = 'status-badge healthy';
-    status.textContent = 'Healthy';
-    toast('Doctor diagnostics completed', 'success');
+    if (r.ok === true) {
+      status.className = 'status-badge healthy';
+      status.textContent = 'Healthy';
+      toast('Doctor diagnostics completed', 'success');
+    } else {
+      status.className = 'status-badge error';
+      status.textContent = 'Issues found';
+      toast('Doctor found issues', 'error');
+    }
   } catch (e) {
     pre.textContent = String(e);
     status.className = 'status-badge error';

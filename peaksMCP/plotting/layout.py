@@ -185,7 +185,10 @@ def plot_batch(
             if array.ndim == 2:
                 kwargs.setdefault("cmap", cmap)
                 kwargs["add_colorbar"] = not use_shared_colorbar
-                if limits is not None:
+                # Do not force data-range vmin/vmax when the caller pinned an
+                # explicit norm (e.g. LogNorm): the auto limits would conflict
+                # with the user's normalisation intent.
+                if limits is not None and "norm" not in kwargs:
                     kwargs.setdefault("vmin", limits[0])
                     kwargs.setdefault("vmax", limits[1])
                 artist = array.plot(ax=axis, **kwargs)

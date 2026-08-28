@@ -77,14 +77,28 @@ class ResourceBudget:
             return max(self._all_samples, default=0.0)
 
     def start(self) -> None:
-        """Start background CPU monitoring."""
+        """Start background CPU monitoring with an immediate first sample.
+
+        The gate is set according to the CURRENT CPU load so a busy machine is
+        throttled from the very first submission (previously the gate started
+        open and the whole worker pool was submitted before any sample).
+        """
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
-        self._gate.set()
+        # Seed the gate with a real first sample instead of defaulting to open.
+        # (Record manually — _record_sample takes the lock itself, so calling
+        # it from inside a locked block would deadlock.)
+        initial = float(psutil.cpu_percent(interval=None))
         with self._sample_lock:
             self._samples.clear()
             self._all_samples.clear()
+            self._samples.append((time.monotonic(), initial))
+            self._all_samples.append(initial)
+        if initial >= self.cpu_limit_percent:
+            self._gate.clear()
+        else:
+            self._gate.set()
         self._thread = threading.Thread(target=self._monitor, name="peaksMCP-cpu-budget", daemon=True)
         self._thread.start()
 

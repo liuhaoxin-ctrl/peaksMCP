@@ -152,8 +152,16 @@ def scan_runtime() -> list[dict[str, Any]]:
                 descriptor, "__module__", ""
             )
             accessor = getattr(descriptor, "_accessor", None)
-            if not module and isinstance(accessor, type):
-                module = getattr(accessor, "__module__", "")
+            if dtype == "_CachedAccessor" and isinstance(accessor, type):
+                # _CachedAccessor's own __module__ is xarray.core.accessor;
+                # the real owning module lives on the accessor class (e.g.
+                # peaks.core.metadata.metadata_methods for da.metadata).  Override
+                # unconditionally when the accessor class is peaks-owned.
+                accessor_module = getattr(accessor, "__module__", "")
+                if accessor_module.startswith("peaks."):
+                    module = accessor_module
+                elif not module:
+                    module = accessor_module
             is_peaks = module.startswith("peaks.")
             is_lazy = dtype == "LazyAccessorDescriptor"
             is_cached = dtype == "_CachedAccessor" and (
