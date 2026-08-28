@@ -136,7 +136,12 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
 
 
 def register_unsafe_tools(mcp: FastMCP, notebook: UnsafeNotebookBackend, audit: AuditLogger) -> None:
-    """Register the five consent-gated mutation tools.
+    """Register the four consent-gated mutation tools.
+
+    Writes are append-only: ``notebook_execute_code`` / ``notebook_add_cell``
+    always append a new cell at the end of the notebook and never overwrite an
+    existing one; ``notebook_delete_cell`` removes a cell only with explicit
+    consent.
 
     Parameters
     ----------
@@ -154,7 +159,6 @@ def register_unsafe_tools(mcp: FastMCP, notebook: UnsafeNotebookBackend, audit: 
         "notebook_execute_active_cell": notebook.execute_active_cell,
         "notebook_add_cell": notebook.add_cell,
         "notebook_delete_cell": notebook.delete_cell,
-        "notebook_apply_patch": notebook.apply_patch,
     }
     for name, function in functions.items():
         _register(mcp, name, function, audit)

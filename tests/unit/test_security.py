@@ -239,9 +239,9 @@ def test_consent_fails_closed_without_frontend():
 
 
 def test_destructive_cell_ops_require_consent_even_in_dangerous_mode():
-    """apply_patch / delete_cell must ask for explicit consent in every mode,
-    including dangerous: existing cells must never be deleted or overwritten
-    unless the user actively approves."""
+    """delete_cell must ask for explicit consent in every mode, including
+    dangerous: an existing cell must never be removed unless the user approves.
+    (apply_patch was removed: it overwrote an existing cell's source.)"""
     from peaksMCP.server.jupyter_peaks.backend import (
         ExecutionMode,
         SharedState,
@@ -273,10 +273,8 @@ def test_destructive_cell_ops_require_consent_even_in_dangerous_mode():
     notebook = UnsafeNotebookBackend(state, consent, AuditLogger("/tmp/peaksmcp-test-audit.jsonl"))
 
     with pytest.raises(PermissionError):
-        notebook.apply_patch(2, "x = 1")
-    with pytest.raises(PermissionError):
         notebook.delete_cell(0)
-    assert consent.calls == ["notebook_apply_patch", "notebook_delete_cell"]
+    assert consent.calls == ["notebook_delete_cell"]
 
 
 def test_execute_active_cell_scans_live_source_not_cache():

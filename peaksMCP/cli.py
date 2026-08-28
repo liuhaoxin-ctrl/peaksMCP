@@ -53,8 +53,9 @@ def command_launch(args: argparse.Namespace) -> None:
     log = root / "logs" / "supervisor.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     stream = log.open("a", encoding="utf-8")
+    notebook_arg = ["--notebook", args.notebook] if getattr(args, "notebook", None) else []
     process = subprocess.Popen(
-        [sys.executable, "-m", "peaksMCP", "_serve", "--profile", args.profile],
+        [sys.executable, "-m", "peaksMCP", "_serve", "--profile", args.profile, *notebook_arg],
         stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.STDOUT,
         start_new_session=True, close_fds=True,
     )
@@ -72,7 +73,10 @@ def command_launch(args: argparse.Namespace) -> None:
 
 def command_serve(args: argparse.Namespace) -> None:
     from .app.runtime import RuntimeSupervisor
-    RuntimeSupervisor(_profile(args.profile)).serve_forever()
+    supervisor = RuntimeSupervisor(_profile(args.profile))
+    if getattr(args, "notebook", None):
+        supervisor.notebook_path = args.notebook
+    supervisor.serve_forever()
 
 
 def command_status(_args: argparse.Namespace) -> None:
@@ -315,12 +319,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="peaksMCP", description="Claude Desktop bridge for Peaks ARPES analysis")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("version").set_defaults(func=lambda _a: print(__version__))
-    launch = sub.add_parser("launch")
+    launch = sub.add_parser("launch", help="start the supervisor; optional notebook path (e.g. a saved snapshot)")
+    launch.add_argument("notebook", nargs="?", default=None, help="notebook file to use as the workspace (e.g. peaksMCP-snapshot-xxx.ipynb)")
     launch.add_argument("--profile", default="default")
     launch.add_argument("--timeout", type=float, default=90)
     launch.set_defaults(func=command_launch)
     serve = sub.add_parser("_serve")
     serve.add_argument("--profile", default="default")
+    serve.add_argument("--notebook", default=None)
     serve.set_defaults(func=command_serve)
     sub.add_parser("status").set_defaults(func=command_status)
     sub.add_parser("stop").set_defaults(func=command_stop)

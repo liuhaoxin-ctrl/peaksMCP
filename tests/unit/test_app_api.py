@@ -101,6 +101,9 @@ class _FakeSupervisor:
     def start_mcp(self, timeout: float = 45) -> dict:
         return {"ready": True}
 
+    def export_variable(self, name: str, value: object) -> None:
+        self.exported = {name: value}
+
     def extension_status(self, timeout: float = 3) -> dict:
         return {"loaded": True, "detail": "IPython extension loaded"}
 

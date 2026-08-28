@@ -190,9 +190,16 @@ class RuntimeSupervisor:
         content_url = f"{self.jupyter_url}/api/contents/{self.notebook_path}"
         existing = httpx.get(content_url, headers=self._headers(), timeout=10)
         if existing.status_code == 404:
-            # Only a definite 404 means the notebook is absent; create it then.
-            # Any other non-200 (e.g. 400 for an unreadable path) must NOT be
-            # treated as "missing" and overwritten with a fresh empty notebook.
+            if self.notebook_path != "peaksMCP-runtime.ipynb":
+                # A user-specified notebook (e.g. a snapshot) must already exist;
+                # never fabricate an empty notebook for it.
+                raise FileNotFoundError(
+                    f"notebook {self.notebook_path!r} does not exist in the Jupyter workspace"
+                )
+            # Only a definite 404 on the default workspace means the notebook is
+            # absent; create it then.  Any other non-200 (e.g. 400 for an
+            # unreadable path) must NOT be treated as "missing" and overwritten
+            # with a fresh empty notebook.
             created = httpx.put(content_url, headers=self._headers(), json=notebook, timeout=15)
             created.raise_for_status()
         elif existing.status_code != 200:
@@ -295,6 +302,15 @@ class RuntimeSupervisor:
             return content
         finally:
             client.stop_channels()
+
+    def export_variable(self, name: str, value: Any) -> None:
+        """Set a Python variable in the notebook kernel namespace (silent, no cell).
+
+        Used after conversions so the agent can reference e.g. ``CONVERTED_DIR``
+        without guessing the output path. The variable shows up in
+        ``notebook_list_variables`` and can be used in any cell.
+        """
+        self.execute_kernel(f"{name} = {value!r}", timeout=30)
 
     def restart_mcp(self, timeout: float = 45) -> dict[str, Any]:
         """Restart only FastMCP inside the existing kernel, preserving variables."""

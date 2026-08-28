@@ -48,7 +48,4 @@ tools:
   notebook_delete_cell:
     title: Delete Notebook Cell
     description: With consent, delete the active or numbered notebook cell.
-  notebook_apply_patch:
-    title: Replace Notebook Cell
-    description: With consent, replace a cell source after Python syntax and security scanning.
 

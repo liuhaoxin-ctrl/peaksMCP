@@ -74,7 +74,7 @@ plain HTTP on `127.0.0.1`.
 ```bash
 peaksMCP launch          # single entry: JupyterLab + kernel + in-kernel MCP (127.0.0.1:8123/mcp) + operator dashboard (127.0.0.1:8765)
 peaksMCP status          # expect RUNNING + kernel_id
-peaksMCP mcp-ping        # expect ok: true, 17 tools (12 read-only + 5 consent-gated)
+peaksMCP mcp-ping        # expect ok: true, 16 tools (12 read-only + 4 consent-gated)
 peaksMCP dash            # open the operator-console dashboard in the browser (alias: open)
 ```
 
@@ -158,5 +158,9 @@ folder as the data (or its parent) and auto-translates it into
 `<output>/experiment_metadata.json` before converting — so a datasheet kept next
 to the raw data is used automatically. The dashboard panel is the same flow
 ("CSV & PXT Conversion").
+
+After a conversion, the notebook kernel gets a `CONVERTED_DIR` variable set to
+the output directory, so the agent can load results directly without guessing
+paths, e.g. `pks.load(f'{CONVERTED_DIR}/BP_0005.nc')`.
 
 See `docs/ARCHITECTURE.md` for the compact architecture map.

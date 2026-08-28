@@ -115,7 +115,10 @@ for (const operation of ['execute_active_cell', 'execute_code']) {
     assert.equal(reply.result.execution_success, true);
     assert.deepEqual(h.runs, [expected]);
     assert.equal(reply.result.id, expected);
-    assert.equal(h.notebook.activeCell.model.id, 'c');
+    // execute_code appends at the end, so the executed cell IS the last cell;
+    // execute_active_cell runs the focused cell, so a cursor move leaves 'c'.
+    const expectedActive = operation === 'execute_code' ? 'inserted' : 'c';
+    assert.equal(h.notebook.activeCell.model.id, expectedActive);
   });
 }
 

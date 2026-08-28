@@ -373,9 +373,18 @@ def create_app(supervisor: RuntimeSupervisor) -> Starlette:
         except Exception as exc:
             return JSONResponse({"error_type": type(exc).__name__, "error": str(exc)}, status_code=400)
         payload = result.model_dump(mode="json")
-        # Conversion does NOT auto-load: the user explicitly clicks the
-        # "Load" action (dashboard) or runs ``peaksMCP load`` to put the
-        # ``data = load(...)`` cell into the notebook.
+        # Expose the converted output directory to the notebook kernel so the
+        # agent can load the NetCDF files directly without guessing the path,
+        # e.g. ``pks.load(f'{CONVERTED_DIR}/BP_0005.nc')``. Best-effort: the
+        # conversion result is returned even if the kernel write fails.
+        converted = [item.output for item in result.items if item.status == "converted" and item.output]
+        if converted:
+            try:
+                await asyncio.to_thread(
+                    supervisor.export_variable, "CONVERTED_DIR", str(Path(converted[0]).parent)
+                )
+            except Exception:
+                pass
         return JSONResponse(payload)
 
     async def load_notebook(request: Request) -> JSONResponse:

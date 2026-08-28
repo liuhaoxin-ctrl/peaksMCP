@@ -154,6 +154,10 @@ async function handle(panel, comm, data) {
                 break;
             }
             case 'execute_code': {
+                // Append-only: always append the new cell at the END of the notebook,
+                // regardless of where the user's cursor is. Never insert mid-document
+                // and never overwrite an existing cell.
+                notebook.activeCellIndex = notebook.widgets.length - 1;
                 NotebookActions.insertBelow(notebook);
                 const executed = notebook.activeCell; // the cell we are about to run
                 if (!executed) {
@@ -228,6 +232,8 @@ async function handle(panel, comm, data) {
                 break;
             }
             case 'add_cell':
+                // Append-only: the new cell always lands at the END of the notebook.
+                notebook.activeCellIndex = notebook.widgets.length - 1;
                 NotebookActions.insertBelow(notebook);
                 if (data.cell_type === 'markdown') {
                     NotebookActions.changeCellType(notebook, 'markdown');
@@ -279,18 +285,10 @@ async function handle(panel, comm, data) {
                 result = { deleted: true, id: targetId, active_index: notebook.activeCellIndex };
                 break;
             }
-            case 'apply_patch': {
-                if (typeof data.index !== 'number' || data.index < 0 || data.index >= notebook.widgets.length) {
-                    throw new Error(`apply_patch index ${data.index} out of range (0..${notebook.widgets.length - 1})`);
-                }
-                if (typeof data.expected_id === 'string' && notebook.widgets[data.index].model.id !== data.expected_id) {
-                    throw new Error('target cell changed since authorisation — please re-run');
-                }
-                notebook.activeCellIndex = data.index;
-                notebook.activeCell?.model.sharedModel.setSource(data.source ?? '');
-                result = cellJSON(panel);
-                break;
-            }
+            case 'apply_patch':
+                // Removed: patching an existing cell would overwrite its source, which
+                // violates the append-only write guarantee. Use execute_code / add_cell.
+                throw new Error('apply_patch is no longer supported (append-only writes)');
             case 'restart_kernel':
                 // Frontend-initiated restart so JupyterLab reconnects the session and the
                 // extension re-opens the Comm (a REST restart would leave the UI detached).
@@ -303,7 +301,7 @@ async function handle(panel, comm, data) {
         // to disk so the analysis history survives a supervisor or JupyterLab restart.
         // A failed save is reported to the caller instead of being silently swallowed:
         // "executed" and "persisted" are distinct outcomes.
-        if (['execute_code', 'execute_active_cell', 'add_cell', 'delete_cell', 'apply_patch'].includes(data.operation)) {
+        if (['execute_code', 'execute_active_cell', 'add_cell', 'delete_cell'].includes(data.operation)) {
             try {
                 await panel.context.save();
                 result.saved = true;

@@ -19,7 +19,7 @@ async def test_initialize_list_and_safe_tool_calls():
     server = JupyterPeaksMCPServer(SharedState(FakeIPython()))
     async with Client(server.mcp) as client:
         tools = await client.list_tools()
-        assert len(tools) == 17
+        assert len(tools) == 16
         question = await client.call_tool("askuserquestion", {"prompt": "Photon energy?", "options": ["21.2 eV", "40.8 eV"]})
         assert question.data["status"] == "needs_input"
         variables = await client.call_tool("notebook_list_variables", {})

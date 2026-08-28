@@ -41,9 +41,10 @@ class JupyterPeaksMCPServer:
                 "Inspect xarray variables before analysis and preserve units in every figure. "
                 "Never save figures to disk (plt.savefig / fig.savefig) unless the user "
                 "explicitly asks for a saved file — figures are shown inline in the notebook. "
-                "Executing or editing notebook cells (notebook_execute_code, notebook_add_cell, "
-                "notebook_delete_cell, notebook_apply_patch, notebook_execute_active_cell) "
-                "requires explicit consent shown in the notebook."
+                "Executing or adding notebook cells (notebook_execute_code, notebook_add_cell) "
+                "always appends at the end of the notebook and requires explicit consent shown "
+                "in the notebook; notebook_delete_cell removes a cell only with consent. "
+                "Existing cells are never overwritten."
             ),
             strict_input_validation=True,
         )

@@ -33,7 +33,7 @@ def test_every_declared_tool_has_curated_metadata():
         "notebook_read_variable", "notebook_read_active_cell", "notebook_read_active_cell_output",
         "notebook_read_content", "notebook_move_cursor", "notebook_server_status",
         "notebook_kernel_status", "notebook_wait_for_kernel", "notebook_execute_code",
-        "notebook_execute_active_cell", "notebook_add_cell", "notebook_delete_cell", "notebook_apply_patch",
+        "notebook_execute_active_cell", "notebook_add_cell", "notebook_delete_cell",
     }
     for name in names:
         metadata = tool_metadata(name)

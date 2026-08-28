@@ -80,23 +80,3 @@ class UnsafeNotebookBackend:
         )
         return self.state.bridge.request("delete_cell", {"index": index, "expected_id": cell_id})
 
-    def apply_patch(self, index: int, source: str) -> dict[str, Any]:
-        # Bind the consent to the actual cell identity (id + current content),
-        # not just the index (see delete_cell).
-        cell = self.state.bridge.request("read_cell_at", {"index": index}, timeout=10)
-        cell_id = cell.get("id")
-        self._authorize(
-            "notebook_apply_patch",
-            source,
-            force_consent=True,
-            cell={
-                "index": index,
-                "action": "overwrite",
-                "id": cell_id,
-                "current_source": str(cell.get("source", ""))[:200],
-            },
-        )
-        return self.state.bridge.request(
-            "apply_patch", {"index": index, "source": source, "expected_id": cell_id}
-        )
-
