@@ -21,3 +21,4 @@ Verify axis names, units, color normalization, labels, panel order and
 DPI before presenting a figure as publication-ready. Read `references/workflows.md` for workflow
 selection and recovery guidance.
 
+Report missing experimental information/essential information to the conversation. Returns {"status": "needs_input", ...} — the frontend will ask the user in the                                                              next turn. options must be a list of plain strings.

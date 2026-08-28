@@ -8,7 +8,7 @@ tools:
     description: Return the exact signature, source-backed documentation and examples for one canonical API ID.
   askuserquestion:
     title: Ask User Question
-    description: Report missing experimental information so Claude can ask the user in the next conversation turn.
+    description: 'Report missing experimental information/essential information to the conversation. Returns {"status": "needs_input", ...} — the frontend will ask the user in the next turn. options must be a list of plain strings.'
   notebook_list_variables:
     title: List Notebook Variables
     description: List useful variables in the live kernel without reading array values.
