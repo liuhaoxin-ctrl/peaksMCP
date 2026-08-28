@@ -16,11 +16,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - name: Build JupyterLab extension (and fail on bundle drift)
+      - name: Build JupyterLab extension
+        working-directory: peaksMCP/extensions/jupyterlab
         run: |
-          cd peaksMCP/extensions/jupyterlab
           jlpm install
           jlpm run build:prod
-          git diff --exit-code -- peaksMCP/extensions/jupyterlab/labextension
+      - name: Check frontend bundle drift
+        id: check_frontend_bundle
+        run: |
+          frontend_changes=$(git status --porcelain --untracked-files=all -- peaksMCP/extensions/jupyterlab/lib peaksMCP/extensions/jupyterlab/labextension)
+          if [ -n "$frontend_changes" ]; then
+            printf '%s\n' "$frontend_changes"
+            exit 1
+          fi
       - run: ruff check peaksMCP tests tools
       - run: pytest -m 'not e2e'

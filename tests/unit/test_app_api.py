@@ -7,7 +7,7 @@ from starlette.testclient import TestClient
 from peaksMCP.app.api import create_app
 
 
-def test_auto_load_bridge_code_is_valid_multiline_python():
+def test_load_bridge_code_is_valid_multiline_python():
     """The kernel bridge code generated for load-into-notebook must compile as
     exec (a single-line ``def _do(): try:`` chain is invalid Python and used to
     be silently swallowed)."""
@@ -18,17 +18,19 @@ def test_auto_load_bridge_code_is_valid_multiline_python():
     class FakeSupervisor:
         def execute_kernel(self, code, timeout=10):
             captured["codes"].append(code)
-            return {}
+            return {"status": "ok"}
 
     result = load_into_notebook(FakeSupervisor(), "/data/BP_0001.nc")
     assert result is True
     bridge_code = captured["codes"][0]
     compile(bridge_code, "<load-into-notebook>", "exec")  # must be valid Python
-    assert "def _do():" in bridge_code
+    assert "def run():" in bridge_code
     assert "from peaks import load" in bridge_code
     assert "data = load(" in bridge_code
-    # The verification step checks the data variable actually landed.
-    assert any("data not loaded yet" in code for code in captured["codes"])
+    assert "execution_success" in bridge_code
+    assert "'data' not in" not in "\n".join(captured["codes"])
+    for code in captured["codes"]:
+        compile(code, "<load-control>", "exec")
 
 
 def test_auto_load_skips_without_output():

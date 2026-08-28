@@ -41,61 +41,98 @@ _INSPECTOR_ALLOWED = {
 _DASHBOARD_COOKIE = "peaksmcp_dashboard"
 
 
-def load_into_notebook(supervisor: RuntimeSupervisor, nc_path: str | None) -> bool:
+def load_into_notebook(supervisor: RuntimeSupervisor, nc_path: str | None, *, timeout: float = 45) -> bool:
     """Load a converted NetCDF into the notebook as a visible cell.
 
     Asks the kernel to insert and run ``from peaks import load\ndata = load(...)``
     through the frontend Comm bridge (so the cell appears in the notebook and is
-    saved), instead of silently loading into the kernel namespace.  Returns
-    ``True`` only after the ``data`` variable is verifiably present in the
-    kernel namespace (the load cell actually executed), ``False`` otherwise.
-    """
-    import time as _time
+    saved), instead of silently loading into the kernel namespace.
 
-    if not nc_path:
+    Parameters
+    ----------
+    supervisor : RuntimeSupervisor
+        Supervisor connected to the managed kernel.
+    nc_path : str or None
+        NetCDF file passed to ``peaks.load`` in the visible cell.
+    timeout : float, default 45
+        Seconds allowed to confirm this particular Load operation.
+
+    Returns
+    -------
+    bool
+        True only after the matching code cell reports successful execution.
+        False means failure or an unconfirmed outcome, not cancellation.
+
+    Notes
+    -----
+    Existing ``data`` variables do not count as evidence of this operation.
+    Failed/timed-out loads are not automatically replayed.
+
+    Examples
+    --------
+    >>> load_into_notebook(supervisor, "/data/BP_0001.nc")  # doctest: +SKIP
+    True
+    """
+
+    if not nc_path or timeout <= 0:
         return False
     load_code = f"from peaks import load\ndata = load({json.dumps(str(nc_path))})"
-    # Real multi-line source (a single-line ``def _do(): try:`` chain is invalid
-    # Python and would be silently swallowed by the except below).
-    bridge_code = f'''import threading as _t
-from peaksMCP.server.jupyter_peaks.jupyter_mcp_extension import get_server as _gs
-
-def _do():
-    try:
-        _gs().state.bridge.request('execute_code', {{'code': {json.dumps(load_code)}}}, timeout=30)
-    except Exception as _e:
-        print('auto-load skipped:', _e)
-
-_t.Thread(target=_do, daemon=True).start()
+    slot = f"_peaksMCP_load_{secrets.token_hex(16)}"
+    pending_marker = f"{slot}:pending"
+    # Each request gets an independent job, captured by the worker closure.
+    # The shell must be released so Jupyter can execute the frontend's cell.
+    bridge_code = f'''def _peaksMCP_start_load():
+    from threading import Thread
+    from peaksMCP.server.jupyter_peaks.jupyter_mcp_extension import get_server
+    job = {{"status": "pending"}}
+    get_ipython().user_ns[{slot!r}] = job
+    bridge = get_server().state.bridge
+    code = {load_code!r}
+    def run():
+        try:
+            result = bridge.request("execute_code", {{"code": code}}, timeout={min(30, timeout)!r})
+            if (result.get("execution_success") is not True
+                    or result.get("cell_type") != "code"
+                    or result.get("source") != code or not result.get("id")
+                    or any(output.get("output_type") == "error" for output in result.get("outputs", []))):
+                raise RuntimeError("Load cell did not confirm successful execution")
+            job["status"] = "completed"
+        except Exception as exc:
+            job.update(status="failed", error=str(exc))
+    Thread(target=run, daemon=True).start()
+try:
+    _peaksMCP_start_load()
+finally:
+    del _peaksMCP_start_load
 '''
+    probe_code = f'''if get_ipython().user_ns.get({slot!r}, {{}}).get("status") != "completed":
+    raise RuntimeError({slot!r} + ":" + get_ipython().user_ns.get({slot!r}, {{}}).get("status", "missing"))
+'''
+    deadline = time.monotonic() + timeout
     try:
-        compile(bridge_code, "<peaksMCP-auto-load>", "exec")
-    except SyntaxError:
+        started = supervisor.execute_kernel(bridge_code, timeout=min(10, timeout))
+        if started.get("status") != "ok":
+            return False
+        while time.monotonic() < deadline:
+            try:
+                reply = supervisor.execute_kernel(probe_code, timeout=min(5, deadline - time.monotonic()))
+                return reply.get("status") == "ok"
+            except RuntimeError as exc:
+                if pending_marker not in str(exc):
+                    return False
+            except TimeoutError:
+                # A busy kernel may still be executing the requested Load cell.
+                pass
+            time.sleep(min(0.25, max(0, deadline - time.monotonic())))
         return False
-    try:
-        supervisor.execute_kernel(bridge_code, timeout=10)
     except Exception:
         return False
-    # The load cell runs asynchronously through the frontend Comm; verify it
-    # actually executed by waiting for ``data`` to appear in the kernel
-    # namespace (execute_kernel raises on an error-status reply, so the guard
-    # below makes the polling observable).
-    deadline = _time.monotonic() + 20
-    while _time.monotonic() < deadline:
+    finally:
         try:
-            supervisor.execute_kernel(
-                "if 'data' not in get_ipython().user_ns: raise RuntimeError('data not loaded yet')",
-                timeout=5,
-            )
-            return True
-        except RuntimeError as exc:
-            if "not loaded yet" in str(exc):
-                _time.sleep(0.5)
-                continue
-            return False
+            supervisor.execute_kernel(f"get_ipython().user_ns.pop({slot!r}, None)", timeout=2)
         except Exception:
-            return False
-    return False
+            # A crashed/unreachable kernel cannot acknowledge cleanup either.
+            pass
 
 
 async def _jupyter_kernel_state(supervisor: RuntimeSupervisor) -> str:

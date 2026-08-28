@@ -141,6 +141,8 @@ class RuntimeSupervisor:
     def _wait_jupyter(self, timeout: float) -> None:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
+            if self._stop.is_set():
+                raise RuntimeError("stopping")
             if self.jupyter and self.jupyter.poll() is not None:
                 raise RuntimeError(f"JupyterLab exited with code {self.jupyter.returncode}")
             try:
@@ -446,10 +448,13 @@ class RuntimeSupervisor:
 
     def serve_forever(self) -> None:
         """Start and wait for SIGINT/SIGTERM as the background supervisor process."""
+        # Register handlers BEFORE start(): during start() (JupyterLab bring-up
+        # can take 30-60s) the default SIGTERM action would kill the process
+        # without running the finally block, orphaning the JupyterLab child.
+        for name in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(name, lambda _signum, _frame: self._stop.set())
         try:
             self.start()
-            for name in (signal.SIGINT, signal.SIGTERM):
-                signal.signal(name, lambda _signum, _frame: self._stop.set())
             while not self._stop.wait(0.5):
                 if self.jupyter and self.jupyter.poll() is not None:
                     self._log("supervisor", "JupyterLab exited; stopping supervisor")

@@ -151,7 +151,7 @@ def test_mcp_server_refuses_non_loopback_binding():
     JupyterPeaksMCPServer(state, host="0.0.0.0", port=9997, allow_remote=True)
 
 
-def test_kernelspec_reinstalled_when_profile_mode_changes(monkeypatch):
+def test_kernelspec_reinstalled_when_profile_mode_changes(monkeypatch, tmp_path):
     """A profile switched from dangerous back to safe must reinstall the
     kernelspec so the old dangerous startup script is not reused."""
 
@@ -170,17 +170,27 @@ def test_kernelspec_reinstalled_when_profile_mode_changes(monkeypatch):
 
     monkeypatch.setattr("peaksMCP.app.runtime.install_kernel", fake_install)
 
-    # Stop before start() reaches the JupyterLab spawn.
+    # Argument evaluation calls _jupyter_environment before Popen: isolate those
+    # config writes too, then stop at the actual process-creation boundary.
+    from unittest.mock import Mock
+
+    monkeypatch.setenv("PEAKSMCP_HOME", str(tmp_path / "runtime"))
+
     class _Stop(RuntimeError):
         pass
 
-    def _stop(*_args, **_kwargs):
-        raise _Stop()
-
-    monkeypatch.setattr(supervisor, "_wait_jupyter", _stop)
+    spawn = Mock(side_effect=_Stop())
+    wait = Mock(side_effect=AssertionError("no process was started"))
+    monkeypatch.setattr("peaksMCP.app.runtime.subprocess.Popen", spawn)
+    monkeypatch.setattr(supervisor, "_wait_jupyter", wait)
     with pytest.raises(_Stop):
         supervisor.start()
     assert calls == ["install:replace=True"]
+    spawn.assert_called_once()
+    wait.assert_not_called()
+    assert supervisor.jupyter is None
+    assert supervisor._reader is None
+    assert spawn.call_args.kwargs["env"]["JUPYTER_CONFIG_DIR"] == str(tmp_path / "runtime/jupyter")
 
 
 def test_startup_script_honors_autostart_and_allow_remote():

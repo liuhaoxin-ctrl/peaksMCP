@@ -131,6 +131,17 @@ def _temporary_output(target: Path) -> Path:
     return Path(name)
 
 
+def _validate_output_target(source: Path, target: Path) -> None:
+    """Reject raw-data destinations, including symlink and hard-link aliases."""
+    resolved = target.resolve()
+    if resolved == source or (source.exists() and resolved.exists() and source.samefile(resolved)):
+        raise ValueError("NetCDF output must not refer to the input PXT file")
+    if target.suffix.lower() != ".nc" or resolved.suffix.lower() != ".nc":
+        raise ValueError("NetCDF output must use the .nc extension; raw PXT files cannot be overwritten")
+    if resolved.is_dir():
+        raise ValueError("NetCDF output must be a file, not a directory")
+
+
 def _publish_output(temporary: Path, target: Path, *, force: bool) -> bool:
     """Atomically publish a completed NetCDF without violating overwrite policy.
 
@@ -169,11 +180,13 @@ def convert_pxt(
     input_path : path-like
         Source PXT file, which is never modified.
     output_path : path-like, optional
-        Destination NetCDF file. Defaults to the source stem with ``.nc``.
+        Destination NetCDF file ending in ``.nc``. Defaults to the source stem
+        with ``.nc``. It must not alias the input, including through links.
     metadata_path : path-like, optional
         Translated ``experiment_metadata.json`` document.
     force : bool, default False
-        Replace an existing destination only when explicitly enabled.
+        Replace an existing NetCDF destination only when explicitly enabled.
+        Input-file protection cannot be overridden.
 
     Returns
     -------
@@ -187,22 +200,21 @@ def convert_pxt(
     True
     """
     source = Path(input_path).expanduser().resolve()
-    target = (
-        Path(output_path).expanduser().resolve()
-        if output_path
-        else source.with_suffix(".nc")
-    )
+    requested_target = Path(output_path).expanduser() if output_path else source.with_suffix(".nc")
+    target = requested_target.resolve()
     index = index_from_path(source)
-    if target.exists() and not force:
-        return ConversionItem(
-            input=str(source),
-            output=str(target),
-            index=index,
-            status="skipped",
-            warnings=["output exists"],
-        )
     temporary: Path | None = None
     try:
+        # Check safety before both loading data and the existing-output shortcut.
+        _validate_output_target(source, requested_target)
+        if target.exists() and not force:
+            return ConversionItem(
+                input=str(source),
+                output=str(target),
+                index=index,
+                status="skipped",
+                warnings=["output exists"],
+            )
         data = load_pxt(source)
         document = _load_metadata(metadata_path)
         warnings: list[str] = []
@@ -224,6 +236,8 @@ def convert_pxt(
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = _temporary_output(target)
         data.to_netcdf(temporary, engine="h5netcdf")
+        # A target may have changed while the data was being serialized.
+        _validate_output_target(source, target)
         if not _publish_output(temporary, target, force=force):
             temporary.unlink()
             return ConversionItem(

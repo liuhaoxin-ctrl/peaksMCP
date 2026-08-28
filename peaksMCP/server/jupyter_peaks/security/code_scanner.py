@@ -1,10 +1,9 @@
 """Alias-aware, AST-semantic scanner for dangerous notebook code.
 
-The scanner works on the parsed AST rather than on ``ast.unparse`` text so
-that aliased imports, keyword arguments, method calls on constructed objects
-(e.g. ``Path(...).unlink()``) and indirect fetches (``getattr(obj, "exec")``)
-cannot slip past the rules.  All matching is done on a canonical attribute
-chain with import aliases resolved.
+The scanner matches canonical AST attribute chains, including common import,
+assignment and constructor aliases. It is a best-effort guard, not a Python
+sandbox: arbitrary runtime reflection and existing kernel objects cannot be
+fully described by source-only analysis.
 """
 
 from __future__ import annotations
@@ -64,14 +63,30 @@ class ScanResult:
 
 
 class _Aliases(ast.NodeVisitor):
-    """Collect ``import`` aliases so ``import os as o`` resolves to ``os``."""
+    """Record alias bindings at each node, in source order.
 
-    def __init__(self) -> None:
-        self.names: dict[str, str] = {}
+    A later reassignment must not erase the meaning of an earlier call. Function
+    and class bodies are inspected in separate scopes rather than changing the
+    surrounding bindings.
+    """
+
+    def __init__(self, names: dict[str, str] | None = None) -> None:
+        self.names = dict(names or {})
+        self._snapshots: dict[int, dict[str, str]] = {}
+
+    def visit(self, node: ast.AST) -> None:
+        self._snapshots[id(node)] = self.names.copy()
+        super().visit(node)
+
+    def at(self, node: ast.AST) -> _Aliases:
+        return _Aliases(self._snapshots.get(id(node), {}))
 
     def visit_Import(self, node: ast.Import) -> None:
         for item in node.names:
-            self.names[item.asname or item.name] = item.name
+            # ``import os.path`` binds ``os``, not a local named ``os.path``.
+            self.names[item.asname or item.name.split(".")[0]] = (
+                item.name if item.asname else item.name.split(".")[0]
+            )
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         module = node.module or ""
@@ -81,29 +96,112 @@ class _Aliases(ast.NodeVisitor):
     def resolve(self, name: str) -> str:
         return self.names.get(name, name)
 
-    def collect_assignments(self, tree: ast.AST) -> None:
-        """Track assignment aliases such as ``f = os.system`` so that ``f("id")``
-        resolves to ``os.system``.  Iterated to a fixpoint for chains like
-        ``g = f; f = os.system``."""
-        for _ in range(3):
-            changed = False
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Assign) or len(node.targets) != 1:
-                    continue
-                target = node.targets[0]
-                if not isinstance(target, ast.Name):
-                    continue
-                if isinstance(node.value, ast.Attribute):
-                    resolved = ".".join(_chain(node.value, self))
-                elif isinstance(node.value, ast.Name):
-                    resolved = self.resolve(node.value.id)
-                else:
-                    continue
-                if self.names.get(target.id) != resolved:
-                    self.names[target.id] = resolved
-                    changed = True
-            if not changed:
-                break
+    def _reference(self, value: ast.AST) -> str | None:
+        if isinstance(value, (ast.Name, ast.Attribute)):
+            return ".".join(_chain(value, self))
+        if isinstance(value, ast.Call):
+            name = _call_name(value, self)
+            if name in _PATH_CONSTRUCTORS | _NETWORK_CLIENTS:
+                return name
+            if name in {"getattr", "builtins.getattr"} and len(value.args) >= 2:
+                if isinstance(value.args[1], ast.Constant):
+                    return ".".join(_chain(value, self))
+            # Path-valued methods preserve the receiver's origin.
+            if isinstance(value.func, ast.Attribute) and value.func.attr in {
+                "absolute", "cwd", "home", "expanduser", "resolve", "joinpath", "with_name",
+                "with_stem", "with_suffix",
+            }:
+                receiver = self._reference(value.func.value)
+                if receiver and _has_path_origin(receiver.split(".")):
+                    return receiver
+        if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Div):
+            receiver = self._reference(value.left)
+            if receiver and _has_path_origin(receiver.split(".")):
+                return receiver
+        return None
+
+    def _bind(self, target: ast.AST, value: ast.AST, source: _Aliases | None = None) -> None:
+        # Resolve all RHS expressions before updating targets, including swaps
+        # such as ``f, g = print, f`` and chained assignments.
+        source = source or _Aliases(self.names)
+        if isinstance(target, ast.Name):
+            reference = source._reference(value)
+            if reference is None:
+                self.names.pop(target.id, None)
+            else:
+                self.names[target.id] = reference
+        elif isinstance(target, (ast.Tuple, ast.List)) and isinstance(value, (ast.Tuple, ast.List)):
+            if len(target.elts) == len(value.elts):
+                for child, item in zip(target.elts, value.elts, strict=True):
+                    self._bind(child, item, source)
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        self.generic_visit(node)
+        source = _Aliases(self.names)
+        for target in node.targets:
+            self._bind(target, node.value, source)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self.generic_visit(node)
+        if node.value is not None:
+            self._bind(node.target, node.value)
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        self.generic_visit(node)
+        self._bind(node.target, node.value)
+
+    def visit_With(self, node: ast.With | ast.AsyncWith) -> None:
+        for item in node.items:
+            self.visit(item.context_expr)
+            if item.optional_vars is not None:
+                self._bind(item.optional_vars, item.context_expr)
+        for statement in node.body:
+            self.visit(statement)
+
+    visit_AsyncWith = visit_With
+
+    def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> None:
+        arguments = node.args
+        parameters = [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]
+        parameters.extend(arg for arg in (arguments.vararg, arguments.kwarg) if arg)
+        # Defaults, annotations and decorators execute in the surrounding scope.
+        outer_expressions = [*arguments.defaults, *arguments.kw_defaults]
+        outer_expressions.extend(arg.annotation for arg in parameters)
+        if not isinstance(node, ast.Lambda):
+            outer_expressions.extend([*node.decorator_list, node.returns])
+        for expression in outer_expressions:
+            if expression is not None:
+                self.visit(expression)
+        outer = self.names.copy()
+        for parameter in parameters:
+            self.names.pop(parameter.arg, None)
+        positional = [*arguments.posonlyargs, *arguments.args]
+        defaults = zip(positional[len(positional) - len(arguments.defaults):], arguments.defaults, strict=True)
+        keyword_defaults = zip(arguments.kwonlyargs, arguments.kw_defaults, strict=True)
+        for parameter, default in [*defaults, *keyword_defaults]:
+            if default is not None:
+                reference = _Aliases(outer)._reference(default)
+                if reference is not None:
+                    self.names[parameter.arg] = reference
+        body = [node.body] if isinstance(node, ast.Lambda) else node.body
+        for statement in body:
+            self.visit(statement)
+        self.names = outer
+        if not isinstance(node, ast.Lambda):
+            self.names.pop(node.name, None)
+
+    visit_FunctionDef = _visit_function
+    visit_AsyncFunctionDef = _visit_function
+    visit_Lambda = _visit_function
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        for expression in [*node.bases, *node.keywords, *node.decorator_list]:
+            self.visit(expression)
+        outer = self.names.copy()
+        for statement in node.body:
+            self.visit(statement)
+        self.names = outer
+        self.names.pop(node.name, None)
 
 
 # --------------------------------------------------------------------------- #
@@ -128,28 +226,29 @@ def _chain(node: ast.AST, aliases: _Aliases) -> list[str]:
     ``os.environ.update``            -> ``["os", "environ", "update"]``
     ``Path('x').unlink`` (func part) -> ``["Path", "unlink"]``
     ``o.environ['A']`` (subscript)   -> ``["os", "environ"]``
-    ``getattr(b, 'exec')`` (func)    -> ``["getattr", "exec"]``
+    ``getattr(builtins, 'exec')``   -> ``["builtins", "exec"]``
     """
-    parts: list[str] = []
-    cur = node
-    while isinstance(cur, ast.Attribute):
-        parts.append(cur.attr)
-        cur = cur.value
-    if isinstance(cur, ast.Name):
-        parts.append(aliases.resolve(cur.id))
-    elif isinstance(cur, ast.Call):
-        parts.append(_func_text(cur, aliases))
-    elif isinstance(cur, ast.Subscript):
-        # Fold os.environ['A'] -> os.environ; keep value chain only.
-        return _chain(cur.value, aliases)
-    elif isinstance(cur, ast.Constant):
-        parts.append(repr(cur.value))
-    elif isinstance(cur, ast.Starred):
-        parts.append("(starred)")
-    else:
-        parts.append(f"({type(cur).__name__})")
-    parts.reverse()
-    return parts
+    if isinstance(node, ast.Attribute):
+        return [*_chain(node.value, aliases), node.attr]
+    if isinstance(node, ast.Name):
+        # Normalize ``from os import environ`` to the same chain as os.environ.
+        return aliases.resolve(node.id).split(".")
+    if isinstance(node, ast.Call):
+        name = _func_text(node, aliases)
+        if name in {"getattr", "builtins.getattr"} and len(node.args) >= 2:
+            attribute = node.args[1]
+            if isinstance(attribute, ast.Constant) and isinstance(attribute.value, str):
+                return [*_chain(node.args[0], aliases), attribute.value]
+        return name.split(".")
+    if isinstance(node, ast.Subscript):
+        return _chain(node.value, aliases)
+    if isinstance(node, ast.NamedExpr):
+        return _chain(node.value, aliases)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        return _chain(node.left, aliases)
+    if isinstance(node, ast.Constant):
+        return [repr(node.value)]
+    return [f"({type(node).__name__})"]
 
 
 def _call_name(node: ast.Call, aliases: _Aliases) -> str:
@@ -170,6 +269,9 @@ _SYSTEM_CALLS = {
 }
 _DYNAMIC_IMPORTS = {"__import__", "builtins.__import__", "importlib.import_module"}
 _PATH_METHODS = {"unlink", "write_text", "write_bytes", "rmdir", "rename", "replace", "symlink_to", "hardlink_to"}
+_PATH_CONSTRUCTORS = {
+    "Path", "PosixPath", "WindowsPath", "pathlib.Path", "pathlib.PosixPath", "pathlib.WindowsPath",
+}
 _ENV_MUTATORS = {"update", "setdefault", "pop", "clear", "__setitem__", "__delitem__"}
 _DYN_BASES = {"globals", "locals", "vars", "__builtins__", "builtins"}
 _INDIRECT_TARGETS = {"exec", "eval", "compile", "__import__"}
@@ -188,6 +290,11 @@ _NETWORK_CALLS = {
     "requests.head", "requests.options", "urllib.request.urlopen", "urllib.request.Request",
     "httpx.get", "httpx.post", "httpx.put", "httpx.patch", "httpx.delete",
 }
+_NETWORK_CLIENTS = {"requests.Session", "requests.sessions.Session", "httpx.Client", "httpx.AsyncClient"}
+
+
+def _has_path_origin(chain: list[str]) -> bool:
+    return any(part in {"Path", "PosixPath", "WindowsPath"} for part in chain)
 
 
 def _is_path_method_call(node: ast.Call, aliases: _Aliases) -> bool:
@@ -195,8 +302,7 @@ def _is_path_method_call(node: ast.Call, aliases: _Aliases) -> bool:
     chain = _chain(node.func, aliases)
     if not chain or chain[-1] not in _PATH_METHODS:
         return False
-    # Chain forms: ['Path','unlink'], ['pathlib.Path','unlink'] or ['pathlib','Path','unlink']
-    return any(e == "Path" or e == "pathlib.Path" or e.endswith(".Path") for e in chain)
+    return _has_path_origin(chain)
 
 
 def _is_env_mutation_call(node: ast.Call, aliases: _Aliases) -> bool:
@@ -209,14 +315,15 @@ def _is_env_mutation_call(node: ast.Call, aliases: _Aliases) -> bool:
 
 def _is_env_assignment(target: ast.AST, aliases: _Aliases) -> bool:
     """``os.environ[...] = ...`` / ``o.environ['A'] += ...`` / ``del os.environ['A']``."""
-    return _chain(target, aliases)[:2] == ["os", "environ"]
+    # Rebinding/deleting a local alias (``env = {}``) does not mutate environ.
+    return isinstance(target, (ast.Attribute, ast.Subscript)) and _chain(target, aliases)[:2] == ["os", "environ"]
 
 
-def _open_modes(node: ast.Call) -> bool:
+def _open_modes(node: ast.Call, mode_position: int = 1) -> bool:
     """Flag ``open`` in a modifying mode, positional or ``mode=`` keyword."""
     flags = "wax+"
-    if len(node.args) > 1 and isinstance(node.args[1], ast.Constant):
-        if any(flag in str(node.args[1].value) for flag in flags):
+    if len(node.args) > mode_position and isinstance(node.args[mode_position], ast.Constant):
+        if any(flag in str(node.args[mode_position].value) for flag in flags):
             return True
     for keyword in node.keywords:
         if keyword.arg == "mode" and isinstance(keyword.value, ast.Constant):
@@ -291,10 +398,10 @@ def scan_code(code: str) -> ScanResult:
         detail = {"message": exc.msg, "line": exc.lineno, "offset": exc.offset, "text": exc.text}
         return ScanResult(True, issues, "code contains a Python syntax error", detail)
 
-    aliases = _Aliases()
-    aliases.visit(tree)
-    aliases.collect_assignments(tree)
+    bindings = _Aliases()
+    bindings.visit(tree)
     for node in ast.walk(tree):
+        aliases = bindings.at(node)
         if isinstance(node, ast.Call):
             name = _call_name(node, aliases)
             if name in _CRITICAL_CALLS or (name.split(".")[-1] in _CRITICAL_CALLS and name.startswith("builtins.")):
@@ -303,8 +410,10 @@ def scan_code(code: str) -> ScanResult:
                 issues.append(SecurityIssue("SYS001", f"system or destructive operation via {name}", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
             elif name in _DYNAMIC_IMPORTS:
                 issues.append(SecurityIssue("IMPORT001", f"dynamic import via {name}", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
-            elif name == "open" and _open_modes(node):
+            elif name in {"open", "builtins.open", "io.open"} and _open_modes(node):
                 issues.append(SecurityIssue("FILE001", "file opened in a modifying mode", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+            elif name.endswith(".open") and _has_path_origin(_chain(node.func, aliases)) and _open_modes(node, mode_position=0):
+                issues.append(SecurityIssue("FILE001", "path opened in a modifying mode", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
             elif _is_path_method_call(node, aliases):
                 issues.append(SecurityIssue("SYS001", f"destructive path operation via {name}", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
             elif _is_env_mutation_call(node, aliases):
@@ -313,13 +422,16 @@ def scan_code(code: str) -> ScanResult:
                 consent_issues.append(SecurityIssue("SAVE001", "figure save (savefig); figures are shown inline by default — approve only to write to disk", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
             elif name in _FILE_WRITERS or name.rsplit(".", 1)[-1] in _FILE_WRITE_METHOD_NAMES:
                 consent_issues.append(SecurityIssue("SAVE002", f"file write via {name}; approve only to write to disk", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
-            elif name in _NETWORK_CALLS:
+            elif name in _NETWORK_CALLS or (
+                name.rsplit(".", 1)[0] in _NETWORK_CLIENTS
+                and name.rsplit(".", 1)[-1] in {"get", "post", "put", "patch", "delete", "head", "options", "request", "send"}
+            ):
                 consent_issues.append(SecurityIssue("NET001", f"network request via {name}; approve only to send data externally", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
             target = _indirect_call_target(node, aliases)
             if target:
                 if target in _INDIRECT_TARGETS:
                     issues.append(SecurityIssue("EXEC001", f"dynamic code execution via indirect fetch of {target}", RiskLevel.CRITICAL, getattr(node, "lineno", 0), ast.unparse(node)))
-                elif target in _SYSTEM_METHOD_NAMES:
+                elif target in _SYSTEM_METHOD_NAMES | _PATH_METHODS:
                     issues.append(SecurityIssue("SYS001", f"system or destructive operation via indirect fetch of {target}", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
                 elif target == "open" and _open_modes(node):
                     issues.append(SecurityIssue("FILE001", "file opened in a modifying mode via indirect fetch", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))

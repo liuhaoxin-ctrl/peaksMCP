@@ -49,6 +49,123 @@ def test_bypass_patterns_are_blocked(code):
     assert scan_code(code).blocked
 
 
+@pytest.mark.parametrize("code, rule", [
+    ("from pathlib import Path\np = Path('x')\np.write_text('bad')", "SYS001"),
+    ("import pathlib as pl\np = pl.Path('x')\np.write_bytes(b'bad')", "SYS001"),
+    ("from pathlib import Path as P\np = P('x')\nq = p\nq.unlink()", "SYS001"),
+    ("from pathlib import Path\np: Path = Path('x')\np.rename('y')", "SYS001"),
+    ("from pathlib import Path\np = q = Path('x')\nq.rmdir()", "SYS001"),
+    ("from pathlib import Path\np, n = Path('x'), 1\np.replace('y')", "SYS001"),
+    ("from pathlib import Path\np = Path('x') / 'y'\np.write_text('bad')", "SYS001"),
+    ("from pathlib import Path\np = Path('x').resolve()\np.write_bytes(b'bad')", "SYS001"),
+    ("from pathlib import Path\np = Path.cwd() / 'x'\np.write_text('bad')", "SYS001"),
+    ("from pathlib import Path\np = Path('x')\nf = p.unlink\nf()", "SYS001"),
+    ("from pathlib import Path\np = Path('x')\nf = getattr(p, 'unlink')\nf()", "SYS001"),
+    ("from pathlib import Path\n(p := Path('x')).unlink()", "SYS001"),
+    ("from pathlib import Path\np = Path('x')\np.open('w')", "FILE001"),
+    ("from pathlib import Path\np = Path('x')\np.open(mode='a')", "FILE001"),
+    ("from pathlib import Path\nPath('x').open('r+')", "FILE001"),
+    ("import builtins\nbuiltins.open('x', 'w')", "FILE001"),
+    ("import builtins as b\nb.open('x', mode='a')", "FILE001"),
+    ("from builtins import open as op\nop('x', 'x')", "FILE001"),
+    ("import io\nio.open('x', mode='wb')", "FILE001"),
+    ("from io import open as op\nf = op\nf('x', 'r+')", "FILE001"),
+    ("from os import environ\nenviron['A'] = 'B'", "ENV001"),
+    ("from os import environ as env\nenv.update({'A': 'B'})", "ENV001"),
+    ("from os import environ as env\ndel env['A']", "ENV001"),
+    ("from os import environ as env\nenv['A'] += 'B'", "ENV001"),
+    ("import os\nenv = os.environ\nenv.clear()", "ENV001"),
+    ("from os import environ\nmutate = environ.update\nmutate({'A': 'B'})", "ENV001"),
+    # Later rebinding must not disguise a dangerous call that already occurred.
+    ("import os\nf = os.system\nf('id')\nf = print", "SYS001"),
+    ("import os as o\no.system('id')\no = None", "SYS001"),
+    ("import os\nf = os.system\ndef harmless():\n    f = print\nf('id')", "SYS001"),
+    ("import os\nf = os.system\nclass Local:\n    f = print\nf('id')", "SYS001"),
+    ("import os\nf = os.system\nf, g = print, f\ng('id')", "SYS001"),
+    ("import os\nos = f = os.system\nf('id')", "SYS001"),
+    ("import os as o\ndef dangerous(o=o):\n    o.system('id')\ndangerous()", "SYS001"),
+    ("import os as o\ndef dangerous(*, o=o):\n    o.system('id')\ndangerous()", "SYS001"),
+])
+def test_object_and_module_aliases_cannot_bypass_scanner(code, rule):
+    result = scan_code(code)
+    assert result.blocked
+    assert any(issue.rule_id == rule for issue in result.issues), result.to_dict()
+    assert result.syntax_error is None
+
+
+@pytest.mark.parametrize("code", [
+    "import os\nf = os.system\nf = print\nf('hello')",
+    "import os\nf = os.system\ndef harmless(f):\n    f('hello')",
+    "from pathlib import Path\np = Path('x')\nq = p\nq.read_text()",
+    "from pathlib import Path\np = Path('x')\np.open()",
+    "from pathlib import Path\np = Path('x')\np.open('rb')",
+    "import builtins\nbuiltins.open('x', 'r')",
+    "from io import open as op\nop('x', mode='rb')",
+    "from os import environ as env\nprint(env.get('A'))",
+    "from os import environ\nprint(environ['A'])",
+    "from os import environ as env\nenv = {}\nenv['A'] = 'B'",
+    "from os import environ as env\ndel env",
+    "result = data.attrs.get('units')\nselected = data.sel(eV=slice(-1, 0))",
+])
+def test_readonly_and_local_rebindings_remain_allowed(code):
+    result = scan_code(code)
+    assert result.is_safe, result.to_dict()
+    assert result.requires_explicit_consent == []
+
+
+@pytest.mark.parametrize("code", [
+    "import requests\nsession = requests.Session()\nsession.post('https://example.com', data=data)",
+    "from requests import Session as S\ns = S()\nclient = s\nclient.get('https://example.com')",
+    "import httpx\nc = httpx.Client()\nc.post('https://example.com', json=data)",
+    "from httpx import AsyncClient as C\nc = C()\nc.get('https://example.com')",
+    "import requests\nrequests.Session().post('https://example.com', data=data)",
+    "import requests\nwith requests.Session() as s:\n    s.post('https://example.com', data=data)",
+    "import httpx\nasync def send():\n    async with httpx.AsyncClient() as c:\n        await c.post('https://example.com', json=data)",
+])
+def test_network_client_aliases_require_explicit_consent(code):
+    result = scan_code(code)
+    assert result.is_safe
+    assert any(issue.rule_id == "NET001" for issue in result.requires_explicit_consent)
+
+
+@pytest.mark.parametrize("code", [
+    "from pathlib import Path\np = Path('x')\np.write_text('bad')",
+    "import builtins\nbuiltins.open('x', 'w')",
+    "from os import environ\nenviron['A'] = 'B'",
+])
+@pytest.mark.parametrize("operation", ["execute_code", "execute_active_cell"])
+def test_alias_bypasses_are_rejected_before_kernel_execution(code, operation):
+    """Check the real backend gate without executing any of the unsafe source."""
+    from unittest.mock import Mock
+
+    from peaksMCP.server.jupyter_peaks.backend import (
+        ExecutionMode,
+        SharedState,
+        UnsafeNotebookBackend,
+    )
+
+    state = SharedState(Mock(user_ns={}))
+    state.mode = ExecutionMode.DANGEROUS
+    state.bridge = Mock()
+    state.bridge.request.return_value = {"id": "cell-1", "source": code}
+    consent, audit = Mock(), Mock()
+    notebook = UnsafeNotebookBackend(state, consent, audit)
+
+    with pytest.raises(PermissionError):
+        if operation == "execute_code":
+            notebook.execute_code(code)
+        else:
+            notebook.execute_active_cell()
+
+    if operation == "execute_code":
+        state.bridge.request.assert_not_called()
+    else:
+        state.bridge.request.assert_called_once_with("read_active_cell", timeout=10)
+    consent.request.assert_not_called()
+    audit.write.assert_called_once()
+    assert audit.write.call_args.args[1] == "blocked"
+
+
 @pytest.mark.parametrize("code", [
     # File writes / network egress require explicit consent (never hard-block).
     "import numpy as np\nnp.save('/tmp/x.npy', data)",
@@ -217,4 +334,3 @@ def test_audit_is_jsonl_and_private(tmp_path):
     AuditLogger(path).write("tool", "approved", {"x": 1})
     assert json.loads(path.read_text())["tool"] == "tool"
     assert path.stat().st_mode & 0o777 == 0o600
-

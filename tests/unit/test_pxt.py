@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -122,6 +123,90 @@ def test_non_force_does_not_overwrite_concurrent_publisher(monkeypatch, tmp_path
     assert result.warnings == ["output was created by another conversion"]
     assert target.read_bytes() == b"competing-output"
     assert not list(tmp_path.glob(f".{target.name}.*.part"))
+
+
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("target_kind", [
+    "same_path", "relative_path", "symlink", "parent_symlink", "hardlink",
+    "other_pxt", "other_pxt_symlink", "uppercase_pxt", "invalid_suffix",
+    "input_named_nc", "directory",
+])
+def test_converter_rejects_unsafe_targets_before_loading(monkeypatch, tmp_path, target_kind, force):
+    source = tmp_path / ("BP_0005.nc" if target_kind == "input_named_nc" else "BP_0005.pxt")
+    raw = b"original raw PXT bytes must remain untouched"
+    source.write_bytes(raw)
+    other = tmp_path / "BP_0006.pxt"
+    other.write_bytes(b"another original experiment")
+    target = source
+    if target_kind == "relative_path":
+        monkeypatch.chdir(tmp_path)
+        target = source.relative_to(tmp_path)
+    elif target_kind in {"symlink", "other_pxt_symlink"}:
+        target = tmp_path / "alias.nc"
+        target.symlink_to(source if target_kind == "symlink" else other)
+    elif target_kind == "parent_symlink":
+        parent = tmp_path / "alias_dir"
+        parent.symlink_to(tmp_path, target_is_directory=True)
+        target = parent / source.name
+    elif target_kind == "hardlink":
+        target = tmp_path / "alias.nc"
+        target.hardlink_to(source)
+    elif target_kind == "other_pxt":
+        target = other
+    elif target_kind == "uppercase_pxt":
+        target = tmp_path / "new.PXT"
+    elif target_kind == "invalid_suffix":
+        target = tmp_path / "experiment.json"
+    elif target_kind == "directory":
+        target = tmp_path / "directory.nc"
+        target.mkdir()
+    loader = Mock(side_effect=AssertionError("unsafe target must be rejected before loading"))
+    monkeypatch.setattr("peaksMCP.pxt_utils.converter.load_pxt", loader)
+    before = set(tmp_path.iterdir())
+
+    result = convert_pxt(source, target, force=force)
+
+    assert result.status == "failed"
+    assert result.error_type == "ValueError"
+    loader.assert_not_called()
+    assert source.read_bytes() == raw
+    assert other.read_bytes() == b"another original experiment"
+    assert set(tmp_path.iterdir()) == before
+    assert not list(tmp_path.glob(".*.part"))
+
+
+@pytest.mark.parametrize("link_kind", ["symlink", "hardlink"])
+def test_converter_rechecks_source_alias_before_publication(monkeypatch, tmp_path, link_kind):
+    source = tmp_path / "BP_0005.pxt"
+    source.write_bytes(b"original raw data")
+    target = tmp_path / "BP_0005.nc"
+
+    def changed_target(_source):
+        if link_kind == "symlink":
+            target.symlink_to(source)
+        else:
+            target.hardlink_to(source)
+        return xr.DataArray(np.ones((2, 3)), dims=("eV", "theta_par"))
+
+    monkeypatch.setattr("peaksMCP.pxt_utils.converter.load_pxt", changed_target)
+    result = convert_pxt(source, target, force=True)
+    assert result.status == "failed"
+    assert result.error_type == "ValueError"
+    assert target.samefile(source)
+    assert source.read_bytes() == b"original raw data"
+    assert not list(tmp_path.glob(".*.part"))
+
+
+def test_convert_path_force_cannot_overwrite_raw_input(monkeypatch, tmp_path):
+    source = tmp_path / "BP_0005.pxt"
+    source.write_bytes(b"original raw data")
+    loader = Mock(side_effect=AssertionError("load must not run"))
+    monkeypatch.setattr("peaksMCP.pxt_utils.converter.load_pxt", loader)
+    report = convert_path(source, source, force=True)
+    assert report.items[0].status == "failed"
+    assert report.items[0].error_type == "ValueError"
+    assert source.read_bytes() == b"original raw data"
+    loader.assert_not_called()
 
 
 @pytest.mark.parametrize(("name", "expected"), [("BP_0005.pxt", 5), ("scan_42.pxt", 42), ("scan.pxt", None)])

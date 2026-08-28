@@ -156,12 +156,17 @@ async function handle(panel, comm, data) {
             case 'execute_code': {
                 NotebookActions.insertBelow(notebook);
                 const executed = notebook.activeCell; // the cell we are about to run
-                executed?.model.sharedModel.setSource(data.code ?? '');
-                await NotebookActions.run(notebook, panel.sessionContext);
-                // run() moves the active cell to the next one; read the EXECUTED cell.
+                if (!executed) {
+                    throw new Error('could not create a code cell');
+                }
+                executed.model.sharedModel.setSource(data.code ?? '');
+                // run() acts on the whole UI selection. Only this new cell is authorised.
+                const executionSuccess = await NotebookActions.runCells(notebook, [executed], panel.sessionContext);
+                // Keep reporting the executed cell even if the user moves the cursor.
                 const executedJSON = () => ({
                     id: executed?.model.id, index: notebook.widgets.findIndex(w => w.model.id === executed?.model.id),
                     cell_type: executed?.model.type, source: executed?.model.sharedModel.getSource(),
+                    execution_success: executionSuccess,
                     outputs: executed && executed.model.type === 'code' ? executed.model.outputs?.toJSON() ?? [] : [],
                 });
                 result = executedJSON();
@@ -199,11 +204,12 @@ async function handle(panel, comm, data) {
                 if (typeof data.expected_source === 'string' && cell.model.sharedModel.getSource() !== data.expected_source) {
                     throw new Error('cell content changed since scan — please re-run');
                 }
-                await NotebookActions.run(notebook, panel.sessionContext);
-                // run() moves the active cell; report the executed cell's outputs.
+                const executionSuccess = await NotebookActions.runCells(notebook, [cell], panel.sessionContext);
+                // Report the authorised cell, regardless of the current UI selection.
                 const executedJSON = () => ({
                     id: cell.model.id, index: notebook.widgets.findIndex(w => w.model.id === cell.model.id),
                     cell_type: cell.model.type, source: cell.model.sharedModel.getSource(),
+                    execution_success: executionSuccess,
                     outputs: cell.model.type === 'code' ? cell.model.outputs?.toJSON() ?? [] : [],
                 });
                 result = executedJSON();
@@ -232,13 +238,23 @@ async function handle(panel, comm, data) {
                 notebook.activeCell?.model.sharedModel.setSource(data.source ?? '');
                 result = cellJSON(panel);
                 break;
-            case 'delete_cell':
-                if (typeof data.index === 'number') {
-                    notebook.activeCellIndex = data.index;
+            case 'delete_cell': {
+                const index = data.index ?? notebook.activeCellIndex;
+                if (!Number.isInteger(index) || index < 0 || index >= notebook.widgets.length) {
+                    throw new Error('cell index is out of range');
                 }
+                const target = notebook.widgets[index];
+                if (target.model.getMetadata('deletable') === false) {
+                    throw new Error('target cell is not deletable');
+                }
+                const targetId = target.model.id;
+                notebook.activeCellIndex = index;
+                // deleteCells() deletes every selected cell, not just activeCellIndex.
+                notebook.deselectAll();
                 NotebookActions.deleteCells(notebook);
-                result = { deleted: true, active_index: notebook.activeCellIndex };
+                result = { deleted: true, id: targetId, active_index: notebook.activeCellIndex };
                 break;
+            }
             case 'apply_patch':
                 notebook.activeCellIndex = data.index;
                 notebook.activeCell?.model.sharedModel.setSource(data.source ?? '');

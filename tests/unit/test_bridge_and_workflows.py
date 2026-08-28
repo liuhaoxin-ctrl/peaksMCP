@@ -27,14 +27,14 @@ def test_comm_bridge_request_reply_and_state_update():
 
         def send(self, payload):
             self.sent.append(payload)
-            # Reply synchronously so the request event resolves.
+            # Deliver through the registered callback on a separate thread.
             if payload.get("type") == "request":
                 reply = {"request_id": payload["request_id"], "ok": True, "result": {"value": 42}}
-                thread = threading.Thread(target=lambda: bridge._on_message({"content": {"data": reply}}), daemon=True)
+                thread = threading.Thread(target=lambda: self.message_callback({"content": {"data": reply}}), daemon=True)
                 thread.start()
 
-        def on_msg(self, _cb):
-            pass
+        def on_msg(self, callback):
+            self.message_callback = callback
 
         def on_close(self, _cb):
             pass
@@ -48,7 +48,7 @@ def test_comm_bridge_request_reply_and_state_update():
     assert comm.sent[-1]["type"] == "request"
 
     # A pushed active-cell message updates the state cache.
-    bridge._on_message({"content": {"data": {"type": "active_cell", "cell": {"id": "c1", "index": 1}, "outputs": [{"output_type": "display_data"}]}}})
+    comm.message_callback({"content": {"data": {"type": "active_cell", "cell": {"id": "c1", "index": 1}, "outputs": [{"output_type": "display_data"}]}}})
     assert state.active_cell == {"id": "c1", "index": 1}
     assert len(state.active_cell_output) == 1
 
