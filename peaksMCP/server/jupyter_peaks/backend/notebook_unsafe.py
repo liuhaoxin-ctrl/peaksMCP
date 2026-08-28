@@ -63,23 +63,40 @@ class UnsafeNotebookBackend:
         return self.state.bridge.request("add_cell", {"source": source, "cell_type": cell_type, "position": position})
 
     def delete_cell(self, index: int | None = None) -> dict[str, Any]:
-        # Deleting an existing cell is destructive: always require explicit
-        # user approval, even in dangerous mode, and state which cell is targeted.
+        # Bind the consent to the actual cell identity (id + current content),
+        # not just the index: concurrent edits / other tabs can shift indices
+        # between authorisation and execution.
+        cell = self.state.bridge.request("read_cell_at", {"index": index}, timeout=10)
+        cell_id = cell.get("id")
         self._authorize(
             "notebook_delete_cell",
             force_consent=True,
-            cell={"index": index, "action": "delete"},
+            cell={
+                "index": index,
+                "action": "delete",
+                "id": cell_id,
+                "current_source": str(cell.get("source", ""))[:200],
+            },
         )
-        return self.state.bridge.request("delete_cell", {"index": index})
+        return self.state.bridge.request("delete_cell", {"index": index, "expected_id": cell_id})
 
     def apply_patch(self, index: int, source: str) -> dict[str, Any]:
-        # Overwriting an existing cell is destructive: always require explicit
-        # user approval, even in dangerous mode, and state which cell is targeted.
+        # Bind the consent to the actual cell identity (id + current content),
+        # not just the index (see delete_cell).
+        cell = self.state.bridge.request("read_cell_at", {"index": index}, timeout=10)
+        cell_id = cell.get("id")
         self._authorize(
             "notebook_apply_patch",
             source,
             force_consent=True,
-            cell={"index": index, "action": "overwrite"},
+            cell={
+                "index": index,
+                "action": "overwrite",
+                "id": cell_id,
+                "current_source": str(cell.get("source", ""))[:200],
+            },
         )
-        return self.state.bridge.request("apply_patch", {"index": index, "source": source})
+        return self.state.bridge.request(
+            "apply_patch", {"index": index, "source": source, "expected_id": cell_id}
+        )
 

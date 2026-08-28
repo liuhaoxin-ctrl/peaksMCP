@@ -238,6 +238,18 @@ async function handle(panel, comm, data) {
                 notebook.activeCell?.model.sharedModel.setSource(data.source ?? '');
                 result = cellJSON(panel);
                 break;
+            case 'read_cell_at': {
+                const idx = typeof data.index === 'number' ? data.index : notebook.activeCellIndex;
+                if (!Number.isInteger(idx) || idx < 0 || idx >= notebook.widgets.length) {
+                    throw new Error('cell index is out of range');
+                }
+                const cell = notebook.widgets[idx];
+                result = {
+                    id: cell.model.id, index: idx, cell_type: cell.model.type,
+                    source: cell.model.sharedModel.getSource(),
+                };
+                break;
+            }
             case 'delete_cell': {
                 const index = data.index ?? notebook.activeCellIndex;
                 if (!Number.isInteger(index) || index < 0 || index >= notebook.widgets.length) {
@@ -248,6 +260,9 @@ async function handle(panel, comm, data) {
                     throw new Error('target cell is not deletable');
                 }
                 const targetId = target.model.id;
+                if (typeof data.expected_id === 'string' && targetId !== data.expected_id) {
+                    throw new Error('target cell changed since authorisation — please re-run');
+                }
                 notebook.activeCellIndex = index;
                 // deleteCells() deletes every selected cell, not just activeCellIndex.
                 notebook.deselectAll();
@@ -255,11 +270,18 @@ async function handle(panel, comm, data) {
                 result = { deleted: true, id: targetId, active_index: notebook.activeCellIndex };
                 break;
             }
-            case 'apply_patch':
+            case 'apply_patch': {
+                if (typeof data.index !== 'number' || data.index < 0 || data.index >= notebook.widgets.length) {
+                    throw new Error(`apply_patch index ${data.index} out of range (0..${notebook.widgets.length - 1})`);
+                }
+                if (typeof data.expected_id === 'string' && notebook.widgets[data.index].model.id !== data.expected_id) {
+                    throw new Error('target cell changed since authorisation — please re-run');
+                }
                 notebook.activeCellIndex = data.index;
                 notebook.activeCell?.model.sharedModel.setSource(data.source ?? '');
                 result = cellJSON(panel);
                 break;
+            }
             case 'restart_kernel':
                 // Frontend-initiated restart so JupyterLab reconnects the session and the
                 // extension re-opens the Comm (a REST restart would leave the UI detached).

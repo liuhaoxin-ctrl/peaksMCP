@@ -27,6 +27,19 @@ from .kernel import install_kernel, kernel_installed, kernel_spec_state
 from .profiles import Profile
 
 
+def _port_owner(host: str, port: int) -> int | None:
+    """Return the pid listening on (host, port), or None when free."""
+    try:
+        import psutil
+
+        for conn in psutil.net_connections(kind="inet"):
+            if conn.laddr and conn.laddr.port == port and conn.laddr.ip in (host, "127.0.0.1", "0.0.0.0", "::"):
+                return conn.pid
+    except Exception:
+        pass
+    return None
+
+
 class RuntimeSupervisor:
     """Launch, monitor and recover the Jupyter/Kernel/MCP process chain."""
 
@@ -79,10 +92,21 @@ class RuntimeSupervisor:
             if installed is None or installed.get("mode") != expected["mode"] or installed.get("autostart") != expected["autostart"]:
                 self._log("supervisor", f"kernelspec mode/autostart changed; reinstalling {self.profile.jupyter.kernel_name}")
                 install_kernel(self.profile, replace=True)
+        # Fail fast when the Jupyter port is already taken instead of waiting for
+        # a timeout: JupyterLab would otherwise auto-bind the next free port and
+        # the supervisor would keep polling the configured one.
+        occupied = _port_owner(self.profile.jupyter.host, self.profile.jupyter.port)
+        if occupied is not None:
+            raise RuntimeError(
+                f"port {self.profile.jupyter.port} is already in use by pid {occupied}; "
+                "a previous instance may not have stopped cleanly — run  "
+                "or free the port first"
+            )
         command = [
             sys.executable, "-m", "jupyterlab", "--no-browser",
             f"--ServerApp.ip={self.profile.jupyter.host}",
             f"--ServerApp.port={self.profile.jupyter.port}",
+            "--ServerApp.port_retries=0",
             f"--ServerApp.token={self.token}",
             "--ServerApp.open_browser=False",
         ]
@@ -165,13 +189,17 @@ class RuntimeSupervisor:
         }
         content_url = f"{self.jupyter_url}/api/contents/{self.notebook_path}"
         existing = httpx.get(content_url, headers=self._headers(), timeout=10)
-        if existing.status_code != 200:
-            # GET may answer 404 (fresh workspace) or 400 (e.g. a legacy
-            # hidden-path notebook or unreadable path). PUT is idempotent, so
-            # attempt creation whenever the notebook is not present and readable
-            # instead of silently skipping creation and failing the session POST.
+        if existing.status_code == 404:
+            # Only a definite 404 means the notebook is absent; create it then.
+            # Any other non-200 (e.g. 400 for an unreadable path) must NOT be
+            # treated as "missing" and overwritten with a fresh empty notebook.
             created = httpx.put(content_url, headers=self._headers(), json=notebook, timeout=15)
             created.raise_for_status()
+        elif existing.status_code != 200:
+            raise RuntimeError(
+                f"cannot read notebook {self.notebook_path}: GET /api/contents returned "
+                f"{existing.status_code} (refusing to overwrite)"
+            )
         response = httpx.post(
             f"{self.jupyter_url}/api/sessions",
             headers=self._headers(),

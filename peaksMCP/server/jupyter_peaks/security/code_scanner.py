@@ -319,17 +319,29 @@ def _is_env_assignment(target: ast.AST, aliases: _Aliases) -> bool:
     return isinstance(target, (ast.Attribute, ast.Subscript)) and _chain(target, aliases)[:2] == ["os", "environ"]
 
 
-def _open_modes(node: ast.Call, mode_position: int = 1) -> bool:
-    """Flag ``open`` in a modifying mode, positional or ``mode=`` keyword."""
+def _open_modes(node: ast.Call, mode_position: int = 1) -> str | None:
+    """Classify an ``open`` mode: ``"w"`` (modifying), ``"r"`` (read-only) or
+    ``None`` when the mode is not statically resolvable (e.g. a variable) and
+    read-only-ness cannot be confirmed."""
     flags = "wax+"
-    if len(node.args) > mode_position and isinstance(node.args[mode_position], ast.Constant):
-        if any(flag in str(node.args[mode_position].value) for flag in flags):
-            return True
+
+    def classify(value: Any) -> str | None:
+        text = str(value)
+        if any(flag in text for flag in flags):
+            return "w"
+        return "r"
+
+    if len(node.args) > mode_position:
+        arg = node.args[mode_position]
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            return classify(arg.value)
+        return None  # variable / expression mode: cannot confirm read-only
     for keyword in node.keywords:
-        if keyword.arg == "mode" and isinstance(keyword.value, ast.Constant):
-            if any(flag in str(keyword.value.value) for flag in flags):
-                return True
-    return False
+        if keyword.arg == "mode":
+            if isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str):
+                return classify(keyword.value.value)
+            return None  # variable / expression mode
+    return None
 
 
 def _indirect_call_target(node: ast.Call, aliases: _Aliases) -> str | None:
@@ -410,9 +422,13 @@ def scan_code(code: str) -> ScanResult:
                 issues.append(SecurityIssue("SYS001", f"system or destructive operation via {name}", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
             elif name in _DYNAMIC_IMPORTS:
                 issues.append(SecurityIssue("IMPORT001", f"dynamic import via {name}", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
-            elif name in {"open", "builtins.open", "io.open"} and _open_modes(node):
+            elif name in {"open", "builtins.open", "io.open"} and _open_modes(node) == "w":
                 issues.append(SecurityIssue("FILE001", "file opened in a modifying mode", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
-            elif name.endswith(".open") and _has_path_origin(_chain(node.func, aliases)) and _open_modes(node, mode_position=0):
+            elif name in {"open", "builtins.open", "io.open"} and _open_modes(node) is None:
+                # mode is a variable/expression: read-only-ness cannot be
+                # confirmed, so it always requires explicit consent.
+                consent_issues.append(SecurityIssue("FILE002", "open() with a non-constant mode; read-only-ness cannot be confirmed — approve only if safe", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+            elif name.endswith(".open") and _has_path_origin(_chain(node.func, aliases)) and _open_modes(node, mode_position=0) == "w":
                 issues.append(SecurityIssue("FILE001", "path opened in a modifying mode", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
             elif _is_path_method_call(node, aliases):
                 issues.append(SecurityIssue("SYS001", f"destructive path operation via {name}", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
@@ -433,8 +449,10 @@ def scan_code(code: str) -> ScanResult:
                     issues.append(SecurityIssue("EXEC001", f"dynamic code execution via indirect fetch of {target}", RiskLevel.CRITICAL, getattr(node, "lineno", 0), ast.unparse(node)))
                 elif target in _SYSTEM_METHOD_NAMES | _PATH_METHODS:
                     issues.append(SecurityIssue("SYS001", f"system or destructive operation via indirect fetch of {target}", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
-                elif target == "open" and _open_modes(node):
+                elif target == "open" and _open_modes(node) == "w":
                     issues.append(SecurityIssue("FILE001", "file opened in a modifying mode via indirect fetch", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+                elif target == "open" and _open_modes(node) is None:
+                    consent_issues.append(SecurityIssue("FILE002", "open() with a non-constant mode via indirect fetch; read-only-ness cannot be confirmed", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
                 elif target in _FILE_WRITE_METHOD_NAMES:
                     consent_issues.append(SecurityIssue("SAVE002", f"file write via indirect fetch of {target}; approve only to write to disk", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
         if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):

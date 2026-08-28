@@ -29,6 +29,20 @@ def _data_unit(data: xr.DataArray) -> str:
     return _unit(data)
 
 
+def _resolve_axis_dim(data: xr.DataArray, axis: Any) -> str | None:
+    """Resolve an x=/y= plot argument (dimension or coordinate name) to the
+    dimension that owns the label, or None when not statically identifiable."""
+    if axis is None:
+        return None
+    if isinstance(axis, str):
+        if axis in data.dims:
+            return axis
+        if axis in data.coords:
+            for dim in data[axis].dims:
+                return dim
+    return None
+
+
 def _compatible_for_shared_colorbar(items: Sequence[xr.DataArray]) -> bool:
     if not items or any(item.ndim != 2 for item in items):
         return False
@@ -193,10 +207,15 @@ def plot_batch(
                 if array.ndim >= 2 and col > 0:
                     axis.set_ylabel("")
             else:
+                # When the caller pins axes via x= / y= (dimension or coordinate
+                # name), label those dimensions; otherwise fall back to the
+                # natural dims order (last dim = x, second-to-last = y).
+                x_dim = _resolve_axis_dim(array, plot_kwargs.get("x"))
+                y_dim = _resolve_axis_dim(array, plot_kwargs.get("y"))
                 if array.ndim >= 1:
-                    axis.set_xlabel(_axis_label(array, array.dims[-1]))
+                    axis.set_xlabel(_axis_label(array, x_dim if x_dim is not None else array.dims[-1]))
                 if array.ndim >= 2:
-                    axis.set_ylabel(_axis_label(array, array.dims[-2]))
+                    axis.set_ylabel(_axis_label(array, y_dim if y_dim is not None else array.dims[-2]))
 
         for axis in flat_axes[len(page) :]:
             axis.set_visible(False)
