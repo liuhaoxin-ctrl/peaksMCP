@@ -112,7 +112,17 @@ def load_into_notebook(
     for i, p in enumerate(paths):
         var = "data" if i == 0 else f"data_{i + 1}"
         load_lines.append(f"{var} = load({json.dumps(str(p))})")
-    load_code = "from peaks import load\n" + "\n".join(load_lines)
+    # Expose the experiment metadata document (datasheet records, Au references,
+    # agent notes) that the converter writes next to the converted files, as a
+    # ``metadata`` dict in the same cell, when present.
+    metadata_doc = Path(paths[0]).expanduser().resolve().parent / "experiment_metadata.json"
+    metadata_lines = []
+    if metadata_doc.is_file():
+        metadata_lines = [
+            "import json",
+            f"metadata = json.load(open({str(metadata_doc)!r}, encoding='utf-8'))",
+        ]
+    load_code = "from peaks import load\n" + "\n".join([*load_lines, *metadata_lines])
     slot = f"_peaksMCP_load_{secrets.token_hex(16)}"
     # Each request gets an independent job, captured by the worker closure.
     # The shell must be released so Jupyter can execute the frontend's cell.

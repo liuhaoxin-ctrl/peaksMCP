@@ -34,6 +34,46 @@ def test_load_bridge_code_is_valid_multiline_python():
         compile(code, "<load-control>", "exec")
 
 
+def test_load_embeds_experiment_metadata_when_present(tmp_path):
+    from peaksMCP.app.api import load_into_notebook
+
+    nc = tmp_path / "BP_0001.nc"
+    nc.write_text("dummy")
+    (tmp_path / "experiment_metadata.json").write_text("{}", encoding="utf-8")
+
+    captured: dict[str, list[str]] = {"codes": []}
+
+    class FakeSupervisor:
+        def execute_kernel(self, code, timeout=10):
+            captured["codes"].append(code)
+            return {"status": "ok"}
+
+    assert load_into_notebook(FakeSupervisor(), [str(nc)], timeout=2) is True
+    bridge_code = captured["codes"][0]
+    compile(bridge_code, "<load-into-notebook>", "exec")
+    assert "import json" in bridge_code
+    assert "metadata = json.load(open(" in bridge_code
+    assert str(nc.parent / "experiment_metadata.json") in bridge_code
+
+
+def test_load_skips_metadata_when_absent(tmp_path):
+    from peaksMCP.app.api import load_into_notebook
+
+    nc = tmp_path / "BP_0001.nc"
+    nc.write_text("dummy")
+
+    captured: dict[str, list[str]] = {"codes": []}
+
+    class FakeSupervisor:
+        def execute_kernel(self, code, timeout=10):
+            captured["codes"].append(code)
+            return {"status": "ok"}
+
+    assert load_into_notebook(FakeSupervisor(), [str(nc)], timeout=2) is True
+    bridge_code = captured["codes"][0]
+    assert "metadata = json.load" not in bridge_code
+
+
 def test_auto_load_skips_without_output():
     from peaksMCP.app.api import load_into_notebook
 
