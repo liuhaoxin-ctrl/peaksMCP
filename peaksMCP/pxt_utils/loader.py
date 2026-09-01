@@ -11,37 +11,104 @@ from typing import Any
 import numpy as np
 import xarray as xr
 from igor2 import packed
+from igor2.record.wave import WaveRecord
+
+
+def _load_packed(path: str | os.PathLike[str]) -> tuple[list[Any], dict[str, Any]]:
+    """Load a packed experiment while accepting either Igor byte order.
+
+    Igor2 normally infers byte order from the first versioned record.  Some
+    valid packed experiments begin with an unversioned record, so inference
+    is impossible until a later record.  Retrying both explicit byte orders
+    keeps those files readable without changing the common fast path.
+    """
+    errors: list[Exception] = []
+    for byte_order in (None, "<", ">"):
+        try:
+            return packed.load(
+                os.fspath(path),
+                **({} if byte_order is None else {"initial_byte_order": byte_order}),
+            )
+        except (OSError, ValueError) as exc:
+            errors.append(exc)
+    raise ValueError(f"{path}: unable to read packed experiment") from errors[0]
+
+
+def _decode_text(value: Any) -> str:
+    """Decode an Igor byte string or byte array without raising."""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace").rstrip("\x00")
+    array = np.asarray(value)
+    if array.dtype.kind in {"S", "U"}:
+        pieces = array.ravel().tolist()
+        raw = b"".join(piece for piece in pieces if isinstance(piece, bytes))
+        if raw:
+            return raw.decode("utf-8", errors="replace").rstrip("\x00")
+        return "".join(str(piece) for piece in pieces).rstrip("\x00")
+    return str(value) if value is not None else ""
+
+
+def _dimension_description(wave: dict[str, Any], ndim: int) -> str:
+    """Return one normalized label/unit description per wave dimension."""
+    extended = _decode_text(wave.get("dimension_units", b""))
+    if extended:
+        return extended
+
+    header = wave["wave_header"]
+    header_units = header.get("dimUnits", [])
+    labels = wave.get("labels", [])
+    descriptions: list[str] = []
+    for position in range(ndim):
+        label = ""
+        if position < len(labels) and labels[position]:
+            label = _decode_text(labels[position][0])
+        unit = ""
+        if position < len(header_units):
+            unit = _decode_text(header_units[position])
+        descriptions.append(f"{label} [{unit}]".strip() if unit else label)
+    return "".join(descriptions)
 
 
 def _extract_wave(
     path: str | os.PathLike[str],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, str]:
-    records, filesystem = packed.load(os.fspath(path))
+    records, filesystem = _load_packed(path)
     _ = records
-    candidates: list[tuple[float, dict[str, Any], np.ndarray]] = []
-    for value in filesystem["root"].values():
-        if "WaveRecord" not in type(value).__name__:
-            continue
+    candidates: list[tuple[tuple[str, ...], dict[str, Any], np.ndarray]] = []
+
+    def collect(dirpath: list[bytes], key: bytes, value: Any) -> None:
+        if not isinstance(value, WaveRecord):
+            return
         try:
             wave = value.wave["wave"]
             values = np.asarray(wave["wData"])
-            score = len(wave.get("note", b"")) + values.size * 1e-6
-            candidates.append((score, wave, values))
+            path_parts = tuple(_decode_text(part) for part in [*dirpath, key])
+            candidates.append((path_parts, wave, values))
         except Exception:
-            continue
+            return
+
+    packed.walk(filesystem["root"], collect)
     if not candidates:
         raise ValueError(f"{path}: no readable wave record")
-    _, wave, values = max(candidates, key=lambda item: item[0])
+    if len(candidates) > 1:
+        names = ", ".join(":".join(parts) for parts, _, _ in candidates)
+        raise ValueError(
+            f"{path}: expected exactly one data wave, found {len(candidates)} ({names})"
+        )
+    _, wave, values = candidates[0]
     header = wave["wave_header"]
-    units = wave.get("dimension_units", b"")
-    if isinstance(units, bytes):
-        units = units.decode("utf-8", errors="replace")
+    shape = np.asarray(header["nDim"], dtype=int)
+    declared_shape = tuple(int(size) for size in shape if size > 0)
+    if declared_shape != values.shape:
+        raise ValueError(
+            f"{path}: wave header shape {declared_shape} does not match data shape {values.shape}"
+        )
     return (
         values,
-        np.asarray(header["nDim"], dtype=int),
+        shape,
         np.asarray(header["sfA"], dtype=float),
         np.asarray(header["sfB"], dtype=float),
-        str(units),
+        _dimension_description(wave, values.ndim),
     )
 
 

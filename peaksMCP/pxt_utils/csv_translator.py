@@ -26,8 +26,6 @@ _KNOWN_FIELDS = {
     "Comment",
 }
 _DISCARDED_FIELDS = {"L. Power", "N.S."}
-
-
 def _number(value: str) -> float | None:
     text = (value or "").strip()
     if not text:
@@ -48,22 +46,37 @@ def _unique_headers(headers: list[str]) -> list[str]:
     return output
 
 
-def _record(index: int, row: dict[str, str], warnings: list[str]) -> ExperimentRecord:
-    temperature = _number(row.get("Temperture") or row.get("Temperature") or "")
-    central = _number(row.get("Central Energy", ""))
-    pass_energy = _number(row.get("Pass E.", ""))
-    slit = _number(row.get("slit", ""))
-    start = _number(row.get("Ei", ""))
-    stop = _number(row.get("Ef", ""))
-    theta = _number(row.get("Theta", ""))
-    if row.get("Theta", "").strip() and theta is None:
-        warnings.append(f"Index {index}: Theta is not numeric")
+def _numeric_field(
+    row: dict[str, str], field: str, index: int, warnings: list[str]
+) -> float | None:
+    raw = row.get(field, "")
+    value = _number(raw)
+    if raw.strip() and value is None:
+        warnings.append(f"Index {index}: {field} is not numeric: {raw.strip()!r}")
+    return value
+
+
+def _record(
+    index: int,
+    row: dict[str, str],
+    warnings: list[str],
+    note_headers: set[str],
+) -> ExperimentRecord:
+    temperature_field = "Temperture" if row.get("Temperture", "").strip() else "Temperature"
+    temperature = _numeric_field(row, temperature_field, index, warnings)
+    central = _numeric_field(row, "Central Energy", index, warnings)
+    pass_energy = _numeric_field(row, "Pass E.", index, warnings)
+    slit = _numeric_field(row, "slit", index, warnings)
+    start = _numeric_field(row, "Ei", index, warnings)
+    stop = _numeric_field(row, "Ef", index, warnings)
+    theta = _numeric_field(row, "Theta", index, warnings)
 
     unmapped: dict[str, Any] = {}
     for key, value in row.items():
         text = (value or "").strip()
-        if text and key not in _KNOWN_FIELDS and key not in _DISCARDED_FIELDS:
+        if text and key not in _KNOWN_FIELDS and key not in _DISCARDED_FIELDS and key not in note_headers:
             unmapped[key] = text
+            warnings.append(f"Index {index}: unmapped field {key!r} was preserved")
 
     analyser: dict[str, Any] = {}
     if central is not None:
@@ -82,6 +95,9 @@ def _record(index: int, row: dict[str, str], warnings: list[str]) -> ExperimentR
         experiment["data_format"] = row["Data format"].strip()
     if row.get("Comment", "").strip():
         experiment["comment"] = row["Comment"].strip()
+    agent_notes = [row[name].strip() for name in note_headers if row.get(name, "").strip()]
+    if agent_notes:
+        experiment["agent_notes"] = agent_notes
 
     polarization = row.get("Polarization", "").strip()
     return ExperimentRecord(
@@ -132,15 +148,16 @@ def translate_datasheet(
     if len(rows) < 2:
         raise ValueError("datasheet must contain a title row and a header row")
     title = next((cell.strip() for cell in rows[0] if cell.strip()), "")
-    header_notes = [
-        cell.strip()
-        for cell in rows[1]
-        if "note" in cell.lower() or "给agent" in cell.lower()
-    ]
     headers = _unique_headers(rows[1])
+    note_headers = {
+        header
+        for header in headers
+        if "note" in header.lower() or "给agent" in header.lower()
+    }
     if "Index" not in headers:
         raise ValueError("datasheet header must contain Index")
     warnings: list[str] = []
+    notes: list[str] = []
     records: dict[str, ExperimentRecord] = {}
     for line_number, values in enumerate(rows[2:], start=3):
         values = [*values, *([""] * max(0, len(headers) - len(values)))]
@@ -163,11 +180,15 @@ def translate_datasheet(
         key = str(index)
         if key in records:
             raise ValueError(f"line {line_number}: duplicate Index {index}")
-        records[key] = _record(index, row, warnings)
+        records[key] = _record(index, row, warnings, note_headers)
+        for header in note_headers:
+            value = row.get(header, "").strip()
+            if value:
+                notes.append(f"Index {index}: {value}")
 
     metadata = ExperimentMetadata(
         title=title,
-        notes=header_notes,
+        notes=notes,
         source_csv=str(source),
         source_sha256=hashlib.sha256(raw).hexdigest(),
         records=records,

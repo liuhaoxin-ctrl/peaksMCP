@@ -39,6 +39,20 @@ def default_output_dir(source: Path) -> Path:
     return source.parent / f"{source.name}_netcdf"
 
 
+def _discover_pxt_files(source: Path, substring: str = "") -> list[Path]:
+    """Return top-level PXT files with case-insensitive extension matching."""
+    return sorted(
+        (
+            path
+            for path in source.iterdir()
+            if path.is_file()
+            and path.suffix.casefold() == ".pxt"
+            and (not substring or substring in path.name)
+        ),
+        key=lambda path: (path.name.casefold(), path.name),
+    )
+
+
 def index_from_path(path: str | Path) -> int | None:
     """Extract the trailing integer index from a PXT filename stem."""
     match = _INDEX_RE.search(Path(path).stem)
@@ -89,7 +103,12 @@ def _find_datasheet(source: Path) -> Path | None:
     return None
 
 
-def _auto_metadata(metadata_path: str | None, source: Path, destination: Path) -> str | None:
+def _auto_metadata(
+    metadata_path: str | None,
+    source: Path,
+    destination: Path,
+    report_warnings: list[str] | None = None,
+) -> str | None:
     """Translate the sibling ``datasheet.csv`` when no explicit metadata was given.
 
     The translated document is written to ``destination/experiment_metadata.json``
@@ -112,9 +131,14 @@ def _auto_metadata(metadata_path: str | None, source: Path, destination: Path) -
         # without metadata and can fix the datasheet.
         import warnings
 
-        warnings.warn(
+        message = (
             f"datasheet translation failed for {datasheet.name}: "
-            f"{type(exc).__name__}: {exc}",
+            f"{type(exc).__name__}: {exc}"
+        )
+        if report_warnings is not None:
+            report_warnings.append(message)
+        warnings.warn(
+            message,
             UserWarning,
             stacklevel=2,
         )
@@ -326,6 +350,7 @@ def convert_path(
     True
     """
     source = Path(input_path).expanduser().resolve()
+    report_warnings: list[str] = []
     # Validate the optional metadata file once, before any conversion runs, so a
     # missing metadata document aborts with a single clear error instead of a
     # per-file failure for the whole batch.
@@ -334,7 +359,9 @@ def convert_path(
         destination = Path(output_dir).expanduser().resolve() if output_dir else source.parent
         # The auto-translated metadata lives next to the data (never derived from
         # an explicit single-file output path, which could be a .nc file).
-        metadata_path = _auto_metadata(metadata_path, source, source.parent)
+        metadata_path = _auto_metadata(
+            metadata_path, source, source.parent, report_warnings
+        )
         target = (
             destination / f"{source.stem}.nc"
             if destination.is_dir() or not destination.suffix
@@ -348,7 +375,8 @@ def convert_path(
                     metadata_path=metadata_path,
                     force=force,
                 )
-            ]
+            ],
+            warnings=report_warnings,
         )
     if not source.is_dir():
         raise FileNotFoundError(source)
@@ -360,12 +388,10 @@ def convert_path(
         if output_dir
         else default_output_dir(source)
     )
-    metadata_path = _auto_metadata(metadata_path, source, destination)
-    files = [
-        path
-        for path in sorted(source.glob("*.pxt"))
-        if not substring or substring in path.name
-    ]
+    metadata_path = _auto_metadata(
+        metadata_path, source, destination, report_warnings
+    )
+    files = _discover_pxt_files(source, substring)
     tasks = [
         ConversionTask(
             input_path=str(path),
@@ -398,9 +424,14 @@ def convert_path(
             )
     return ConversionReport(
         items=items,
+        warnings=report_warnings,
         cpu={
             "average_percent": batch.average_cpu_percent,
             "peak_percent": batch.peak_cpu_percent,
+            "peak_moving_average_percent": batch.peak_moving_average_cpu_percent,
+            "budget_percent": batch.cpu_budget_percent,
+            "budget_strategy": batch.cpu_budget_strategy,
+            "budget_exceeded": batch.cpu_budget_exceeded,
             "duration_s": batch.duration_s,
         },
     )

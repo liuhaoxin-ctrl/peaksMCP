@@ -63,6 +63,7 @@ class ConversionReport(BaseModel):
 
     items: list[ConversionItem] = Field(default_factory=list)
     cpu: dict[str, float] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
 
     @property
     def converted(self) -> int:
@@ -82,4 +83,3 @@ class ConversionTask(BaseModel):
     output_path: str
     metadata_path: str | None = None
     force: bool = False
-

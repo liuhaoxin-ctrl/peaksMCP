@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+from pathlib import Path
 from unittest.mock import Mock
 
 import numpy as np
@@ -15,6 +17,8 @@ from peaksMCP.pxt_utils.converter import (
 )
 from peaksMCP.pxt_utils.csv_translator import translate_datasheet
 from peaksMCP.pxt_utils.loader import load_pxt
+
+PXT_FIXTURES = Path(__file__).parents[1] / "fixtures" / "pxt"
 
 
 def write_datasheet(path, rows):
@@ -31,6 +35,7 @@ def test_datasheet_translation_mapping_warning_and_atomic_write(tmp_path):
     assert record.temperature == {"sample": 9.4, "unit": "K"}
     assert record.analyser["scan"]["pass_energy_eV"] == 5
     assert record.unmapped == {"Unknown": "extra"}
+    assert any("unmapped field 'Unknown'" in warning for warning in document.warnings)
     assert json.loads(output.read_text())["records"]["5"]["photon"]["polarisation"] == "S"
     assert not output.with_suffix(".json.part").exists()
 
@@ -47,6 +52,20 @@ def test_duplicate_invalid_and_missing_index_rows(tmp_path):
     assert translate_datasheet(source).warnings
 
 
+def test_datasheet_reports_all_invalid_numeric_fields_and_actual_agent_notes(tmp_path):
+    source = tmp_path / "datasheet.csv"
+    source.write_text(
+        "Experiment title,,,,\nIndex,Theta,Temperature,Ei,Pass E.,给Agent的Note\n"
+        "7,bad,warm,nope,fast,check analyzer grounding\n",
+        encoding="utf-8",
+    )
+    document = translate_datasheet(source)
+    assert document.notes == ["Index 7: check analyzer grounding"]
+    assert document.records["7"].experiment["agent_notes"] == ["check analyzer grounding"]
+    for field in ("Theta", "Temperature", "Ei", "Pass E."):
+        assert any(field in warning and "not numeric" in warning for warning in document.warnings)
+
+
 def test_loader_preserves_axes_units_and_float32(monkeypatch, tmp_path):
     source = tmp_path / "BP_0005.pxt"
     source.touch()
@@ -56,6 +75,69 @@ def test_loader_preserves_axes_units_and_float32(monkeypatch, tmp_path):
     assert data.dtype == np.float32
     assert data.coords["eV"].attrs["units"] == "eV"
     assert data.coords["theta_par"].attrs["units"] == "deg"
+
+
+def test_real_binary_2d_pxt_recurses_and_preserves_descending_energy():
+    source = PXT_FIXTURES / "synthetic_2d_nested.pxt"
+
+    data = load_pxt(source)
+
+    assert data.dims == ("eV", "theta_par")
+    assert data.shape == (4, 3)
+    np.testing.assert_array_equal(data.values, np.arange(12).reshape(4, 3))
+    np.testing.assert_allclose(data.eV, [3.0, 2.75, 2.5, 2.25])
+    np.testing.assert_allclose(data.theta_par, [-10.0, -5.0, 0.0])
+    assert data.eV.attrs["units"] == "eV"
+    assert data.theta_par.attrs["units"] == "deg"
+    assert np.all(np.diff(data.eV) < 0)
+
+
+def test_real_binary_3d_pxt_preserves_dims_values_and_axis_direction():
+    source = PXT_FIXTURES / "synthetic_3d.PXT"
+
+    data = load_pxt(source)
+
+    assert data.dims == ("eV", "theta_par", "deflector_perp")
+    assert data.shape == (4, 3, 2)
+    np.testing.assert_array_equal(data.values, np.arange(24).reshape(4, 3, 2))
+    np.testing.assert_allclose(data.eV, [3.0, 2.75, 2.5, 2.25])
+    np.testing.assert_allclose(data.theta_par, [-10.0, -5.0, 0.0])
+    np.testing.assert_allclose(data.deflector_perp, [2.0, 0.0])
+    assert data.deflector_perp.attrs["units"] == "deg"
+
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    ["synthetic_2d_nested.pxt", "synthetic_3d.PXT"],
+)
+def test_real_binary_pxt_to_netcdf_roundtrip(fixture_name, tmp_path):
+    source = PXT_FIXTURES / fixture_name
+    expected = load_pxt(source)
+    target = tmp_path / f"{source.stem}.nc"
+
+    result = convert_pxt(source, target)
+
+    assert result.status == "converted"
+    with xr.open_dataarray(target) as actual:
+        assert actual.dims == expected.dims
+        np.testing.assert_array_equal(actual.values, expected.values)
+        for dimension in expected.dims:
+            np.testing.assert_allclose(actual[dimension], expected[dimension])
+            assert actual[dimension].attrs["units"] == expected[dimension].attrs["units"]
+
+
+def test_directory_discovery_accepts_uppercase_pxt_and_filters_names(tmp_path):
+    from peaksMCP.pxt_utils.converter import _discover_pxt_files
+
+    lower = tmp_path / "BP_0001.pxt"
+    upper = tmp_path / "BP_0002.PXT"
+    ignored = tmp_path / "BP_0003.nc"
+    shutil.copy2(PXT_FIXTURES / "synthetic_2d_nested.pxt", lower)
+    shutil.copy2(PXT_FIXTURES / "synthetic_3d.PXT", upper)
+    ignored.touch()
+
+    assert _discover_pxt_files(tmp_path) == [lower, upper]
+    assert _discover_pxt_files(tmp_path, "0002") == [upper]
 
 
 def test_converter_embeds_matching_metadata_and_protects_output(monkeypatch, tmp_path):
