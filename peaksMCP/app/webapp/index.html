@@ -4,9 +4,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>peaksMCP · Operator Console</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/assets/style.css">
 </head>
 <body>
@@ -35,9 +32,6 @@
         <a id="open-lab" class="button primary" target="_blank" rel="noopener" style="opacity:.4;pointer-events:none">
           <span class="btn-icon">◈</span> Open Notebook
         </a>
-        <button id="doctor-button" class="button">
-          <span class="btn-icon">◉</span> Run Doctor
-        </button>
         <button id="snapshot-button" class="button">
           <span class="btn-icon">💾</span> Save snapshot
         </button>
@@ -52,29 +46,10 @@
           <span class="btn-icon">↻</span> Restart Kernel
         </button>
         <button id="restart-all" class="button danger">
-          <span class="btn-icon">⚠</span> Restart All
+          <span class="btn-icon">⚠</span> Restart Kernel + MCP
         </button>
       </div>
       <pre id="action-result" style="display:none;"></pre>
-    </section>
-
-    <!-- MCP Inspector -->
-    <section class="card wide inspector">
-      <div class="panel-header">
-        <h2>MCP Inspector</h2>
-        <span class="hint">Invoke tools in the notebook kernel</span>
-      </div>
-      <form id="search" class="search-form">
-        <input id="query" placeholder="e.g. curvature, momentum conversion, 动量转换…" required autocomplete="off">
-        <button type="submit" class="primary">
-          <span class="btn-icon">⌕</span> Search
-        </button>
-      </form>
-      <button id="read-output-button" class="button" style="margin-top:8px">
-        <span class="btn-icon">◧</span> Read active cell output (images)
-      </button>
-      <pre id="result" style="display:none;"></pre>
-      <div id="images" class="images" style="display:none;"></div>
     </section>
 
     <!-- CSV + PXT Conversion -->
@@ -88,8 +63,6 @@
             <span class="btn-icon">▣</span> Browse
           </button>
         </div>
-        <input id="pxt-output" placeholder="Output folder (default: sibling <folder>_netcdf/)">
-        <input id="pxt-metadata" placeholder="experiment_metadata.json (optional — auto-translates datasheet.csv next to the data)">
         <button type="submit" class="primary full">
           <span class="btn-icon">▶</span> Start Conversion
         </button>
@@ -98,42 +71,6 @@
       <div id="load-actions"></div>
     </section>
 
-    <!-- System Info -->
-    <section class="card system-card">
-      <div class="system-section">
-        <div class="panel-header compact">
-          <h2>Doctor</h2>
-          <span id="doctor-status" class="status-badge idle">Idle</span>
-        </div>
-        <pre id="doctor">Click "Run Doctor" to initiate system diagnostics.</pre>
-      </div>
-      <div class="divider"></div>
-      <div class="system-section">
-        <div class="panel-header compact">
-          <h2>Profiles</h2>
-        </div>
-        <pre id="profiles">Loading…</pre>
-      </div>
-    </section>
-
-    <!-- Logs -->
-    <section class="card wide logs-card">
-      <div class="logs-header">
-        <h2>System Logs</h2>
-        <div class="logs-controls">
-          <select id="log-filter">
-            <option value="">all components</option>
-          </select>
-          <button id="clear-logs" class="button small">
-            <span class="btn-icon">⌫</span> Clear
-          </button>
-          <button id="export-logs" class="button small">
-            <span class="btn-icon">⬇</span> Export
-          </button>
-        </div>
-      </div>
-      <pre id="logs">Awaiting log stream…</pre>
-    </section>
   </main>
 
   <div id="toast-container"></div>

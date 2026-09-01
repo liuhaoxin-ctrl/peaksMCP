@@ -11,7 +11,7 @@ from typing import Any
 from threadpoolctl import threadpool_limits
 
 from .models import BatchItemResult, BatchResult
-from .resource_budget import ResourceBudget
+from .resource_budget import ResourceBudget, batch_execution_lock
 
 
 def _run_one(function: Callable[[Any], Any], item: Any) -> tuple[Any, float]:
@@ -60,6 +60,17 @@ class BatchExecutor:
         BatchResult
             Ordered per-item results and CPU statistics.
         """
+        with batch_execution_lock():
+            return self._run_unlocked(function, items, progress=progress)
+
+    def _run_unlocked(
+        self,
+        function: Callable[[Any], Any],
+        items: Iterable[Any],
+        *,
+        progress: Callable[[BatchItemResult], None] | None = None,
+    ) -> BatchResult:
+        """Run one batch while the cross-process execution lock is held."""
         values = list(items)
         started = time.monotonic()
         results: dict[int, BatchItemResult] = {}
@@ -70,7 +81,7 @@ class BatchExecutor:
                 while next_index < len(values) or self._pending_futures:
                     while (
                         next_index < len(values)
-                        and len(self._pending_futures) < self.budget.max_workers
+                        and len(self._pending_futures) < self.budget.submission_limit
                         and not self.cancel_event.is_set()
                     ):
                         item = values[next_index]
@@ -153,5 +164,14 @@ class BatchExecutor:
             duration_s=time.monotonic() - started,
             average_cpu_percent=self.budget.average_cpu_percent,
             peak_cpu_percent=self.budget.peak_cpu_percent,
+            peak_moving_average_cpu_percent=(
+                self.budget.peak_moving_average_cpu_percent
+            ),
+            cpu_budget_percent=self.budget.cpu_limit_percent,
+            cpu_budget_strategy="best_effort_progressive",
+            cpu_budget_exceeded=(
+                self.budget.peak_moving_average_cpu_percent
+                >= self.budget.cpu_limit_percent
+            ),
             cancelled=self.cancel_event.is_set(),
         )

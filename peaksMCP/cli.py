@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import importlib.util
 import json
 import os
 import signal
-import socket
 import subprocess
 import sys
 import time
@@ -23,6 +21,26 @@ from peaksMCP import __version__
 
 def _json(value: Any) -> None:
     print(json.dumps(value, indent=2, ensure_ascii=False, default=str))
+
+
+def _public_run_state(data: dict[str, Any]) -> dict[str, Any]:
+    """Remove local bearer credentials before printing run state."""
+    return {key: value for key, value in data.items() if key not in {"token", "dashboard_token"}}
+
+
+def _terminate_spawned_supervisor(process: subprocess.Popen[Any]) -> None:
+    """Stop a supervisor spawned by a launch attempt that did not complete."""
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait(timeout=5)
 
 
 def _profile(name: str):
@@ -44,31 +62,76 @@ def _dashboard_headers(data: dict[str, Any]) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
+def _launch_readiness(data: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
+    """Probe the operator console for the stages required by ``launch``."""
+    try:
+        response = httpx.get(
+            f"{data['dashboard_url']}/api/status",
+            headers=_dashboard_headers(data),
+            timeout=2,
+        )
+        response.raise_for_status()
+        status = response.json()
+    except Exception:
+        return False, None
+    components = status.get("components") or {}
+    required = ["supervisor", "jupyter", "kernel", "extension"]
+    if data.get("mcp_autostart", True):
+        required.append("mcp")
+    ready = all(
+        isinstance(components.get(name), dict)
+        and components[name].get("state") == "ready"
+        for name in required
+    )
+    return ready, status
+
+
 def command_launch(args: argparse.Namespace) -> None:
     current = _runfile(False)
-    if current and not current.get("stale"):
-        _json(current)
-        return
     root = Path(os.environ.get("PEAKSMCP_HOME", Path.home() / ".peaksMCP"))
     log = root / "logs" / "supervisor.log"
-    log.parent.mkdir(parents=True, exist_ok=True)
-    stream = log.open("a", encoding="utf-8")
-    notebook_arg = ["--notebook", args.notebook] if getattr(args, "notebook", None) else []
-    process = subprocess.Popen(
-        [sys.executable, "-m", "peaksMCP", "_serve", "--profile", args.profile, *notebook_arg],
-        stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.STDOUT,
-        start_new_session=True, close_fds=True,
-    )
+    process: subprocess.Popen[Any] | None = None
+    if not current or current.get("stale"):
+        log.parent.mkdir(parents=True, exist_ok=True)
+        stream = log.open("a", encoding="utf-8")
+        notebook_arg = ["--notebook", args.notebook] if getattr(args, "notebook", None) else []
+        try:
+            process = subprocess.Popen(
+                [sys.executable, "-m", "peaksMCP", "_serve", "--profile", args.profile, *notebook_arg],
+                stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.STDOUT,
+                start_new_session=True, close_fds=True,
+            )
+        finally:
+            stream.close()
     deadline = time.monotonic() + args.timeout
+    last_status: dict[str, Any] | None = None
     while time.monotonic() < deadline:
         data = _runfile(False)
         if data and not data.get("stale"):
-            _json(data)
-            return
-        if process.poll() is not None:
+            ready, last_status = _launch_readiness(data)
+            if ready:
+                payload = {**_public_run_state(data), "ready": True}
+                if last_status:
+                    payload["components"] = last_status.get("components", {})
+                _json(payload)
+                return
+        if process is not None and process.poll() is not None:
             raise SystemExit(f"supervisor exited with code {process.returncode}; inspect {log}")
         time.sleep(0.25)
-    raise SystemExit(f"supervisor did not start within {args.timeout}s; inspect {log}")
+    if process is not None:
+        _terminate_spawned_supervisor(process)
+    stage = ""
+    if last_status:
+        pending = [
+            name
+            for name, component in (last_status.get("components") or {}).items()
+            if component.get("state") != "ready" and name != "comm"
+        ]
+        if pending:
+            stage = f"; pending: {', '.join(pending)}"
+    raise SystemExit(
+        f"supervisor did not become ready within {args.timeout}s{stage}; inspect {log}"
+    )
 
 
 def command_serve(args: argparse.Namespace) -> None:
@@ -85,7 +148,7 @@ def command_status(_args: argparse.Namespace) -> None:
         _json({"status": "STOPPED"})
         return
     if data.get("stale"):
-        _json({**data, "status": "STALE"})
+        _json(_public_run_state({**data, "status": "STALE"}))
         return
     try:
         status = httpx.get(
@@ -94,7 +157,9 @@ def command_status(_args: argparse.Namespace) -> None:
             timeout=3,
         ).json()
     except Exception:
-        status = {**data, "status": "DEGRADED", "error": "dashboard did not answer"}
+        status = _public_run_state(
+            {**data, "status": "DEGRADED", "error": "dashboard did not answer"}
+        )
     _json(status)
 
 
@@ -135,7 +200,10 @@ def command_restart(args: argparse.Namespace) -> None:
         response.raise_for_status()
     except httpx.HTTPError as exc:
         raise SystemExit(f"restart {component} failed: {exc}") from exc
-    _json(response.json())
+    payload = response.json()
+    _json(payload)
+    if payload.get("ready") is False:
+        raise SystemExit(f"restart {component} did not become ready")
 
 
 def _restart_stack(args: argparse.Namespace) -> None:
@@ -183,35 +251,6 @@ def command_logs(args: argparse.Namespace) -> None:
                 pass
 
 
-def _port_free(host: str, port: int) -> bool:
-    with socket.socket() as sock:
-        try:
-            sock.bind((host, port))
-            return True
-        except OSError:
-            return False
-
-
-def command_doctor(args: argparse.Namespace) -> None:
-    from .app.kernel import kernel_installed
-    from .ext_install import extension_source, locate_installed_extension
-    profile = _profile(args.profile)
-    modules = {name: importlib.util.find_spec(name) is not None for name in ("peaks", "xarray", "fastmcp", "jupyterlab", "igor2", "h5netcdf")}
-    report = {
-        "ok": all(modules.values()), "python": sys.executable, "modules": modules,
-        "kernel_installed": kernel_installed(profile.jupyter.kernel_name),
-        "extension_built": (extension_source() / "static").is_dir(),
-        "extension_installed": [str(path) for path in locate_installed_extension()],
-        "ports_free": {
-            "jupyter": _port_free(profile.jupyter.host, profile.jupyter.port),
-            "mcp": _port_free(profile.mcp.host, profile.mcp.port),
-            "dashboard": _port_free(profile.dashboard.host, profile.dashboard.port),
-        },
-    }
-    report["ok"] = report["ok"] and report["extension_built"]
-    _json(report)
-
-
 def command_profiles(args: argparse.Namespace) -> None:
     from .app.profiles import list_profiles, load_profile, profile_path
     if args.action == "list":
@@ -246,7 +285,10 @@ def command_proxy(args: argparse.Namespace) -> None:
 def command_ping(args: argparse.Namespace) -> None:
     from .transport import check_http_mcp_server
     profile = _profile(args.profile)
-    _json(asyncio.run(check_http_mcp_server(profile.mcp.host, profile.mcp.port)))
+    payload = asyncio.run(check_http_mcp_server(profile.mcp.host, profile.mcp.port))
+    _json(payload)
+    if not payload.get("ok"):
+        raise SystemExit(1)
 
 
 def command_translate(args: argparse.Namespace) -> None:
@@ -270,6 +312,8 @@ def command_convert(args: argparse.Namespace) -> None:
     from .pxt_utils import convert_path
     report = convert_path(args.input, args.out, metadata_path=args.metadata, substring=args.filter, force=args.force, cpu_limit_percent=args.cpu_limit)
     _json(report.model_dump(mode="json"))
+    if report.failed:
+        raise SystemExit(1)
 
 
 def command_load(args: argparse.Namespace) -> None:
@@ -292,7 +336,10 @@ def command_load(args: argparse.Namespace) -> None:
         response.raise_for_status()
     except httpx.HTTPError as exc:
         raise SystemExit(f"load failed: {exc}") from exc
-    _json(response.json())
+    payload = response.json()
+    _json(payload)
+    if payload.get("loaded") is not True:
+        raise SystemExit("load was not confirmed by the notebook")
 
 
 def command_open(args: argparse.Namespace) -> None:
@@ -346,9 +393,6 @@ def build_parser() -> argparse.ArgumentParser:
     logs.add_argument("-n", "--lines", type=int, default=100)
     logs.add_argument("-f", "--follow", action="store_true")
     logs.set_defaults(func=command_logs)
-    doctor = sub.add_parser("doctor")
-    doctor.add_argument("--profile", default="default")
-    doctor.set_defaults(func=command_doctor)
     profiles = sub.add_parser("profiles")
     profiles.add_argument("action", choices=("list", "show", "path"))
     profiles.add_argument("name", nargs="?", default="default")

@@ -7,7 +7,10 @@ import statistics
 import threading
 import time
 from collections import deque
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import psutil
 
@@ -18,11 +21,37 @@ _THREAD_ENV_KEYS = (
     "VECLIB_MAXIMUM_THREADS",
     "NUMEXPR_NUM_THREADS",
 )
+_PROCESS_BATCH_LOCK = threading.Lock()
+
+
+@contextmanager
+def batch_execution_lock() -> Iterator[None]:
+    """Serialize batch pools across dashboard requests and CLI processes."""
+    with _PROCESS_BATCH_LOCK:
+        root = Path(os.environ.get("PEAKSMCP_HOME", Path.home() / ".peaksMCP"))
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / "batch.lock"
+        with path.open("a+", encoding="utf-8") as stream:
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+            try:
+                import fcntl
+
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+            except (ImportError, OSError):  # pragma: no cover - non-POSIX fallback
+                fcntl = None
+            try:
+                yield
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
 @dataclass(slots=True)
 class ResourceBudget:
-    """Monitor CPU use and gate submission of new batch tasks.
+    """Monitor CPU use and progressively gate new batch tasks.
 
     Parameters
     ----------
@@ -43,10 +72,13 @@ class ResourceBudget:
     moving_window_s: float = 10.0
     _samples: deque[tuple[float, float]] = field(default_factory=deque, init=False)
     _all_samples: list[float] = field(default_factory=list, init=False)
+    _moving_averages: list[float] = field(default_factory=list, init=False)
     _stop: threading.Event = field(default_factory=threading.Event, init=False)
     _thread: threading.Thread | None = field(default=None, init=False)
     _gate: threading.Event = field(default_factory=threading.Event, init=False)
     _sample_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    _allowed_workers: int = field(default=1, init=False)
+    _last_ramp_at: float = field(default=0.0, init=False)
 
     def __post_init__(self) -> None:
         if not 1 <= self.cpu_limit_percent <= 100:
@@ -59,9 +91,17 @@ class ResourceBudget:
 
     @property
     def max_workers(self) -> int:
-        """Return the bounded default process count."""
+        """Return the absolute process-pool ceiling."""
         count = os.cpu_count() or 1
-        return max(1, min(count, int(count * self.worker_fraction)))
+        fraction_cap = max(1, int(count * self.worker_fraction))
+        cpu_cap = max(1, int(count * self.cpu_limit_percent / 100))
+        return min(count, fraction_cap, cpu_cap)
+
+    @property
+    def submission_limit(self) -> int:
+        """Return current progressive in-flight task allowance."""
+        with self._sample_lock:
+            return min(self.max_workers, self._allowed_workers)
 
     @property
     def average_cpu_percent(self) -> float:
@@ -76,6 +116,12 @@ class ResourceBudget:
         with self._sample_lock:
             return max(self._all_samples, default=0.0)
 
+    @property
+    def peak_moving_average_cpu_percent(self) -> float:
+        """Return the highest observed trailing-window CPU average."""
+        with self._sample_lock:
+            return max(self._moving_averages, default=0.0)
+
     def start(self) -> None:
         """Start background CPU monitoring with an immediate first sample.
 
@@ -89,12 +135,17 @@ class ResourceBudget:
         # Seed the gate with a real first sample instead of defaulting to open.
         # (Record manually — _record_sample takes the lock itself, so calling
         # it from inside a locked block would deadlock.)
-        initial = float(psutil.cpu_percent(interval=None))
+        initial_interval = min(0.25, max(0.05, self.sample_interval_s))
+        initial = float(psutil.cpu_percent(interval=initial_interval))
         with self._sample_lock:
             self._samples.clear()
             self._all_samples.clear()
+            self._moving_averages.clear()
             self._samples.append((time.monotonic(), initial))
             self._all_samples.append(initial)
+            self._moving_averages.append(initial)
+            self._allowed_workers = 1
+            self._last_ramp_at = time.monotonic()
         if initial >= self.cpu_limit_percent:
             self._gate.clear()
         else:
@@ -135,9 +186,23 @@ class ResourceBudget:
             while self._samples and self._samples[0][0] < cutoff:
                 self._samples.popleft()
             moving_average = statistics.fmean(value for _time, value in self._samples)
-        if sample >= self.cpu_limit_percent or moving_average >= self.cpu_limit_percent:
+            self._moving_averages.append(moving_average)
+        over_limit = (
+            sample >= self.cpu_limit_percent
+            or moving_average >= self.cpu_limit_percent
+        )
+        if over_limit:
+            with self._sample_lock:
+                self._allowed_workers = max(1, self._allowed_workers - 1)
             self._gate.clear()
         elif moving_average <= self.resume_percent:
+            with self._sample_lock:
+                if (
+                    self._allowed_workers < self.max_workers
+                    and now - self._last_ramp_at >= self.sample_interval_s
+                ):
+                    self._allowed_workers += 1
+                    self._last_ramp_at = now
             self._gate.set()
 
     def _monitor(self) -> None:

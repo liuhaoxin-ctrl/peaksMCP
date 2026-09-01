@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import deque
+import asyncio
 
 from starlette.testclient import TestClient
 
@@ -28,6 +28,7 @@ def test_load_bridge_code_is_valid_multiline_python():
     assert "from peaks import load" in bridge_code
     assert "data = load(" in bridge_code
     assert "execution_success" in bridge_code
+    assert 'result.get("saved") is not True' in bridge_code
     assert "'data' not in" not in "\n".join(captured["codes"])
     for code in captured["codes"]:
         compile(code, "<load-control>", "exec")
@@ -41,6 +42,61 @@ def test_auto_load_skips_without_output():
             raise AssertionError("execute_kernel must not be called without an output")
 
     assert load_into_notebook(_Never(), None) is False
+
+
+def test_load_notebook_accepts_paths_list(monkeypatch):
+    calls: list[str] = []
+
+    def fake_load(_supervisor, nc_path, **_kwargs):
+        calls.append(nc_path)
+        return nc_path != "/data/bad.nc"
+
+    monkeypatch.setattr("peaksMCP.app.api.load_into_notebook", fake_load)
+    client, _supervisor = _authenticated_client()
+    resp = client.post(
+        "/api/notebook/load",
+        json={"paths": ["/data/a.nc", "/data/bad.nc"]},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["paths"] == ["/data/a.nc", "/data/bad.nc"]
+    assert body["results"] == {"/data/a.nc": True, "/data/bad.nc": False}
+    assert body["loaded"] is False
+    assert calls == ["/data/a.nc", "/data/bad.nc"]
+
+
+def test_load_notebook_single_path_legacy(monkeypatch):
+    monkeypatch.setattr(
+        "peaksMCP.app.api.load_into_notebook", lambda _s, nc_path, **_k: True
+    )
+    client, _supervisor = _authenticated_client()
+    resp = client.post("/api/notebook/load", json={"path": "/data/a.nc"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["loaded"] is True
+    assert body["results"] == {"/data/a.nc": True}
+
+
+def test_load_notebook_requires_path(monkeypatch):
+    client, _supervisor = _authenticated_client()
+    assert client.post("/api/notebook/load", json={}).status_code == 400
+    assert client.post("/api/notebook/load", json={"paths": []}).status_code == 400
+    assert client.post("/api/notebook/load", json={"paths": "/data/a.nc"}).status_code == 400
+    assert client.post("/api/notebook/load", json={"paths": [1]}).status_code == 400
+
+
+def test_frontend_save_must_be_confirmed():
+    from peaksMCP.app.api import _flush_frontend_save
+
+    class Supervisor:
+        def execute_kernel(self, code, timeout=10):
+            assert "r.get('saved') is True" in code
+            return {"status": "error"}
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="Notebook save failed"):
+        _flush_frontend_save(Supervisor())
 
 
 class _FakeJupyter:
@@ -76,10 +132,6 @@ class _FakeSupervisor:
         self.token = "test-token"
         self.dashboard_token = "test-dashboard-token"
         self.profile = _FakeProfile()
-        self.logs: deque = deque(
-            [{"sequence": 1, "timestamp": 1, "component": "jupyter", "message": "booted"}],
-            maxlen=2,
-        )
         self.restart_calls: list[tuple[float, bool]] = []
 
     def status(self) -> dict:
@@ -106,6 +158,72 @@ class _FakeSupervisor:
 
     def extension_status(self, timeout: float = 3) -> dict:
         return {"loaded": True, "detail": "IPython extension loaded"}
+
+    def _headers(self) -> dict[str, str]:
+        return {"Authorization": f"token {self.token}"}
+
+
+def test_snapshot_uses_async_contents_api_and_unique_non_overwriting_names(monkeypatch):
+    from peaksMCP.app.api import _create_notebook_snapshot
+
+    class Response:
+        def __init__(self, status_code: int, payload: dict | None = None) -> None:
+            self.status_code = status_code
+            self._payload = payload or {}
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                raise RuntimeError(f"HTTP {self.status_code}")
+
+        def json(self) -> dict:
+            return self._payload
+
+    class ContentsAPI:
+        def __init__(self) -> None:
+            self.created: set[str] = set()
+            self.put_payloads: list[dict] = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args) -> None:
+            return None
+
+        async def get(self, url: str, **_kwargs):
+            if url.endswith("peaksMCP-runtime.ipynb"):
+                return Response(
+                    200,
+                    {
+                        "name": "peaksMCP-runtime.ipynb",
+                        "path": "peaksMCP-runtime.ipynb",
+                        "type": "notebook",
+                        "format": "json",
+                        "content": {"cells": []},
+                    },
+                )
+            return Response(200 if url in self.created else 404)
+
+        async def put(self, url: str, *, json: dict, **_kwargs):
+            assert url not in self.created
+            self.created.add(url)
+            self.put_payloads.append(json)
+            return Response(201)
+
+    api = ContentsAPI()
+    monkeypatch.setattr("peaksMCP.app.api._flush_frontend_save", lambda _s: None)
+    monkeypatch.setattr("peaksMCP.app.api.httpx.AsyncClient", lambda **_k: api)
+    supervisor = _FakeSupervisor()
+
+    first = asyncio.run(_create_notebook_snapshot(supervisor))
+    second = asyncio.run(_create_notebook_snapshot(supervisor))
+
+    assert first != second
+    assert first.startswith("peaksMCP-snapshot-") and first.endswith(".ipynb")
+    assert len(api.created) == 2
+    assert api.put_payloads == [
+        {"type": "notebook", "format": "json", "content": {"cells": []}},
+        {"type": "notebook", "format": "json", "content": {"cells": []}},
+    ]
 
 
 async def _online_mcp(*_a, **_k):
@@ -147,7 +265,11 @@ def test_dashboard_assets_and_status_online(monkeypatch):
     monkeypatch.setattr("peaksMCP.app.api._jupyter_kernel_state", _idle_kernel)
     client, _supervisor = _authenticated_client()
     assert client.get("/").status_code == 200
-    assert "MCP Inspector" in client.get("/").text
+    assert "default-src 'self'" in client.get("/").headers["content-security-policy"]
+    assert "CSV &amp; PXT Conversion" in client.get("/").text
+    assert "System Logs" not in client.get("/").text
+    assert "MCP Inspector" not in client.get("/").text
+    assert "Profiles" not in client.get("/").text
     assert client.get("/assets/app.js").status_code == 200
     status = client.get("/api/status").json()
     assert status["supervisor_running"] is True
@@ -161,8 +283,6 @@ def test_dashboard_assets_and_status_online(monkeypatch):
     opened = client.get("/open-notebook", follow_redirects=False)
     assert opened.status_code == 303
     assert opened.headers["location"].endswith("token=test-token")
-    assert "default" in client.get("/api/profiles").json()["profiles"]
-    assert client.get("/api/logs").json()["logs"][0]["component"] == "jupyter"
 
 
 def test_status_reports_mcp_offline(monkeypatch):
@@ -211,19 +331,6 @@ def test_api_rejects_missing_token_and_cross_origin_control():
     assert response.status_code == 403
 
 
-def test_log_websocket_uses_sequence_after_deque_rotation():
-    client, supervisor = _authenticated_client()
-    with client.websocket_connect("/ws/logs") as socket:
-        assert socket.receive_json()["logs"][0]["sequence"] == 1
-        supervisor.logs.append(
-            {"sequence": 2, "timestamp": 2, "component": "mcp", "message": "second"}
-        )
-        assert socket.receive_json()["logs"][-1]["sequence"] == 2
-        supervisor.logs.append(
-            {"sequence": 3, "timestamp": 3, "component": "mcp", "message": "third"}
-        )
-        assert socket.receive_json()["logs"][-1]["sequence"] == 3
-        supervisor.logs.append(
-            {"sequence": 4, "timestamp": 4, "component": "mcp", "message": "fourth"}
-        )
-        assert socket.receive_json()["logs"][-1]["sequence"] == 4
+# =====================
+# Conversion
+# =====================

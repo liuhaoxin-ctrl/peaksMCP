@@ -35,6 +35,14 @@ def test_dataset_and_datatree_summary():
     assert "/scan" in summarize_xarray(tree)["groups"]
 
 
+def test_xarray_summary_reports_real_peaks_apis_without_invoking_them():
+    import peaks  # noqa: F401  # installs Peaks descriptors on xarray
+
+    summary = summarize_xarray(xr.DataArray([1], dims="eV"))
+    assert {"metadata", "fit_gold", "k_convert"} <= set(summary["peaks_apis"])
+    assert summary["peaks_accessors"] == summary["peaks_apis"]
+
+
 def test_namespace_listing_and_missing_variable():
     backend = NotebookBackend(SharedState(FakeIPython({"scan": xr.DataArray([1]), "_private": 2})))
     assert [item["name"] for item in backend.list_variables()["variables"]] == ["scan"]
@@ -49,3 +57,25 @@ def test_wait_for_idle_timeout_and_success():
     state.kernel_state = "busy"
     assert not backend.wait_for_kernel(0.05, 0.01)["ready"]
 
+
+def test_read_active_cell_refreshes_identity_scoped_output_cache():
+    class Bridge:
+        connected = True
+
+        def request(self, operation, timeout=5):
+            assert operation == "read_active_cell"
+            return {
+                "id": "cell-7",
+                "source": "data.plot()",
+                "outputs": [{"output_type": "stream", "text": "fresh"}],
+            }
+
+    state = SharedState(FakeIPython({}))
+    state.bridge = Bridge()
+    backend = NotebookBackend(state)
+
+    assert backend.active_cell()["id"] == "cell-7"
+    assert backend.active_cell_output() == {
+        "cell_id": "cell-7",
+        "outputs": [{"output_type": "stream", "text": "fresh"}],
+    }

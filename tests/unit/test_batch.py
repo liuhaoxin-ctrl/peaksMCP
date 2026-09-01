@@ -37,6 +37,67 @@ def test_cpu_gate_uses_trailing_window_and_hysteresis():
     assert budget.average_cpu_percent == 40
 
 
+def test_worker_submission_ramps_up_and_reduces_after_cpu_pressure(monkeypatch):
+    monkeypatch.setattr("peaksMCP.batch.resource_budget.os.cpu_count", lambda: 8)
+    budget = ResourceBudget(
+        cpu_limit_percent=60,
+        resume_percent=50,
+        sample_interval_s=1,
+        worker_fraction=0.5,
+    )
+    budget._allowed_workers = 1
+    budget._last_ramp_at = 0
+
+    budget._record_sample(20, timestamp=1)
+    assert budget.submission_limit == 2
+    budget._record_sample(20, timestamp=2)
+    assert budget.submission_limit == 3
+
+    budget._record_sample(80, timestamp=3)
+    assert budget.submission_limit == 2
+    assert not budget._gate.is_set()
+    budget._record_sample(80, timestamp=4)
+    assert budget.submission_limit == 1
+
+
+def test_batch_report_states_best_effort_cpu_budget_semantics():
+    budget = ResourceBudget(
+        cpu_limit_percent=60,
+        resume_percent=50,
+        sample_interval_s=0.02,
+        worker_fraction=0.0001,
+    )
+    result = BatchExecutor(budget).run(square_or_fail, [1])
+    payload = result.to_dict()
+    assert payload["cpu_budget_percent"] == 60
+    assert payload["cpu_budget_strategy"] == "best_effort_progressive"
+    assert payload["cpu_budget_exceeded"] == (
+        payload["peak_moving_average_cpu_percent"]
+        >= payload["cpu_budget_percent"]
+    )
+
+
+def test_start_takes_a_real_initial_cpu_sample(monkeypatch):
+    calls: list[float | None] = []
+
+    def sample(interval=None):
+        calls.append(interval)
+        return 75.0
+
+    monkeypatch.setattr("peaksMCP.batch.resource_budget.psutil.cpu_percent", sample)
+    budget = ResourceBudget(
+        cpu_limit_percent=60,
+        resume_percent=50,
+        sample_interval_s=10,
+    )
+    budget.start()
+    try:
+        assert calls[0] is not None and calls[0] > 0
+        assert not budget._gate.is_set()
+    finally:
+        budget.stop()
+
+
 def test_pre_cancel_marks_every_item_cancelled():
     executor = BatchExecutor(ResourceBudget(sample_interval_s=0.02))
     executor.cancel()

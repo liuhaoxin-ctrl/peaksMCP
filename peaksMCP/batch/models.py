@@ -27,6 +27,10 @@ class BatchResult:
     duration_s: float = 0.0
     average_cpu_percent: float = 0.0
     peak_cpu_percent: float = 0.0
+    peak_moving_average_cpu_percent: float = 0.0
+    cpu_budget_percent: float = 60.0
+    cpu_budget_strategy: str = "best_effort_progressive"
+    cpu_budget_exceeded: bool = False
     cancelled: bool = False
 
     @property
@@ -53,6 +57,10 @@ class BatchResult:
             "duration_s": self.duration_s,
             "average_cpu_percent": self.average_cpu_percent,
             "peak_cpu_percent": self.peak_cpu_percent,
+            "peak_moving_average_cpu_percent": self.peak_moving_average_cpu_percent,
+            "cpu_budget_percent": self.cpu_budget_percent,
+            "cpu_budget_strategy": self.cpu_budget_strategy,
+            "cpu_budget_exceeded": self.cpu_budget_exceeded,
             "cancelled": self.cancelled,
             "items": [
                 {
@@ -67,4 +75,3 @@ class BatchResult:
                 for item in self.items
             ],
         }
-

@@ -151,9 +151,10 @@ def test_mcp_server_refuses_non_loopback_binding():
     JupyterPeaksMCPServer(state, host="0.0.0.0", port=9997, allow_remote=True)
 
 
-def test_kernelspec_reinstalled_when_profile_mode_changes(monkeypatch, tmp_path):
-    """A profile switched from dangerous back to safe must reinstall the
-    kernelspec so the old dangerous startup script is not reused."""
+def test_kernelspec_reinstalled_when_remote_permission_changes(monkeypatch, tmp_path):
+    """A stale remote-binding opt-in must force kernelspec replacement."""
+
+    from peaksMCP.app.kernel import kernel_profile_state
 
     supervisor = RuntimeSupervisor(Profile(mcp={"mode": "safe"}))
     supervisor.kernel_id = "kernel-1"
@@ -162,7 +163,10 @@ def test_kernelspec_reinstalled_when_profile_mode_changes(monkeypatch, tmp_path)
     monkeypatch.setattr("peaksMCP.app.runtime.kernel_installed", lambda _name: True)
     monkeypatch.setattr(
         "peaksMCP.app.runtime.kernel_spec_state",
-        lambda _name: {"mode": "dangerous", "autostart": True},  # stale: dangerous
+        lambda _name: {
+            **kernel_profile_state(supervisor.profile),
+            "allow_remote": True,
+        },
     )
 
     def fake_install(profile, replace=False):
@@ -190,12 +194,17 @@ def test_kernelspec_reinstalled_when_profile_mode_changes(monkeypatch, tmp_path)
     wait.assert_not_called()
     assert supervisor.jupyter is None
     assert supervisor._reader is None
-    assert spawn.call_args.kwargs["env"]["JUPYTER_CONFIG_DIR"] == str(tmp_path / "runtime/jupyter")
+    environment = spawn.call_args.kwargs["env"]
+    assert environment["JUPYTER_CONFIG_DIR"] == str(tmp_path / "runtime/jupyter")
+    assert environment["PEAKSMCP_HOST"] == "127.0.0.1"
+    assert environment["PEAKSMCP_PORT"] == "8123"
+    assert environment["PEAKSMCP_MODE"] == "safe"
+    assert environment["PEAKSMCP_AUTOSTART"] == "true"
+    assert environment["PEAKSMCP_ALLOW_REMOTE"] == "false"
 
 
-def test_startup_script_honors_autostart_and_allow_remote():
-    """autostart:false must not start the MCP (no mode/start magic), and
-    allow_remote must be embedded as a string env var (not a bare bool)."""
+def test_startup_script_honors_authoritative_environment_defaults():
+    """The generated startup must expose every profile-controlled MCP setting."""
     import ast
 
     from peaksMCP.app.kernel import _startup
@@ -205,11 +214,12 @@ def test_startup_script_honors_autostart_and_allow_remote():
     ast.parse(src)  # generated script must compile
     assert "peaksMCP_start" not in src
     assert "peaksMCP_dangerous" not in src
+    assert 'setdefault("PEAKSMCP_MODE", "dangerous")' in src
     assert 'setdefault("PEAKSMCP_AUTOSTART", "false")' in src
     assert 'setdefault("PEAKSMCP_ALLOW_REMOTE", "false")' in src
     assert "load_ext" in src  # magics remain available
 
     on = Profile(mcp={"autostart": True})
     src_on = _startup(on)
-    assert "peaksMCP_start" in src_on
+    assert "peaksMCP_start" not in src_on  # extension owns env-driven autostart
     assert 'setdefault("PEAKSMCP_AUTOSTART", "true")' in src_on

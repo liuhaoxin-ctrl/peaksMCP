@@ -72,3 +72,120 @@ def test_restart_with_component_still_posts_to_dashboard(monkeypatch, capsys):
     main(["restart", "kernel"])
     assert json.loads(capsys.readouterr().out)["ready"] is True
 
+
+def test_launch_timeout_terminates_spawned_supervisor(monkeypatch, tmp_path):
+    from peaksMCP import cli
+
+    class Process:
+        pid = 99999
+        returncode = None
+
+        def __init__(self):
+            self.terminated = False
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            return 0
+
+    process = Process()
+    monkeypatch.setenv("PEAKSMCP_HOME", str(tmp_path))
+    monkeypatch.setattr(cli, "_runfile", lambda _required=False: None)
+    monkeypatch.setattr(cli.subprocess, "Popen", lambda *_a, **_k: process)
+
+    with pytest.raises(SystemExit, match="did not become ready"):
+        main(["launch", "--timeout", "0"])
+    assert process.terminated is True
+
+
+def test_launch_waits_for_mcp_readiness_even_when_runfile_exists(
+    monkeypatch, capsys
+):
+    """A runfile proves process ownership, not that MCP initialization finished."""
+    from peaksMCP import cli
+
+    runfile = {
+        "pid": 4242,
+        "profile": "default",
+        "dashboard_url": "http://127.0.0.1:8765",
+        "dashboard_token": "secret",
+        "mcp_autostart": True,
+        "stale": False,
+    }
+    probes = iter(
+        [
+            (False, {"components": {"mcp": {"state": "error"}}}),
+            (
+                True,
+                {
+                    "components": {
+                        name: {"state": "ready"}
+                        for name in (
+                            "supervisor",
+                            "jupyter",
+                            "kernel",
+                            "extension",
+                            "mcp",
+                        )
+                    }
+                },
+            ),
+        ]
+    )
+    monkeypatch.setattr(cli, "_runfile", lambda _required=False: runfile)
+    monkeypatch.setattr(cli, "_launch_readiness", lambda _data: next(probes))
+    monkeypatch.setattr(
+        cli.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("an existing supervisor must not be spawned again")
+        ),
+    )
+    monkeypatch.setattr(cli.time, "sleep", lambda _seconds: None)
+
+    main(["launch", "--timeout", "1"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ready"] is True
+    assert payload["components"]["mcp"]["state"] == "ready"
+    assert "dashboard_token" not in payload
+
+
+@pytest.mark.parametrize(
+    "autostart,mcp_state,expected",
+    [(True, "error", False), (True, "ready", True), (False, "error", True)],
+)
+def test_launch_readiness_respects_autostart(
+    monkeypatch, autostart, mcp_state, expected
+):
+    from peaksMCP import cli
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "components": {
+                    "supervisor": {"state": "ready"},
+                    "jupyter": {"state": "ready"},
+                    "kernel": {"state": "ready"},
+                    "extension": {"state": "ready"},
+                    "comm": {"state": "degraded"},
+                    "mcp": {"state": mcp_state},
+                }
+            }
+
+    monkeypatch.setattr(cli.httpx, "get", lambda *_args, **_kwargs: Response())
+    ready, _status = cli._launch_readiness(
+        {
+            "dashboard_url": "http://127.0.0.1:8765",
+            "dashboard_token": "secret",
+            "mcp_autostart": autostart,
+        }
+    )
+    assert ready is expected

@@ -11,11 +11,11 @@ import subprocess
 import sys
 import threading
 import time
-from collections import deque
 from pathlib import Path
 from typing import Any
 
 import httpx
+import psutil
 import uvicorn
 from jupyter_client import BlockingKernelClient
 from jupyter_client.connect import find_connection_file
@@ -23,7 +23,12 @@ from jupyter_client.connect import find_connection_file
 from peaksMCP.observability import remove_runfile, write_runfile
 from peaksMCP.transport import check_http_mcp_server
 
-from .kernel import install_kernel, kernel_installed, kernel_spec_state
+from .kernel import (
+    install_kernel,
+    kernel_installed,
+    kernel_profile_state,
+    kernel_spec_state,
+)
 from .profiles import Profile
 
 
@@ -51,8 +56,6 @@ class RuntimeSupervisor:
         self.kernel_id: str | None = None
         self.session_id: str | None = None
         self.notebook_path = "peaksMCP-runtime.ipynb"
-        self.logs: deque[dict[str, Any]] = deque(maxlen=2000)
-        self._log_sequence = 0
         self._reader: threading.Thread | None = None
         self._dashboard: uvicorn.Server | None = None
         self._dashboard_thread: threading.Thread | None = None
@@ -70,27 +73,17 @@ class RuntimeSupervisor:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"token {self.token}"}
 
-    def _log(self, component: str, message: str) -> None:
-        self._log_sequence += 1
-        self.logs.append({
-            "sequence": self._log_sequence,
-            "timestamp": time.time(),
-            "component": component,
-            "message": message.rstrip(),
-        })
-
     def start(self, timeout: float = 60) -> dict[str, Any]:
         """Start JupyterLab, create the managed kernel and serve the dashboard."""
         if not kernel_installed(self.profile.jupyter.kernel_name):
             install_kernel(self.profile)
         else:
-            # Reinstall the kernelspec when the baked mode/autostart no longer
-            # match the profile: otherwise a profile switched from dangerous
-            # back to safe would keep starting with the old dangerous kernelspec.
+            # Reinstall when any baked endpoint or security setting is stale.
+            # The environment below is also authoritative, so even a kernelspec
+            # changed concurrently cannot retain an old remote-binding opt-in.
             installed = kernel_spec_state(self.profile.jupyter.kernel_name)
-            expected = {"mode": self.profile.mcp.mode, "autostart": self.profile.mcp.autostart}
-            if installed is None or installed.get("mode") != expected["mode"] or installed.get("autostart") != expected["autostart"]:
-                self._log("supervisor", f"kernelspec mode/autostart changed; reinstalling {self.profile.jupyter.kernel_name}")
+            expected = kernel_profile_state(self.profile)
+            if installed != expected:
                 install_kernel(self.profile, replace=True)
         # Fail fast when the Jupyter port is already taken instead of waiting for
         # a timeout: JupyterLab would otherwise auto-bind the next free port and
@@ -99,7 +92,7 @@ class RuntimeSupervisor:
         if occupied is not None:
             raise RuntimeError(
                 f"port {self.profile.jupyter.port} is already in use by pid {occupied}; "
-                "a previous instance may not have stopped cleanly — run  "
+                "a previous instance may not have stopped cleanly — run `peaksMCP stop` "
                 "or free the port first"
             )
         command = [
@@ -132,7 +125,9 @@ class RuntimeSupervisor:
             "jupyter_url": self.jupyter_url, "dashboard_url": self.dashboard_url,
             "jupyter_port": self.profile.jupyter.port, "dashboard_port": self.profile.dashboard.port,
             "mcp_port": self.profile.mcp.port, "token": self.token,
+            "mcp_autostart": self.profile.mcp.autostart,
             "dashboard_token": self.dashboard_token, "started_at": time.time(),
+            "process_create_time": psutil.Process(os.getpid()).create_time(),
         })
         return self.status()
 
@@ -154,13 +149,24 @@ class RuntimeSupervisor:
         # present (avoids port collisions between profiles/tests).
         environment["PEAKSMCP_HOST"] = self.profile.mcp.host
         environment["PEAKSMCP_PORT"] = str(self.profile.mcp.port)
+        environment["PEAKSMCP_MODE"] = self.profile.mcp.mode
+        environment["PEAKSMCP_AUTOSTART"] = (
+            "true" if self.profile.mcp.autostart else "false"
+        )
+        environment["PEAKSMCP_ALLOW_REMOTE"] = (
+            "true" if self.profile.mcp.allow_remote else "false"
+        )
         return environment
 
     def _read_logs(self) -> None:
+        """Drain the JupyterLab subprocess stdout to prevent pipe-buffer backpressure."""
         if not self.jupyter or not self.jupyter.stdout:
             return
         for line in self.jupyter.stdout:
-            self._log("jupyter", line)
+            sanitized = line.replace(self.token, "<redacted>").replace(
+                self.dashboard_token, "<redacted>"
+            )
+            print(sanitized, end="", flush=True)
 
     def _wait_jupyter(self, timeout: float) -> None:
         deadline = time.monotonic() + timeout
@@ -228,10 +234,7 @@ class RuntimeSupervisor:
                 "explicitly to expose the authenticated operator console"
             )
         if not loopback:
-            self._log(
-                "dashboard",
-                f"warning: authenticated dashboard explicitly bound to non-loopback host {host!r}",
-            )
+            pass
         config = uvicorn.Config(create_app(self), host=host, port=self.profile.dashboard.port, log_level="warning")
         self._dashboard = uvicorn.Server(config)
         self._dashboard_error = None
@@ -252,7 +255,6 @@ class RuntimeSupervisor:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if self._dashboard.started:
-                self._log("dashboard", f"operator console ready at {self.dashboard_url}")
                 return
             if not self._dashboard_thread.is_alive():
                 detail = f": {self._dashboard_error}" if self._dashboard_error else ""
@@ -314,8 +316,13 @@ class RuntimeSupervisor:
 
     def restart_mcp(self, timeout: float = 45) -> dict[str, Any]:
         """Restart only FastMCP inside the existing kernel, preserving variables."""
+        previous_instance = self._mcp_instance()
         self.execute_kernel("get_ipython().run_line_magic('peaksMCP_restart', '')", timeout=timeout)
-        return self.wait_ready(timeout=timeout, require_comm=False)
+        return self.wait_ready(
+            timeout=timeout,
+            require_comm=False,
+            previous_mcp_instance=previous_instance,
+        )
 
     def start_mcp(self, timeout: float = 45) -> dict[str, Any]:
         """Start the in-kernel MCP server if it is not already serving."""
@@ -332,9 +339,7 @@ class RuntimeSupervisor:
     def extension_status(self, timeout: float = 3) -> dict[str, Any]:
         """Probe the IPython extension directly when the MCP transport is offline."""
         code = (
-            "assert __import__("
-            "'peaksMCP.server.jupyter_peaks.jupyter_mcp_extension', "
-            "fromlist=['get_server']).get_server() is not None"
+            "assert get_ipython().find_line_magic('peaksMCP_start') is not None"
         )
         try:
             self.execute_kernel(code, timeout=timeout)
@@ -407,11 +412,23 @@ class RuntimeSupervisor:
         generation = status.get("kernel_instance_id")
         return str(generation) if generation else None
 
+    def _mcp_instance(self) -> str | None:
+        """Return the current in-kernel MCP server instance marker."""
+        result = asyncio.run(
+            check_http_mcp_server(self.profile.mcp.host, self.profile.mcp.port)
+        )
+        status = result.get("status")
+        if not isinstance(status, dict):
+            return None
+        instance = status.get("mcp_instance_id")
+        return str(instance) if instance else None
+
     def wait_ready(
         self,
         timeout: float = 90,
         require_comm: bool = False,
         previous_generation: str | None = None,
+        previous_mcp_instance: str | None = None,
     ) -> dict[str, Any]:
         """Verify every stage from kernel readiness through a real MCP tool call."""
         deadline = time.monotonic() + timeout
@@ -419,10 +436,11 @@ class RuntimeSupervisor:
             name: False
             for name in (
                 "kernel_restarted", "kernel", "extension", "comm",
-                "mcp_initialize", "tools_list", "status_tool",
+                "mcp_restarted", "mcp_initialize", "tools_list", "status_tool",
             )
         }
         stages["kernel_restarted"] = previous_generation is None
+        stages["mcp_restarted"] = previous_mcp_instance is None
         diagnostics: list[str] = []
         while time.monotonic() < deadline:
             try:
@@ -442,7 +460,14 @@ class RuntimeSupervisor:
             result = asyncio.run(check_http_mcp_server(self.profile.mcp.host, self.profile.mcp.port))
             if result.get("ok"):
                 stages["mcp_initialize"] = True
-                stages["tools_list"] = result.get("tool_count", 0) >= 12
+                stages["tools_list"] = not any(
+                    result.get(key)
+                    for key in (
+                        "missing_tools",
+                        "unexpected_tools",
+                        "duplicate_tools",
+                    )
+                )
                 stages["status_tool"] = result.get("status") is not None
                 # Structured read of the notebook server status instead of fragile
                 # string matching on the serialized status payload.
@@ -458,6 +483,18 @@ class RuntimeSupervisor:
                 stages["kernel_restarted"] = (
                     previous_generation is None
                     or (current_generation is not None and current_generation != previous_generation)
+                )
+                current_mcp_instance = (
+                    str(status_data.get("mcp_instance_id"))
+                    if isinstance(status_data, dict) and status_data.get("mcp_instance_id")
+                    else None
+                )
+                stages["mcp_restarted"] = (
+                    previous_mcp_instance is None
+                    or (
+                        current_mcp_instance is not None
+                        and current_mcp_instance != previous_mcp_instance
+                    )
                 )
                 stages["comm"] = bool(
                     isinstance(status_data, dict) and status_data.get("comm_connected")
@@ -511,7 +548,6 @@ class RuntimeSupervisor:
             self.start()
             while not self._stop.wait(0.5):
                 if self.jupyter and self.jupyter.poll() is not None:
-                    self._log("supervisor", "JupyterLab exited; stopping supervisor")
                     break
         finally:
             self.stop()

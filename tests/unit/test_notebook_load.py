@@ -71,7 +71,7 @@ class _Kernel:
             outputs = [{"output_type": "error", "evalue": str(exc)}]
         return {
             "id": "cell-1", "cell_type": "code", "source": code,
-            "execution_success": success, "outputs": outputs,
+            "execution_success": success, "saved": True, "outputs": outputs,
             **self.reply_override,
         }
 
@@ -134,6 +134,7 @@ def test_bridge_failure_cannot_report_load_success(failure):
 @pytest.mark.parametrize("reply_override", [
     {"execution_success": False}, {"execution_success": None},
     {"source": "data = old_data"}, {"cell_type": "markdown"}, {"id": None},
+    {"saved": False, "save_error": "disk full"},
     {"outputs": [{"output_type": "error", "evalue": "failed"}]},
 ])
 def test_load_requires_successful_reply_for_the_exact_code_cell(reply_override):

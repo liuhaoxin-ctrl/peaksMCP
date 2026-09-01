@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
+
+import psutil
 
 
 def runfile_path() -> Path:
@@ -39,14 +42,47 @@ def write_runfile(data: dict[str, Any]) -> Path:
     """
     path = runfile_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=".run-",
+        suffix=".tmp",
+    )
+    temporary = Path(temporary_name)
     try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            descriptor = -1
+            stream.write(json.dumps(data, indent=2) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
         os.chmod(path, 0o600)
-    except OSError:
-        pass
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
     return path
+
+
+def _process_matches(data: dict[str, Any]) -> bool:
+    """Verify that a runfile still identifies the peaksMCP supervisor process."""
+    pid = int(data.get("pid") or 0)
+    if pid <= 0:
+        return False
+    try:
+        process = psutil.Process(pid)
+        recorded_create_time = data.get("process_create_time")
+        if recorded_create_time is not None:
+            return abs(process.create_time() - float(recorded_create_time)) < 1.0
+        # Backward compatibility for runfiles created before process identity
+        # was recorded.  Never signal an arbitrary reused PID.
+        command = " ".join(process.cmdline())
+        return "peaksMCP" in command and "_serve" in command
+    except (psutil.Error, OSError, TypeError, ValueError):
+        return False
 
 
 def read_runfile() -> dict[str, Any] | None:
@@ -67,12 +103,8 @@ def read_runfile() -> dict[str, Any] | None:
         data = json.loads(runfile_path().read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    pid = int(data.get("pid") or 0)
-    if pid:
-        try:
-            os.kill(pid, 0)
-        except OSError:
-            return {**data, "stale": True}
+    if not _process_matches(data):
+        return {**data, "stale": True}
     return data
 
 

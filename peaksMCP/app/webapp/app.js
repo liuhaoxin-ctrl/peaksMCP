@@ -1,7 +1,12 @@
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
 const pretty = x => JSON.stringify(x, null, 2);
-let records = [];
+
+function bind(selector, event, handler) {
+  const el = $(selector);
+  if (el) el.addEventListener(event, handler);
+  return el;
+}
 
 // =====================
 // UI Utilities
@@ -12,13 +17,19 @@ function toast(message, type = 'info', duration = 4000) {
   const el = document.createElement('div');
   el.className = `toast ${type}`;
   const icons = { success: '◉', error: '◉', warning: '◉', info: '◉' };
-  const colors = { 
-    success: 'color: var(--accent)', 
-    error: 'color: var(--danger)', 
-    warning: 'color: var(--warning)', 
-    info: 'color: var(--info)' 
+  const colors = {
+    success: 'var(--accent)',
+    error: 'var(--danger)',
+    warning: 'var(--warning)',
+    info: 'var(--info)'
   };
-  el.innerHTML = `<span style="${colors[type] || colors.info}; font-size: 10px;">${icons[type] || '◉'}</span><span>${message}</span>`;
+  const icon = document.createElement('span');
+  icon.style.color = colors[type] || colors.info;
+  icon.style.fontSize = '10px';
+  icon.textContent = icons[type] || '◉';
+  const text = document.createElement('span');
+  text.textContent = String(message);
+  el.append(icon, text);
   container.appendChild(el);
 
   el.addEventListener('click', () => {
@@ -48,11 +59,11 @@ function confirmAction(message, onConfirm) {
   });
 }
 
-$('#modal-cancel').addEventListener('click', () => {
+bind('#modal-cancel', 'click', () => {
   $('#confirm-modal').classList.remove('active');
 });
 
-$('#confirm-modal').addEventListener('click', (e) => {
+bind('#confirm-modal', 'click', (e) => {
   if (e.target === e.currentTarget) {
     $('#confirm-modal').classList.remove('active');
   }
@@ -105,8 +116,10 @@ function renderComponents(s) {
         <div class="empty-desc">Awaiting MCP service handshake…</div>
       </div>`;
   } else {
-    container.innerHTML = entries.map(([name, c]) => {
-      const stateClass = c.state || 'unknown';
+    container.replaceChildren();
+    const allowedStates = new Set(['ready', 'degraded', 'error', 'loading', 'unknown']);
+    entries.forEach(([name, c]) => {
+      const stateClass = allowedStates.has(c.state) ? c.state : 'unknown';
       const stateIcon = {
         ready: '●',
         degraded: '◐',
@@ -114,16 +127,24 @@ function renderComponents(s) {
         loading: '◐',
         unknown: '○'
       }[stateClass] || '○';
-      return `
-        <article class="component ${stateClass}">
-          <div class="component-header">
-            <span class="component-icon">${stateIcon}</span>
-            <span class="component-state">${c.state.toUpperCase()}</span>
-          </div>
-          <b>${name}</b>
-          <span>${c.detail || ''}</span>
-        </article>`;
-    }).join('');
+      const article = document.createElement('article');
+      article.className = `component ${stateClass}`;
+      const header = document.createElement('div');
+      header.className = 'component-header';
+      const icon = document.createElement('span');
+      icon.className = 'component-icon';
+      icon.textContent = stateIcon;
+      const state = document.createElement('span');
+      state.className = 'component-state';
+      state.textContent = stateClass.toUpperCase();
+      header.append(icon, state);
+      const title = document.createElement('b');
+      title.textContent = String(name);
+      const detail = document.createElement('span');
+      detail.textContent = String(c.detail || '');
+      article.append(header, title, detail);
+      container.appendChild(article);
+    });
   }
 
   const agg = s.aggregate || s.status || 'unknown';
@@ -139,6 +160,7 @@ function renderComponents(s) {
 async function refresh() {
   try {
     const s = await fetch('/api/status').then(r => r.json());
+    $('#connection').classList.add('up');
     renderComponents(s);
   } catch (e) {
     $('#state').textContent = 'OFFLINE';
@@ -146,81 +168,6 @@ async function refresh() {
     toast('Connection lost — retrying…', 'error');
   }
 }
-
-// =====================
-// Images
-// =====================
-
-function renderImages(value) {
-  const blocks = value?.result || [];
-  const container = $('#images');
-  const imgs = Array.isArray(blocks) ? blocks.filter(x => x.type === 'image') : [];
-
-  if (imgs.length === 0) {
-    container.style.display = 'none';
-    return;
-  }
-
-  container.style.display = 'grid';
-  container.innerHTML = imgs.map(x => 
-    `<div class="image-wrapper">
-      <img alt="Notebook output" src="data:${x.mimeType};base64,${x.data}">
-    </div>`
-  ).join('');
-}
-
-$('#read-output-button').addEventListener('click', async () => {
-  $('#result').style.display = 'block';
-  $('#result').textContent = 'Reading output…';
-  try {
-    const r = await fetch('/api/mcp/tool', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'notebook_read_active_cell_output', arguments: {} })
-    }).then(x => x.json());
-    $('#result').textContent = pretty(r);
-    renderImages(r);
-    toast('Output read', 'success');
-  } catch (e) {
-    $('#result').textContent = String(e);
-    toast('Read failed: ' + e.message, 'error');
-  }
-});
-
-// =====================
-// Search
-// =====================
-
-$('#search').addEventListener('submit', async e => {
-  e.preventDefault();
-  const btn = $('#search button[type="submit"]');
-  const original = btn.innerHTML;
-  btn.innerHTML = '<span class="spinner"></span> Searching…';
-  btn.disabled = true;
-
-  $('#result').style.display = 'block';
-  $('#result').textContent = 'Searching…';
-  $('#images').style.display = 'none';
-
-  try {
-    const body = { name: 'peaks_search_api', arguments: { query: $('#query').value, limit: 8 } };
-    const r = await fetch('/api/mcp/tool', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body)
-    }).then(x => x.json());
-
-    $('#result').textContent = pretty(r);
-    renderImages(r);
-    toast('Search completed', 'success');
-  } catch (e) {
-    $('#result').textContent = String(e);
-    toast('Search failed: ' + e.message, 'error');
-  } finally {
-    btn.innerHTML = original;
-    btn.disabled = false;
-  }
-});
 
 // =====================
 // Actions
@@ -242,7 +189,7 @@ async function postAction(path, label, options = {}) {
         return;
       }
       // Some endpoints answer 200 but carry an explicit failure (restart
-      // ready:false, doctor ok:false, load loaded:false, snapshot errors).
+      // ready:false, load loaded:false, snapshot errors).
       if (r && (r.ready === false || r.ok === false || r.loaded === false || r.error)) {
         $('#action-result').textContent = pretty(r);
         toast(`${label} failed (partial or unsuccessful)`, 'error');
@@ -265,48 +212,21 @@ async function postAction(path, label, options = {}) {
   }
 }
 
-$('#start-mcp').addEventListener('click', () => postAction('/api/start-mcp', 'Start MCP'));
-$('#restart-mcp').addEventListener('click', () => postAction('/api/restart/mcp', 'Restart MCP'));
-$('#restart-kernel').addEventListener('click', () => postAction('/api/restart/kernel', 'Restart Kernel'));
-$('#restart-all').addEventListener('click', () => postAction('/api/restart/all', 'Restart All', { 
-  confirm: true, 
-  confirmMsg: 'Restart all services? This will interrupt any active operations.' 
+bind('#start-mcp', 'click', () => postAction('/api/start-mcp', 'Start MCP'));
+bind('#restart-mcp', 'click', () => postAction('/api/restart/mcp', 'Restart MCP'));
+bind('#restart-kernel', 'click', () => postAction('/api/restart/kernel', 'Restart Kernel'));
+bind('#restart-all', 'click', () => postAction('/api/restart/all', 'Restart Kernel + MCP', {
+  confirm: true,
+  confirmMsg: 'Restart the managed kernel and in-kernel MCP? This will interrupt active operations.'
 }));
 
-$('#snapshot-button').addEventListener('click', () => postAction('/api/notebook/snapshot', 'Save snapshot'));
-
-$('#doctor-button').addEventListener('click', async () => {
-  const status = $('#doctor-status');
-  const pre = $('#doctor');
-  status.className = 'status-badge running';
-  status.textContent = 'Running';
-  pre.textContent = 'Running diagnostics…';
-
-  try {
-    const r = await fetch('/api/doctor').then(r => r.json());
-    pre.textContent = pretty(r);
-    if (r.ok === true) {
-      status.className = 'status-badge healthy';
-      status.textContent = 'Healthy';
-      toast('Doctor diagnostics completed', 'success');
-    } else {
-      status.className = 'status-badge error';
-      status.textContent = 'Issues found';
-      toast('Doctor found issues', 'error');
-    }
-  } catch (e) {
-    pre.textContent = String(e);
-    status.className = 'status-badge error';
-    status.textContent = 'Failed';
-    toast('Doctor failed: ' + e.message, 'error');
-  }
-});
+bind('#snapshot-button', 'click', () => postAction('/api/notebook/snapshot', 'Save snapshot'));
 
 // =====================
 // Conversion
 // =====================
 
-$('#convert').addEventListener('submit', async e => {
+bind('#convert', 'submit', async e => {
   e.preventDefault();
   const btn = $('#convert button[type="submit"]');
   const original = btn.innerHTML;
@@ -318,55 +238,25 @@ $('#convert').addEventListener('submit', async e => {
 
   try {
     const body = {
-      input: $('#pxt-input').value,
-      output: $('#pxt-output').value || null,
-      metadata: $('#pxt-metadata').value || null
+      input: $('#pxt-input').value
     };
-    const r = await fetch('/api/convert', {
+    const resp = await fetch('/api/convert', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body)
-    }).then(r => r.json());
+    });
+    const r = await resp.json();
 
     $('#convert-result').textContent = pretty(r);
-    // Offer an explicit Load action for each successfully converted NetCDF.
+    if (!resp.ok) throw new Error(r.error || r.error_type || 'Conversion failed');
+    // Single unified Load control: multi-select the converted files, or load all.
     const converted = Array.isArray(r.items) ? r.items.filter(x => x.status === 'converted') : [];
-    $('#load-actions').innerHTML = '';
-    if (converted.length > 0) {
-      const wrap = document.createElement('div');
-      wrap.style.marginTop = '8px';
-      wrap.style.display = 'flex';
-      wrap.style.flexWrap = 'wrap';
-      wrap.style.gap = '8px';
-      converted.forEach(item => {
-        const b = document.createElement('button');
-        b.type = 'button';
-        b.className = 'button';
-        b.textContent = `Load ${item.output.split('/').pop()}`;
-        b.addEventListener('click', async () => {
-          b.disabled = true;
-          $('#convert-result').textContent = 'Loading into notebook…';
-          try {
-            const resp = await fetch('/api/notebook/load', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ path: item.output })
-            });
-            const lr = await resp.json();
-            $('#convert-result').textContent = pretty(lr);
-            toast(lr.loaded ? 'Loaded into notebook' : 'Load failed', lr.loaded ? 'success' : 'error');
-          } catch (err) {
-            $('#convert-result').textContent = String(err);
-            toast('Load failed', 'error');
-          } finally {
-            b.disabled = false;
-          }
-        });
-        wrap.appendChild(b);
-      });
-      $('#load-actions').appendChild(wrap);
-    }
-    toast('Conversion completed', 'success');
+    renderLoadControl(converted);
+    const failures = Array.isArray(r.items) ? r.items.filter(x => x.status === 'failed').length : 0;
+    toast(
+      failures ? `Conversion completed with ${failures} failure(s)` : 'Conversion completed',
+      failures ? 'warning' : 'success'
+    );
   } catch (e) {
     $('#convert-result').textContent = String(e);
     toast('Conversion failed', 'error');
@@ -376,7 +266,68 @@ $('#convert').addEventListener('submit', async e => {
   }
 });
 
-$('#pick-folder').addEventListener('click', async () => {
+function renderLoadControl(converted) {
+  const container = $('#load-actions');
+  container.innerHTML = '';
+  if (converted.length === 0) return;
+  const panel = document.createElement('div');
+  panel.className = 'load-panel';
+  const title = document.createElement('div');
+  title.className = 'load-title';
+  title.textContent = 'Load converted files into the notebook';
+  const select = document.createElement('select');
+  select.id = 'load-select';
+  select.multiple = true;
+  select.size = Math.min(6, converted.length);
+  converted.forEach(item => {
+    const option = document.createElement('option');
+    option.value = String(item.output);
+    option.textContent = String(item.output).split('/').pop();
+    select.appendChild(option);
+  });
+  const buttons = document.createElement('div');
+  buttons.className = 'load-buttons';
+  const loadSelected = document.createElement('button');
+  loadSelected.type = 'button';
+  loadSelected.id = 'load-selected';
+  loadSelected.className = 'button';
+  loadSelected.textContent = 'Load selected';
+  const loadAll = document.createElement('button');
+  loadAll.type = 'button';
+  loadAll.id = 'load-all';
+  loadAll.className = 'button primary';
+  loadAll.textContent = 'Load all';
+  buttons.append(loadSelected, loadAll);
+  panel.append(title, select, buttons);
+  container.appendChild(panel);
+
+  const run = async (paths) => {
+    if (paths.length === 0) { toast('No files selected', 'warning'); return; }
+    $('#convert-result').style.display = 'block';
+    $('#convert-result').textContent = 'Loading into notebook…';
+    try {
+      const resp = await fetch('/api/notebook/load', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ paths })
+      });
+      const lr = await resp.json();
+      $('#convert-result').textContent = pretty(lr);
+      const results = lr.results ? Object.values(lr.results) : [];
+      const failed = results.filter(v => !v).length;
+      toast(failed === 0 ? `Loaded ${results.length} file(s)` : `${failed} file(s) failed`, failed === 0 ? 'success' : 'error');
+    } catch (err) {
+      $('#convert-result').textContent = String(err);
+      toast('Load failed', 'error');
+    }
+  };
+  loadSelected.addEventListener('click', () =>
+    run([...select.selectedOptions].map(o => o.value)));
+  loadAll.addEventListener('click', () =>
+    run(converted.map(item => item.output)));
+}
+
+bind('#pick-folder', 'click', async () => {
   const b = $('#pick-folder');
   const original = b.innerHTML;
   b.disabled = true;
@@ -386,8 +337,6 @@ $('#pick-folder').addEventListener('click', async () => {
     const r = await fetch('/api/choose-folder', { method: 'POST' }).then(x => x.json());
     if (r.ok) {
       $('#pxt-input').value = r.path;
-      $('#pxt-output').value = '';
-      $('#pxt-metadata').focus();
       toast('Folder selected', 'success');
     } else {
       $('#convert-result').style.display = 'block';
@@ -405,84 +354,8 @@ $('#pick-folder').addEventListener('click', async () => {
 });
 
 // =====================
-// Logs
-// =====================
-
-function renderLogs() {
-  const filter = $('#log-filter').value;
-  const filtered = records.filter(x => !filter || x.component === filter);
-  const pre = $('#logs');
-
-  if (filtered.length === 0) {
-    pre.textContent = filter ? 'No logs for this component.' : 'Awaiting log stream…';
-    return;
-  }
-
-  pre.textContent = filtered.map(x => `[${x.component}] ${x.message}`).join('\n');
-  pre.scrollTop = pre.scrollHeight;
-
-  const values = new Set([...$('#log-filter').options].map(x => x.value));
-  for (const c of new Set(records.map(x => x.component))) {
-    if (!values.has(c)) $('#log-filter').add(new Option(c, c));
-  }
-}
-
-$('#log-filter').addEventListener('change', renderLogs);
-
-$('#clear-logs').addEventListener('click', () => {
-  records = [];
-  renderLogs();
-  toast('Log buffer cleared', 'info');
-});
-
-$('#export-logs').addEventListener('click', () => {
-  const text = records.map(r => `[${r.component}] ${r.message}`).join('\n');
-  const blob = new Blob([text], { type: 'text/plain' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `peaksMCP-logs-${new Date().toISOString().slice(0,10)}.txt`;
-  a.click();
-  URL.revokeObjectURL(url);
-  toast('Logs exported', 'success');
-});
-
-// =====================
-// WebSocket
-// =====================
-
-const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/logs`);
-ws.onopen = () => {
-  $('#connection').classList.add('up');
-  toast('WebSocket connected', 'success');
-};
-ws.onclose = () => {
-  $('#connection').classList.remove('up');
-  toast('WebSocket disconnected', 'warning');
-};
-ws.onmessage = e => {
-  const d = JSON.parse(e.data);
-  records = records.concat(d.logs || []).slice(-2000);
-  renderLogs();
-};
-
-// =====================
 // Init
 // =====================
 
-fetch('/api/profiles').then(r => r.json()).then(x => {
-  $('#profiles').textContent = pretty(x);
-}).catch(e => {
-  $('#profiles').textContent = 'Failed to load profiles';
-});
-
 refresh();
 setInterval(refresh, 5000);
-
-// Keyboard shortcuts
-document.addEventListener('keydown', e => {
-  if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
-    e.preventDefault();
-    $('#query').focus();
-  }
-});

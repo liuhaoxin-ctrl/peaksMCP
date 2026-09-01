@@ -13,6 +13,7 @@ import json
 import secrets
 import subprocess
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
@@ -23,12 +24,9 @@ from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
-from starlette.routing import Route, WebSocketRoute
-from starlette.websockets import WebSocket
+from starlette.routing import Route
 
 from peaksMCP.pxt_utils import convert_path, translate_datasheet
-
-from .profiles import list_profiles
 
 if TYPE_CHECKING:
     from .runtime import RuntimeSupervisor
@@ -42,17 +40,22 @@ _DASHBOARD_COOKIE = "peaksmcp_dashboard"
 
 
 def _flush_frontend_save(supervisor: RuntimeSupervisor) -> None:
-    """Ask the frontend Comm bridge to persist the notebook (context.save()).
-    Best-effort: when the frontend is offline there is nothing to flush."""
+    """Ask the frontend Comm bridge to persist the notebook.
+
+    Raises when the frontend is unavailable or ``context.save()`` did not
+    confirm success.  Callers must never snapshot stale on-disk content while
+    presenting the operation as successful.
+    """
     code = (
         "from peaksMCP.server.jupyter_peaks.jupyter_mcp_extension import get_server as _gs;"
         "b = _gs().state.bridge;"
-        "b.request('save_notebook', {}, timeout=10)"
+        "r = b.request('save_notebook', {}, timeout=10);"
+        "assert r.get('saved') is True, "
+        "('Notebook save was not confirmed: ' + str(r.get('error') or r.get('save_error') or r))"
     )
-    try:
-        supervisor.execute_kernel(code, timeout=12)
-    except Exception:
-        pass
+    result = supervisor.execute_kernel(code, timeout=12)
+    if result.get("status") != "ok":
+        raise RuntimeError(f"Notebook save failed: {result}")
 
 
 def load_into_notebook(supervisor: RuntimeSupervisor, nc_path: str | None, *, timeout: float = 45) -> bool:
@@ -107,8 +110,12 @@ def load_into_notebook(supervisor: RuntimeSupervisor, nc_path: str | None, *, ti
             if (result.get("execution_success") is not True
                     or result.get("cell_type") != "code"
                     or result.get("source") != code or not result.get("id")
+                    or result.get("saved") is not True
                     or any(output.get("output_type") == "error" for output in result.get("outputs", []))):
-                raise RuntimeError("Load cell did not confirm successful execution")
+                raise RuntimeError(
+                    "Load cell did not confirm successful execution and notebook save"
+                    + (": " + str(result.get("save_error")) if result.get("save_error") else "")
+                )
             job["status"] = "completed"
         except Exception as exc:
             job.update(status="failed", error=str(exc))
@@ -223,6 +230,40 @@ async def status_payload(supervisor: RuntimeSupervisor) -> dict[str, Any]:
     }
 
 
+async def _create_notebook_snapshot(supervisor: RuntimeSupervisor) -> str:
+    """Persist and copy the managed notebook without blocking the event loop.
+
+    The destination combines UTC microseconds with a random suffix and is
+    checked before creation.  The Contents API payload contains only the
+    writable notebook fields, so the original path/name cannot leak into the
+    copy request.
+    """
+    await asyncio.to_thread(_flush_frontend_save, supervisor)
+    headers = supervisor._headers()
+    notebook_name = supervisor.notebook_path
+    content_url = f"{supervisor.jupyter_url}/api/contents/{notebook_name}"
+    async with httpx.AsyncClient(timeout=20) as client:
+        current = await client.get(content_url, headers=headers)
+        current.raise_for_status()
+        model = current.json()
+        payload = {
+            key: model[key]
+            for key in ("type", "format", "content")
+            if key in model
+        }
+        for _attempt in range(5):
+            stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S-%f")
+            snapshot = f"peaksMCP-snapshot-{stamp}-{secrets.token_hex(4)}.ipynb"
+            target_url = f"{supervisor.jupyter_url}/api/contents/{snapshot}"
+            existing = await client.get(target_url, headers=headers)
+            if existing.status_code == 404:
+                created = await client.put(target_url, headers=headers, json=payload)
+                created.raise_for_status()
+                return snapshot
+            existing.raise_for_status()
+        raise FileExistsError("could not allocate a unique notebook snapshot name")
+
+
 def create_app(supervisor: RuntimeSupervisor) -> Starlette:
     """Build the operator-console application bound to a live supervisor."""
     web = Path(__file__).with_name("webapp")
@@ -274,41 +315,28 @@ def create_app(supervisor: RuntimeSupervisor) -> Starlette:
                 "peaksMCP operator console authentication required; run `peaksMCP open`.",
                 status_code=401,
             )
-        return FileResponse(web / "index.html")
+        response = FileResponse(web / "index.html")
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+            "script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+        )
+        return response
 
     async def asset(request: Request) -> FileResponse:
         name = request.path_params["name"]
         if name not in {"app.js", "style.css"}:
             raise FileNotFoundError(name)
-        return FileResponse(web / name)
+        response = FileResponse(web / name)
+        # The webapp is a live operator console bound to a changing token; never
+        # let browsers cache stale JS/CSS (a stale app.js referencing removed
+        # elements would crash and blank the dashboard).
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     async def status(_request: Request) -> JSONResponse:
         require_auth(_request)
         return JSONResponse(await status_payload(supervisor))
-
-    async def logs(_request: Request) -> JSONResponse:
-        require_auth(_request)
-        return JSONResponse({"logs": list(supervisor.logs)})
-
-    async def doctor(_request: Request) -> JSONResponse:
-        require_auth(_request)
-        from peaksMCP.ext_install import extension_source, locate_installed_extension
-
-        from .kernel import kernel_installed
-
-        mcp = await _mcp_probe(supervisor)
-        checks = [
-            {"name": "Kernel spec", "status": "ok" if kernel_installed(supervisor.profile.jupyter.kernel_name) else "fail", "detail": supervisor.profile.jupyter.kernel_name},
-            {"name": "JupyterLab extension", "status": "ok" if (extension_source() / "static").is_dir() and locate_installed_extension() else "fail", "detail": ", ".join(map(str, locate_installed_extension())) or "not installed"},
-            {"name": "Supervisor", "status": "ok", "detail": f"PID {supervisor.status()['pid']}"},
-            {"name": "JupyterLab", "status": "ok" if supervisor.jupyter and supervisor.jupyter.poll() is None else "fail", "detail": supervisor.jupyter_url},
-            {"name": "MCP", "status": "ok" if mcp.get("ok") else "fail", "detail": f"{supervisor.profile.mcp.host}:{supervisor.profile.mcp.port}/mcp"},
-        ]
-        return JSONResponse({"ok": all(item["status"] == "ok" for item in checks), "checks": checks})
-
-    async def profiles(_request: Request) -> JSONResponse:
-        require_auth(_request)
-        return JSONResponse({"profiles": list_profiles(), "active": supervisor.profile.name})
 
     async def start_mcp(_request: Request) -> JSONResponse:
         require_auth(_request, mutation=True)
@@ -388,45 +416,47 @@ def create_app(supervisor: RuntimeSupervisor) -> Starlette:
         return JSONResponse(payload)
 
     async def load_notebook(request: Request) -> JSONResponse:
-        """Insert and run a data = load(...) cell in the notebook for an
-        explicit NetCDF path (the converted output).  Requires the supervisor /
-        kernel to be online (the frontend Comm executes the cell)."""
+        """Insert and run ``data = load(...)`` cells for the given NetCDF path(s).
+
+        Accepts a ``paths`` list (multi-load from the dashboard) or a single
+        ``path`` (legacy, used by ``peaksMCP load``).  Each path becomes its own
+        visible cell; results are reported per path.
+        """
         require_auth(request, mutation=True)
         body = await request.json()
-        path = body.get("path")
-        if not path:
-            return JSONResponse({"error": "path is required"}, status_code=400)
-        try:
-            ok = await asyncio.to_thread(load_into_notebook, supervisor, str(path))
-            return JSONResponse({"loaded": ok, "path": str(path)})
-        except Exception as exc:
-            return JSONResponse({"error_type": type(exc).__name__, "error": str(exc)}, status_code=409)
+        raw = body.get("paths")
+        if raw is None:
+            legacy_path = body.get("path")
+            if legacy_path is not None and not isinstance(legacy_path, str):
+                return JSONResponse({"error": "path must be a string"}, status_code=400)
+            raw = [legacy_path] if legacy_path else []
+        elif not isinstance(raw, list):
+            return JSONResponse({"error": "paths must be a list of strings"}, status_code=400)
+        if len(raw) > 100 or any(not isinstance(path, str) for path in raw):
+            return JSONResponse(
+                {"error": "paths must contain at most 100 strings"}, status_code=400
+            )
+        paths = [path for path in raw if path]
+        if not paths:
+            return JSONResponse({"error": "path or paths is required"}, status_code=400)
+        results: dict[str, bool] = {}
+        for p in paths:
+            try:
+                results[p] = await asyncio.to_thread(load_into_notebook, supervisor, p)
+            except Exception:
+                results[p] = False
+        return JSONResponse({"paths": paths, "results": results, "loaded": all(results.values())})
 
     async def snapshot_notebook(request: Request) -> JSONResponse:
         """Save the current notebook as a timestamped snapshot without touching
         the original file (no delete / no overwrite), so a half-finished session
         can be continued later from the snapshot."""
         require_auth(request, mutation=True)
-        notebook_name = supervisor.notebook_path
-        content_url = f"{supervisor.jupyter_url}/api/contents/{notebook_name}"
         try:
-            # Flush the frontend's latest edits to disk first: the Contents API
-            # serves the saved file, so unsaved cell edits would be missing from
-            # the snapshot otherwise.
-            await asyncio.to_thread(_flush_frontend_save, supervisor)
-            current = httpx.get(content_url, headers=supervisor._headers(), timeout=15)
-            current.raise_for_status()
-            snapshot = f"peaksMCP-snapshot-{time.strftime('%Y%m%d-%H%M%S')}.ipynb"
-            created = httpx.put(
-                f"{supervisor.jupyter_url}/api/contents/{snapshot}",
-                headers=supervisor._headers(),
-                json=current.json(),
-                timeout=20,
-            )
-            created.raise_for_status()
+            snapshot = await _create_notebook_snapshot(supervisor)
             return JSONResponse({
                 "snapshot": snapshot,
-                "original": notebook_name,
+                "original": supervisor.notebook_path,
                 "open_url": f"{supervisor.jupyter_url}/lab/tree/{snapshot}?token={supervisor.token}",
             })
         except Exception as exc:
@@ -460,45 +490,9 @@ def create_app(supervisor: RuntimeSupervisor) -> Starlette:
             status_code=303,
         )
 
-    async def log_socket(websocket: WebSocket) -> None:
-        supplied = websocket.cookies.get(_DASHBOARD_COOKIE, "")
-        origin = websocket.headers.get("origin")
-        origin_ok = True
-        if origin:
-            parsed = urlsplit(origin)
-            expected_host = supervisor.profile.dashboard.host
-            allowed_hosts = {expected_host}
-            if expected_host in {"127.0.0.1", "localhost", "::1"}:
-                allowed_hosts.update({"127.0.0.1", "localhost", "::1"})
-            else:
-                request_host = websocket.headers.get("host", "").rsplit(":", 1)[0]
-                if request_host:
-                    allowed_hosts.add(request_host.strip("[]"))
-            origin_ok = (
-                parsed.hostname in allowed_hosts
-                and (parsed.port or (443 if parsed.scheme == "https" else 80))
-                == supervisor.profile.dashboard.port
-            )
-        if not supplied or not secrets.compare_digest(supplied, supervisor.dashboard_token) or not origin_ok:
-            await websocket.close(code=4401)
-            return
-        await websocket.accept()
-        cursor = 0
-        try:
-            while True:
-                entries = list(supervisor.logs)
-                pending = [entry for entry in entries if int(entry.get("sequence", 0)) > cursor]
-                if pending:
-                    await websocket.send_text(json.dumps({"logs": pending}))
-                    cursor = max(int(entry["sequence"]) for entry in pending)
-                await asyncio.sleep(0.5)
-        except Exception:
-            await websocket.close()
-
     return Starlette(routes=[
         Route("/", index), Route("/open-notebook", open_notebook),
         Route("/assets/{name}", asset), Route("/api/status", status),
-        Route("/api/logs", logs), Route("/api/doctor", doctor), Route("/api/profiles", profiles),
         Route("/api/start-mcp", start_mcp, methods=["POST"]),
         Route("/api/restart/{component}", restart, methods=["POST"]),
         Route("/api/mcp/tool", tool_call, methods=["POST"]),
@@ -507,5 +501,4 @@ def create_app(supervisor: RuntimeSupervisor) -> Starlette:
         Route("/api/choose-folder", choose_folder, methods=["POST"]),
         Route("/api/notebook/snapshot", snapshot_notebook, methods=["POST"]),
         Route("/api/notebook/load", load_notebook, methods=["POST"]),
-        WebSocketRoute("/ws/logs", log_socket),
     ])
