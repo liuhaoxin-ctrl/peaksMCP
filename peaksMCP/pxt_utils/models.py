@@ -62,7 +62,7 @@ class ConversionReport(BaseModel):
     """Batch conversion result."""
 
     items: list[ConversionItem] = Field(default_factory=list)
-    cpu: dict[str, float] = Field(default_factory=dict)
+    cpu: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
 
     @property
