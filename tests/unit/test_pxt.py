@@ -106,6 +106,25 @@ def test_real_binary_3d_pxt_preserves_dims_values_and_axis_direction():
     assert data.deflector_perp.attrs["units"] == "deg"
 
 
+def test_real_binary_pxt_ignores_auxiliary_info_waves():
+    # Elettra VUV chunk files bundle per-axis helper waves under a
+    # DA_infoWaves folder next to the real data wave (chunkcube).  The loader
+    # must ignore the helpers and select the single data wave.
+    source = PXT_FIXTURES / "synthetic_mapping_with_info_waves.pxt"
+
+    data = load_pxt(source)
+
+    assert data.dims == ("eV", "theta_par", "deflector_perp")
+    assert data.shape == (4, 3, 2)
+    np.testing.assert_array_equal(data.values, np.arange(24).reshape(4, 3, 2))
+    np.testing.assert_allclose(data.eV, [1.92, 1.93, 1.94, 1.95])
+    np.testing.assert_allclose(data.theta_par, [-18.736, -18.692779, -18.649558])
+    np.testing.assert_allclose(data.deflector_perp, [-15.0, -14.0])
+    assert data.eV.attrs["units"] == "eV"
+    assert data.theta_par.attrs["units"] == "deg"
+    assert data.deflector_perp.attrs["units"] == "deg"
+
+
 @pytest.mark.parametrize(
     "fixture_name",
     ["synthetic_2d_nested.pxt", "synthetic_3d.PXT"],

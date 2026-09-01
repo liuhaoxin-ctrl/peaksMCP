@@ -84,6 +84,38 @@ def generate() -> None:
     )
     (HERE / "synthetic_3d.PXT").write_bytes(fixture_3d)
 
+    # Mirror the real Elettra VUV chunk layout: one data wave (chunkcube) plus
+    # five per-axis helper waves under a DA_infoWaves folder.  The loader must
+    # ignore the helpers and pick chunkcube as the single data wave.
+    chunkcube = _wave_bytes(
+        np.arange(24, dtype=np.float32).reshape(4, 3, 2),
+        "chunkcube",
+        [
+            ("x", 1.92, 0.01, "eV", "Energy"),
+            ("y", -18.736, 0.043221, "deg", "Thetax"),
+            ("z", -15.0, 1.0, "deg", "Thetay"),
+        ],
+        note="Synthetic ARPES 3D chunk-cube regression wave",
+    )
+    info_waves = [
+        ("chunkImage", np.zeros((2, 2), dtype=np.float32)),
+        ("deltaInfoWave", np.array([0.01, 0.043221, 1.0], dtype=np.float32)),
+        ("dimInfoWave", np.array([4, 3, 2], dtype=np.float32)),
+        ("labelInfoWave", np.array([0, 0, 0], dtype=np.float32)),
+        ("offsetInfoWave", np.array([1.92, -18.736, -15.0], dtype=np.float32)),
+    ]
+    info_bytes = b"".join(
+        _record(3, 5, _wave_bytes(values, name, [], note=""))
+        for name, values in info_waves
+    )
+    fixture_mapping = (
+        _record(3, 5, chunkcube)
+        + _folder_start("DA_infoWaves")
+        + info_bytes
+        + _folder_end()
+    )
+    (HERE / "synthetic_mapping_with_info_waves.pxt").write_bytes(fixture_mapping)
+
 
 if __name__ == "__main__":
     generate()

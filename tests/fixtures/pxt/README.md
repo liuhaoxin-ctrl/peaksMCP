@@ -7,6 +7,9 @@ do not contain experimental measurements or user metadata.
   folders. Its energy coordinate is descending.
 - `synthetic_3d.PXT` contains a 3D ARPES mapping Wave and uses an upper-case
   extension intentionally.
+- `synthetic_mapping_with_info_waves.pxt` mirrors the real Elettra VUV chunk
+  layout: one 3D data Wave (`chunkcube`) plus five per-axis helper Waves under
+  a `DA_infoWaves` folder, which the loader must ignore.
 
 They were generated with `generate_fixtures.py` and IgorWriter 0.7.1. The
 runtime reads them with Igor2, exactly as it reads instrument-produced PXT

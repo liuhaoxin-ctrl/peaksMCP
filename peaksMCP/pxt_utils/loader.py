@@ -79,6 +79,12 @@ def _extract_wave(
     def collect(dirpath: list[bytes], key: bytes, value: Any) -> None:
         if not isinstance(value, WaveRecord):
             return
+        # Elettra VUV chunk format stores per-axis helper waves (chunkImage,
+        # delta/dim/label/offsetInfoWave) under a ``DA_infoWaves`` folder.
+        # They are instrument metadata, not experiment data: skip them so the
+        # single data wave (e.g. ``chunkcube``) is selected unambiguously.
+        if any(_decode_text(part).lower() == "da_infowaves" for part in dirpath):
+            return
         try:
             wave = value.wave["wave"]
             values = np.asarray(wave["wData"])
