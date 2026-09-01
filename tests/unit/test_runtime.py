@@ -151,6 +151,32 @@ def test_mcp_server_refuses_non_loopback_binding():
     JupyterPeaksMCPServer(state, host="0.0.0.0", port=9997, allow_remote=True)
 
 
+def test_kernelspec_state_matches_profile_including_require_consent(monkeypatch, tmp_path):
+    """kernel_spec_state must read every key kernel_profile_state emits,
+    otherwise every start() misreads drift and reinstalls the kernelspec."""
+    import json
+
+    from jupyter_client.kernelspec import KernelSpecManager
+
+    from peaksMCP.app.kernel import kernel_profile_state, kernel_spec_state
+    from peaksMCP.app.profiles import Profile
+
+    profile = Profile(mcp={"mode": "safe", "require_consent": True})
+    resource = tmp_path / "spec"
+    resource.mkdir()
+    (resource / "kernel.json").write_text(
+        json.dumps({"metadata": {"peaksMCP": kernel_profile_state(profile)}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        KernelSpecManager,
+        "get_kernel_spec",
+        lambda _self, _name: type("S", (), {"resource_dir": str(resource)})(),
+    )
+
+    assert kernel_spec_state("peaksmcp") == kernel_profile_state(profile)
+
+
 def test_kernelspec_reinstalled_when_remote_permission_changes(monkeypatch, tmp_path):
     """A stale remote-binding opt-in must force kernelspec replacement."""
 

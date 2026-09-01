@@ -2,13 +2,25 @@ version: 1
 tools:
   peaks_search_api:
     title: Search Peaks API
-    description: Search the live Peaks API index before writing unfamiliar ARPES analysis code.
+    description: >
+      MUST be called before writing any Peaks analysis code. Search the live Peaks
+      API index for the user's intent. Do NOT write or guess Peaks code from memory
+      without first querying this tool. Returns canonical API ids, names and
+      one-line summaries.
   peaks_get_api:
     title: Get Peaks API
-    description: Return the exact signature, source-backed documentation and examples for one canonical API ID.
+    description: >
+      Get the exact signature, parameters, return-value conventions and source-backed
+      documentation for one canonical API ID returned by peaks_search_api. Call this
+      after searching and before writing code, to confirm the correct usage.
   askuserquestion:
     title: Ask User Question
-    description: 'Report missing experimental information/essential information to the conversation. Returns {"status": "needs_input", ...} — the frontend will ask the user in the next turn. options must be a list of plain strings.'
+    description: >
+      Report missing experimental information/essential information to the conversation.
+      Returns {"status": "needs_input", ...} — the frontend will ask the user in the
+      next turn. options MUST be a plain list of strings (e.g. ["S", "P"]) — NOT a
+      list of objects. NEVER invent missing physical values (Fermi level, angle
+      conventions, polarization, temperature); ask instead.
   notebook_list_variables:
     title: List Notebook Variables
     description: List useful variables in the live kernel without reading array values.
@@ -36,9 +48,16 @@ tools:
   notebook_wait_for_kernel:
     title: Wait for Kernel
     description: Wait for the current kernel to become idle up to a bounded timeout.
-  notebook_execute_code:
-    title: Execute Notebook Code
-    description: With consent, execute scanned Python code as a visible Jupyter cell operation.
+  notebook_execute_with_api_check:
+    title: Execute Code With API Check
+    description: >
+      THE ONLY code-execution tool: executes code AND automatically verifies every
+      Peaks API reference against the live API index in one call (no separate
+      peaks_search_api / peaks_get_api round-trip needed). Returns
+      verified_peaks_apis (names resolved to Peaks APIs) and generic_refs (names
+      with no Peaks counterpart). RULE: only use non-Peaks functions when Peaks
+      has no corresponding API. ALL Peaks analysis code MUST be run through this
+      tool.
   notebook_execute_active_cell:
     title: Execute Active Cell
     description: With consent, execute the currently selected notebook cell.

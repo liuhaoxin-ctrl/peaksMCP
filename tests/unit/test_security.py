@@ -269,6 +269,7 @@ def test_destructive_cell_ops_require_consent_even_in_dangerous_mode():
     state = SharedState(FakeIPython())
     state.bridge = FakeBridge()
     state.mode = ExecutionMode.DANGEROUS
+    state.require_consent = True
     consent = DenyingConsent()
     notebook = UnsafeNotebookBackend(state, consent, AuditLogger("/tmp/peaksmcp-test-audit.jsonl"))
 
@@ -304,7 +305,8 @@ def test_execute_active_cell_scans_live_source_not_cache():
 
     state = SharedState(FakeIPython())
     state.bridge = FakeBridge()
-    state.mode = ExecutionMode.UNSAFE  # non-dangerous so consent is actually invoked
+    state.mode = ExecutionMode.UNSAFE  # consent enabled for the test
+    state.require_consent = True
     # The stale cache deliberately differs from the live source.
     state.active_cell = {"id": "cell-42", "source": "print('old cached code')", "index": 3}
 
@@ -343,6 +345,7 @@ def test_execute_code_requires_explicit_consent_for_network_even_in_dangerous_mo
 
     state = SharedState(Mock(user_ns={}))
     state.mode = ExecutionMode.DANGEROUS
+    state.require_consent = True
     state.bridge = Mock()
     consent, audit = Mock(), Mock()
     consent.request.return_value = False
@@ -379,6 +382,9 @@ def test_dangerous_mode_never_executes_unrecognised_python_without_consent(
 
     state = SharedState(Mock(user_ns={}))
     state.mode = ExecutionMode.DANGEROUS
+    # Consent must be a hard boundary when it is enabled (the profile switch
+    # ``mcp.require_consent`` re-enables it; the default is False).
+    state.require_consent = True
     state.bridge = Mock()
     state.bridge.request.return_value = {"id": "cell-1", "source": code}
     consent, audit = Mock(), Mock()
@@ -445,3 +451,91 @@ def test_audit_is_jsonl_and_private(tmp_path):
     AuditLogger(path).write("tool", "approved", {"x": 1})
     assert json.loads(path.read_text())["tool"] == "tool"
     assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_select_then_run_state_machine():
+    """First code execution must be preceded by at least one peaks_search_api /
+    peaks_get_api call (task-level select-then-run gate); after that, execution
+    is unlocked but invented APIs are still blocked by the code scanner."""
+    from unittest.mock import Mock
+
+    from peaksMCP.discovery.index import build_index
+    from peaksMCP.server.jupyter_peaks.backend import (
+        SharedState,
+        UnsafeNotebookBackend,
+    )
+    from peaksMCP.server.jupyter_peaks.security import AuditLogger, ConsentManager
+
+    state = SharedState(Mock(user_ns={}))
+    state.require_consent = False
+    state.api_index = build_index()
+    state.bridge = Mock()
+    state.bridge.request.return_value = {"ok": True}
+    nb = UnsafeNotebookBackend(state, ConsentManager(), AuditLogger("/tmp/t.jsonl"))
+
+    code = "da.k_convert(quiet=True)"
+
+    # 1) No exploration yet -> blocked by the task-level gate.
+    r = nb.execute_with_api_check(code, timeout=5)
+    assert r["blocked"] is True
+    assert "select-then-run" in r["message"]
+
+    # 2) One exploration is NOT enough; two unlock execution for the task.
+    state.exploration_count = 1
+    r1 = nb.execute_with_api_check(code, timeout=5)
+    assert r1["blocked"] is True
+    state.exploration_count = 2
+    r2 = nb.execute_with_api_check(code, timeout=5)
+    assert r2.get("blocked") is not True
+
+    # 3) Invented APIs are still hard-blocked after unlocking.
+    r3 = nb.execute_with_api_check("da.correct_EF()", timeout=5)
+    assert r3["blocked"] is True
+    assert "correct_EF" in str(r3.get("unknown_refs"))
+
+
+def test_execute_with_api_check_classifies_generic_and_verified_calls():
+    from unittest.mock import Mock
+
+    from peaksMCP.discovery.index import build_index
+    from peaksMCP.server.jupyter_peaks.backend import (
+        SharedState,
+        UnsafeNotebookBackend,
+    )
+    from peaksMCP.server.jupyter_peaks.security import AuditLogger, ConsentManager
+
+    state = SharedState(Mock(user_ns={}))
+    state.require_consent = False
+    state.api_index = build_index()
+    state.bridge = Mock()
+    state.bridge.request.return_value = {"ok": True}
+    state.exploration_count = 2
+    nb = UnsafeNotebookBackend(state, ConsentManager(), AuditLogger("/tmp/t.jsonl"))
+
+    # Builtins and generic-library calls (including module-member chains like
+    # np.linalg.svd / scipy.signal.savgol_filter) never block.
+    for code in (
+        'print("hi")',
+        "len(data.eV)",
+        "range(10)",
+        "np.linalg.svd(x)",
+        "np.fft.fft2(x)",
+        "scipy.signal.savgol_filter(x, 5, 2)",
+        'xr.concat([a, b], dim="t")',
+        'plt.savefig("f.png")',
+        "json.dumps(x)",
+    ):
+        result = nb.execute_with_api_check(code, timeout=5)
+        assert not result.get("blocked"), (code, result)
+
+    # Peaks APIs are reported as verified regardless of calling convention.
+    verified = nb.execute_with_api_check("fit_gold(data)", timeout=5)
+    assert not verified.get("blocked")
+    assert "fit_gold" in [v["name"] for v in verified["api_check"]["verified_peaks_apis"]]
+    verified = nb.execute_with_api_check("da.k_convert(quiet=True)", timeout=5)
+    assert "k_convert" in [v["name"] for v in verified["api_check"]["verified_peaks_apis"]]
+
+    # Invented / typo'd Peaks APIs are hard-blocked after unlocking.
+    blocked = nb.execute_with_api_check("da.correct_EF()", timeout=5)
+    assert blocked["blocked"] is True
+    assert "correct_EF" in str(blocked.get("unknown_refs"))

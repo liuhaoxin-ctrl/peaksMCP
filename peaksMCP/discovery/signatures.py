@@ -11,6 +11,13 @@ from typing import Any
 
 MAX_DOC_CHARS = 6000
 
+# Scopes whose entries are xarray accessor methods (bound: receiver dropped).
+_ACCESSOR_SCOPES = frozenset({"dataarray", "dataset", "datatree"})
+
+# Parameter names that act as the implicit receiver of an accessor method or
+# accessor-class method and are dropped from the bound signature.
+_RECEIVER_NAMES = frozenset({"self", "cls", "data", "da", "ds", "dt"})
+
 # Runtime introspection imports the module to read ``inspect`` metadata.  Only
 # allow modules owned by this project or the installed peaks package; an index
 # entry pointing elsewhere must not trigger an arbitrary import on the FastMCP
@@ -80,7 +87,10 @@ def _inspect_runtime(entry: dict[str, Any]) -> dict[str, Any] | None:
         return None
     try:
         module = importlib.import_module(module_name)
-        obj = getattr(module, name)
+        # Accessor-class members (e.g. ``Metadata.set_EF_correction`` from
+        # ``da.metadata``) live on the class, not at module level.
+        cls_name = str(entry.get("accessor_class") or "")
+        obj = getattr(getattr(module, cls_name), name) if cls_name else getattr(module, name)
         signature = str(inspect.signature(obj)) if callable(obj) else None
         doc = inspect.getdoc(obj) or ""
         return {
@@ -93,11 +103,27 @@ def _inspect_runtime(entry: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _bound(signature: str | None, name: str, scope: str) -> str | None:
-    if not signature or scope not in {"dataarray", "dataset", "datatree"}:
+    """Bind a signature to its owner: drop the leading ``self``/``data`` argument.
+
+    The binding rule is driven by the signature itself, not by scope or field
+    metadata, so it stays correct for every accessor class (``metadata``,
+    ``quick_fit``, ``history``, ...):
+
+    - a leading ``self`` is always a class method (bound);
+    - a leading ``data``/``da``/``ds``/``dt`` is dropped only for xarray
+      accessor scopes, because module-level functions (e.g. ``save(data, ...)``)
+      have a real ``data`` argument that must be kept.
+    """
+    if not signature:
         return signature
     inside = signature.partition("(")[2].rpartition(")")[0]
     parts = [part.strip() for part in inside.split(",") if part.strip()]
-    if parts and parts[0].split("=", 1)[0].strip() in {"self", "data", "da", "ds", "dt"}:
+    if not parts:
+        return f"{name}()"
+    first = parts[0].split("=", 1)[0].strip()
+    if first == "self" or (
+        first in _RECEIVER_NAMES and scope in _ACCESSOR_SCOPES
+    ):
         parts.pop(0)
     return f"{name}({', '.join(parts)})"
 
@@ -141,5 +167,7 @@ def describe_api(entry: dict[str, Any], package_dir: str | None = None) -> dict[
         **entry,
         **details,
         "signature": signature,
-        "signature_bound": _bound(signature, name, str(entry.get("scope") or "")),
+        "signature_bound": _bound(
+            signature, name, str(entry.get("scope") or "")
+        ),
     }

@@ -138,6 +138,45 @@ def _entry(scope: str, module: str, name: str, **extra: Any) -> dict[str, Any]:
     }
 
 
+def _scan_accessor_class(
+    entries: list[dict[str, Any]],
+    accessor_cls: type,
+    module: str,
+    scope: str,
+    accessor_name: str,
+) -> None:
+    """Index the public methods/properties of a Peaks custom accessor class.
+
+    ``da.metadata`` is an ``_CachedAccessor`` whose class (``Metadata``) carries
+    methods such as ``set_EF_correction`` / ``get_EF_correction`` that the main
+    xarray-descriptor scan never sees.  Each becomes an entry with scope
+    ``<accessor_name>`` (e.g. ``metadata:peaks.core.metadata.metadata_methods:set_EF_correction``)
+    so ``peaks_search_api`` / ``peaks_get_api`` can resolve them.
+    """
+    for member in sorted(dir(accessor_cls)):
+        if member.startswith("_"):
+            continue
+        obj = getattr(accessor_cls, member, None)
+        if not callable(obj) and not isinstance(obj, property):
+            continue
+        if getattr(obj, "__module__", module) not in (None, module, accessor_cls.__module__):
+            # Inherited from elsewhere (e.g. object utilities): skip.
+            if not getattr(obj, "__module__", "").startswith("peaks."):
+                continue
+        doc = getattr(obj, "__doc__", "") or ""
+        entries.append(
+            _entry(
+                accessor_name,
+                accessor_cls.__module__,
+                member,
+                kind="property" if isinstance(obj, property) else "method",
+                func_name=member,
+                accessor_class=accessor_cls.__name__,
+                summary=doc.strip().splitlines()[0][:240] if doc.strip() else "",
+            )
+        )
+
+
 def scan_runtime() -> list[dict[str, Any]]:
     """Inspect Peaks-owned xarray descriptors and top-level exports.
 
@@ -194,6 +233,12 @@ def scan_runtime() -> list[dict[str, Any]]:
                     summary=doc.strip().splitlines()[0][:240] if doc.strip() else "",
                 )
             )
+            # Peaks custom accessor classes (e.g. ``da.metadata``) expose their
+            # own methods (``set_EF_correction``, ``get_EF_correction``, ...) that
+            # are otherwise invisible to the index.  Recursively scan those too,
+            # so ``peaks_search_api``/``peaks_get_api`` can find them.
+            if is_cached and isinstance(accessor, type) and accessor_module.startswith("peaks."):
+                _scan_accessor_class(entries, accessor, accessor_module, scope, name)
 
     for name in sorted(dir(peaks)):
         if name.startswith("_"):

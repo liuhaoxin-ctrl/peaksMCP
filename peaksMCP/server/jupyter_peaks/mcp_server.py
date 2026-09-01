@@ -9,12 +9,14 @@ import uvicorn
 from fastmcp import FastMCP
 
 from peaksMCP import __version__
+from peaksMCP.discovery.index import build_index
 
 from .backend import ExecutionMode, NotebookBackend, SharedState, UnsafeNotebookBackend
 from .core import register_safe_tools, register_unsafe_tools
 from .security import AuditLogger, ConsentManager
 
 
+# Canonical parameter schema for the askuserquestion tool, exposed as an MCP
 class JupyterPeaksMCPServer:
     """Own FastMCP, notebook backends and its in-kernel HTTP listener."""
 
@@ -30,6 +32,16 @@ class JupyterPeaksMCPServer:
         self.consent = ConsentManager(state.bridge)
         self.notebook = NotebookBackend(state)
         self.unsafe = UnsafeNotebookBackend(state, self.consent, self.audit)
+        # Pre-build the Peaks API index at server startup instead of lazily on
+        # the first search: the dashboard can then report api_index_ready /
+        # api_count immediately (and index_stale reflects the current source).
+        # A failure keeps api_index None so searches still fall back to lazy
+        # build inside _require_index.
+        if state.api_index is None:
+            try:
+                state.api_index = build_index()
+            except Exception:
+                state.api_index = None
         self.mcp = self._build_mcp()
         self._thread: threading.Thread | None = None
         self._uvicorn: uvicorn.Server | None = None
@@ -40,16 +52,19 @@ class JupyterPeaksMCPServer:
             version=__version__,
             instructions=(
                 "Use peaks_search_api and peaks_get_api before writing unfamiliar Peaks code. "
+                "All Peaks analysis code must be executed through notebook_execute_with_api_check "
+                "(the only code-execution tool), which verifies every Peaks API reference against "
+                "the live API index before running; there is no other way to execute code. "
                 "Inspect xarray variables before analysis and preserve units in every figure. "
                 "Never save figures to disk (plt.savefig / fig.savefig) unless the user "
                 "explicitly asks for a saved file — figures are shown inline in the notebook. "
-                "Executing or adding notebook cells (notebook_execute_code, notebook_add_cell) "
-                "always appends at the end of the notebook and requires explicit consent shown "
-                "in the notebook; notebook_delete_cell removes a cell only with consent. "
-                "Existing cells are never overwritten."
+                "Executing or adding notebook cells appends at the end of the notebook and never "
+                "overwrites existing cells; consent prompts are controlled by the profile "
+                "mcp.require_consent switch."
             ),
             strict_input_validation=True,
         )
+
         register_safe_tools(mcp, self.state, self.notebook, self.audit)
         # All tools are always exposed to the model. The security mode only
         # controls whether ordinary execution/editing asks for in-notebook

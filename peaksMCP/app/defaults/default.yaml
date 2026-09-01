@@ -10,6 +10,7 @@ mcp:
   port: 8123
   mode: safe
   autostart: true
+  require_consent: false
 dashboard:
   host: 127.0.0.1
   port: 8765

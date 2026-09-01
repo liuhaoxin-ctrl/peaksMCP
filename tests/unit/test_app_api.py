@@ -354,7 +354,11 @@ def test_inspector_whitelist_and_call(monkeypatch):
     monkeypatch.setattr("peaksMCP.app.api._mcp_probe", _online_mcp)
     monkeypatch.setattr("peaksMCP.app.api.Client", lambda *a, **k: _FakeClient())
     client, _supervisor = _authenticated_client()
-    blocked = client.post("/api/mcp/tool", json={"name": "notebook_execute_code", "arguments": {}})
+    # Execution tools are NOT in the inspector whitelist: rejected.
+    blocked = client.post(
+        "/api/mcp/tool",
+        json={"name": "notebook_execute_with_api_check", "arguments": {"code": "1+1"}},
+    )
     assert blocked.status_code == 403
     allowed = client.post("/api/mcp/tool", json={"name": "peaks_search_api", "arguments": {"query": "norm"}})
     assert allowed.status_code == 200

@@ -47,6 +47,27 @@ def test_get_api_returns_source_signature_and_docstring():
     assert detail["docstring"]
 
 
+def test_bound_drops_receiver_by_name_not_scope():
+    from peaksMCP.discovery.signatures import _bound
+
+    # Accessor-class methods: a leading self is dropped in any accessor scope.
+    assert (
+        _bound("set_EF_correction(self, EF_correction)", "set_EF_correction", "metadata")
+        == "set_EF_correction(EF_correction)"
+    )
+    assert (
+        _bound("linear(self, independent_var=None)", "linear", "quick_fit")
+        == "linear(independent_var=None)"
+    )
+    # xarray accessor: the receiver is dropped for accessor scopes.
+    assert _bound("k_convert(da, eV=None)", "k_convert", "dataarray") == "k_convert(eV=None)"
+    # module-level functions keep a real data argument.
+    assert (
+        _bound("plot_batch(data, ncols=3)", "plot_batch", "module")
+        == "plot_batch(data, ncols=3)"
+    )
+
+
 def test_index_fingerprint_detects_source_changes(monkeypatch):
     import peaksMCP.discovery.index as index_module
 

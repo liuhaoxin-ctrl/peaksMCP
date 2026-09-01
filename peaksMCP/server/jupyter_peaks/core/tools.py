@@ -204,6 +204,8 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
     """
     def peaks_search_api(query: str, scope: str = "all", limit: int = 5) -> dict[str, Any]:
         index = _require_index(state)
+        # Each successful exploration counts toward the select-then-run gate.
+        state.exploration_count += 1
         matches = index.search(query, scope, limit)
         return {"query": query, "scope": scope, "count": len(matches), "peaks_version": index.peaks_version, "fingerprint": index.fingerprint, "matches": matches}
 
@@ -212,6 +214,8 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
         entry = index.get(canonical_id)
         if entry is None:
             raise KeyError(f"unknown canonical API ID: {canonical_id}")
+        # Fetching API details also counts toward the select-then-run gate.
+        state.exploration_count += 1
         return describe_api(entry)
 
     def askuserquestion(prompt: str, hint: str | None = None, options: list[str] | None = None) -> dict[str, Any]:
@@ -257,7 +261,11 @@ def register_unsafe_tools(mcp: FastMCP, notebook: UnsafeNotebookBackend, audit: 
     >>> register_unsafe_tools(mcp, unsafe_notebook)
     """
     functions = {
-        "notebook_execute_code": notebook.execute_code,
+        # notebook_execute_code is intentionally NOT registered: the only code-
+        # execution tool is notebook_execute_with_api_check, which verifies every
+        # Peaks API reference against the live index before running.  There is no
+        # bypass channel for executing arbitrary code without the API check.
+        "notebook_execute_with_api_check": notebook.execute_with_api_check,
         "notebook_execute_active_cell": notebook.execute_active_cell,
         "notebook_add_cell": notebook.add_cell,
         "notebook_delete_cell": notebook.delete_cell,

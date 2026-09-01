@@ -40,7 +40,6 @@ def test_xarray_summary_reports_real_peaks_apis_without_invoking_them():
 
     summary = summarize_xarray(xr.DataArray([1], dims="eV"))
     assert {"metadata", "fit_gold", "k_convert"} <= set(summary["peaks_apis"])
-    assert summary["peaks_accessors"] == summary["peaks_apis"]
 
 
 def test_namespace_listing_and_missing_variable():

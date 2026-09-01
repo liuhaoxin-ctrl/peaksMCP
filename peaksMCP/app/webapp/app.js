@@ -249,9 +249,12 @@ bind('#convert', 'submit', async e => {
 
     $('#convert-result').textContent = pretty(r);
     if (!resp.ok) throw new Error(r.error || r.error_type || 'Conversion failed');
-    // Single unified Load control: multi-select the converted files, or load all.
-    const converted = Array.isArray(r.items) ? r.items.filter(x => x.status === 'converted') : [];
-    renderLoadControl(converted);
+    // Unified Load control: only files whose output actually exists on disk are
+    // loadable.  "skipped" may mean "already on disk" OR "CPU budget wait timed
+    // out" (no output); cancelled items have no output either — the backend
+    // reports output_exists precisely for each item.
+    const loadable = Array.isArray(r.items) ? r.items.filter(x => x.output_exists) : [];
+    renderLoadControl(loadable);
     const failures = Array.isArray(r.items) ? r.items.filter(x => x.status === 'failed').length : 0;
     toast(
       failures ? `Conversion completed with ${failures} failure(s)` : 'Conversion completed',
@@ -266,24 +269,24 @@ bind('#convert', 'submit', async e => {
   }
 });
 
-function renderLoadControl(converted) {
+function renderLoadControl(items) {
   const container = $('#load-actions');
   container.innerHTML = '';
-  if (converted.length === 0) return;
+  if (items.length === 0) return;
   const panel = document.createElement('div');
   panel.className = 'load-panel';
   const title = document.createElement('div');
   title.className = 'load-title';
-  title.textContent = 'Load converted files into the notebook';
+  title.textContent = 'Load files into the notebook';
   const select = document.createElement('select');
   select.id = 'load-select';
   select.multiple = true;
-  select.size = Math.min(6, converted.length);
-  converted.forEach(item => {
+  select.size = Math.min(6, items.length);
+  items.forEach(item => {
     const option = document.createElement('option');
     option.value = String(item.output);
-    option.textContent = String(item.output).split('/').pop();
-    select.appendChild(option);
+    const label = String(item.output).split('/').pop();
+    option.textContent = item.status === 'skipped' ? `${label} (already on disk)` : label;    select.appendChild(option);
   });
   const buttons = document.createElement('div');
   buttons.className = 'load-buttons';
@@ -324,7 +327,7 @@ function renderLoadControl(converted) {
   loadSelected.addEventListener('click', () =>
     run([...select.selectedOptions].map(o => o.value)));
   loadAll.addEventListener('click', () =>
-    run(converted.map(item => item.output)));
+    run(items.map(item => item.output)));
 }
 
 bind('#pick-folder', 'click', async () => {

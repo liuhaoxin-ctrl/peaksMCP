@@ -409,7 +409,9 @@ def convert_path(
     items: list[ConversionItem] = []
     for result in batch.items:
         if result.status == "completed":
-            items.append(ConversionItem.model_validate(result.output))
+            item = ConversionItem.model_validate(result.output)
+            item.output_exists = bool(item.output and os.path.exists(item.output))
+            items.append(item)
         else:
             task = result.input
             items.append(
@@ -420,6 +422,7 @@ def convert_path(
                     status="failed" if result.status == "failed" else result.status,
                     error_type=result.error_type,
                     error=result.error,
+                    output_exists=os.path.exists(task.output_path),
                 )
             )
     return ConversionReport(

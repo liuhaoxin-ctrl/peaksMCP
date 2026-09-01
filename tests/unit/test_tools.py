@@ -21,8 +21,8 @@ def test_exact_tool_surface_all_exposed():
         "notebook_read_variable", "notebook_read_active_cell", "notebook_read_active_cell_output",
         "notebook_read_content", "notebook_move_cursor", "notebook_server_status",
         "notebook_kernel_status", "notebook_wait_for_kernel",
-        "notebook_execute_code", "notebook_execute_active_cell", "notebook_add_cell",
-        "notebook_delete_cell",
+        "notebook_execute_with_api_check", "notebook_execute_active_cell",
+        "notebook_add_cell", "notebook_delete_cell",
     ])
 
 
@@ -32,8 +32,12 @@ def test_mode_changes_consent_policy_not_tool_surface():
     for mode in ("unsafe", "dangerous", "safe"):
         server.set_mode(mode)
         assert len(names(server)) == 16
-        assert {"notebook_execute_code", "notebook_execute_active_cell", "notebook_add_cell",
+        assert {"notebook_execute_with_api_check",
+                "notebook_execute_active_cell", "notebook_add_cell",
                 "notebook_delete_cell"} <= set(names(server))
+        # notebook_execute_code was removed: the only execution path is the
+        # API-checked one (no bypass channel).
+        assert "notebook_execute_code" not in names(server)
         # apply_patch was removed: patching an existing cell would overwrite it.
         assert "notebook_apply_patch" not in names(server)
 

@@ -8,9 +8,11 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
+from ..active_cell_bridge import CommBridge
 from .base import SharedState
 
-_MAX_CACHED_CELL_OUTPUTS = 128
+# Single source of truth for the cached-cell-output cap (shared with the bridge).
+_MAX_CACHED_CELL_OUTPUTS = CommBridge.MAX_CACHED_CELLS
 
 
 def _json_value(value: Any, limit: int = 80) -> Any:
@@ -98,7 +100,6 @@ def summarize_xarray(value: xr.DataArray | xr.Dataset | xr.DataTree) -> dict[str
         "units": value.attrs.get("units") or value.attrs.get("unit"),
         "attrs": _json_value(dict(value.attrs)),
         "chunks": _json_value(chunks),
-        "peaks_accessors": peaks_apis,
         "peaks_apis": peaks_apis,
         "lazy": chunks is not None or hasattr(getattr(value, "data", None), "dask"),
     }

@@ -56,6 +56,11 @@ class ConversionItem(BaseModel):
     error_type: str | None = None
     error: str | None = None
     warnings: list[str] = Field(default_factory=list)
+    # Whether the output file actually exists on disk.  A ``skipped`` item may
+    # mean "already on disk" (output exists) or "CPU budget wait timed out"
+    # (output does NOT exist); ``cancelled`` items have no output either.  Only
+    # items with output_exists=True can be loaded into the notebook.
+    output_exists: bool = False
 
 
 class ConversionReport(BaseModel):

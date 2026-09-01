@@ -156,6 +156,9 @@ class RuntimeSupervisor:
         environment["PEAKSMCP_ALLOW_REMOTE"] = (
             "true" if self.profile.mcp.allow_remote else "false"
         )
+        environment["PEAKSMCP_REQUIRE_CONSENT"] = (
+            "true" if self.profile.mcp.require_consent else "false"
+        )
         return environment
 
     def _read_logs(self) -> None:

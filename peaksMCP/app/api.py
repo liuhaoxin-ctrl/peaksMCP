@@ -135,7 +135,7 @@ def load_into_notebook(
     code = {load_code!r}
     def run():
         try:
-            result = bridge.request("execute_code", {{"code": code}}, timeout={min(30, timeout)!r})
+            result = bridge.request("execute_code", {{"code": code}}, timeout={timeout!r})
             if (result.get("execution_success") is not True
                     or result.get("cell_type") != "code"
                     or result.get("source") != code or not result.get("id")

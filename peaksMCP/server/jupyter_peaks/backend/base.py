@@ -29,6 +29,13 @@ class SharedState:
 
     ipython: Any
     mode: ExecutionMode = ExecutionMode.SAFE
+    require_consent: bool = False
+    # Task-level select-then-run gate: the agent must perform at least TWO
+    # peaks_search_api / peaks_get_api calls before the first code execution
+    # of a task.  ``exploration_count`` is incremented by every successful
+    # search/get call; execute tools require ``exploration_count >= 2`` so
+    # exploration genuinely precedes execution.
+    exploration_count: int = 0
     bridge: Any | None = None
     api_index: Any | None = None
     kernel_state: str = "idle"

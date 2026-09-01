@@ -26,6 +26,9 @@ def _start(ipython: Any, host: str | None = None, port: int | None = None) -> Ju
     if _state is None:
         _state = SharedState(ipython=ipython)
         _state.mode = ExecutionMode(os.environ.get("PEAKSMCP_MODE", "safe"))
+        _state.require_consent = (
+            os.environ.get("PEAKSMCP_REQUIRE_CONSENT", "false").lower() == "true"
+        )
         register_comm_target(_state)
         ipython.events.register("pre_run_cell", _state.mark_busy)
         ipython.events.register("post_run_cell", _state.mark_idle)
@@ -77,7 +80,6 @@ class PeaksMCPMagics(Magics):
                 _state, host=host, port=port, allow_remote=allow_remote
             )
             _server.state.mode = mode
-            _server.mcp = _server._build_mcp()
         return self.peaksMCP_start("")
 
     @line_magic

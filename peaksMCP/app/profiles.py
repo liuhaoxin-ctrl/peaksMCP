@@ -24,6 +24,11 @@ class MCPConfig(BaseModel):
     port: int = Field(8123, ge=1, le=65535)
     mode: Literal["safe", "unsafe", "dangerous"] = "safe"
     autostart: bool = True
+    # Master switch for in-notebook consent dialogs on every mutation
+    # (execute / add / delete cell).  When False (default) no consent is asked
+    # and the security scanner + audit log remain the only guards; set True to
+    # re-enable consent prompts for writes/execution.
+    require_consent: bool = False
     # The in-kernel MCP listener has no authentication.  Binding to anything
     # other than loopback exposes notebook contents and (in dangerous mode)
     # code execution to the network; this requires an explicit opt-in and the
