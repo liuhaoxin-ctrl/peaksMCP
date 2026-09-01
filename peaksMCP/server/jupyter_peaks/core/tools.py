@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import json
+import re
 from functools import wraps
 from typing import Any
 
@@ -15,6 +17,47 @@ from peaksMCP.discovery.signatures import describe_api
 
 from ..backend import NotebookBackend, SharedState, UnsafeNotebookBackend
 from ..security import AuditLogger
+
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_OMITTED_IMAGE_MIME = "application/vnd.peaksmcp.image-omitted+json"
+_MAX_IMAGE_BYTES = 8 * 1024 * 1024
+_MAX_RESPONSE_IMAGE_BYTES = 16 * 1024 * 1024
+
+
+def _clean_output_text(value: Any) -> str:
+    """Join Jupyter text fragments and remove terminal colour escapes."""
+    text = "".join(value) if isinstance(value, list) else str(value)
+    return _ANSI_ESCAPE.sub("", text)
+
+
+def _base64_decoded_size(payload: str) -> int:
+    """Return decoded size without allocating the decoded image."""
+    compact = "".join(payload.split())
+    padding = 2 if compact.endswith("==") else 1 if compact.endswith("=") else 0
+    return max(0, len(compact) * 3 // 4 - padding)
+
+
+def _image_omitted_content(
+    mime: str,
+    size: int,
+    *,
+    reason: str,
+) -> TextContent:
+    """Describe an intentionally omitted oversized inline image."""
+    return TextContent(
+        type="text",
+        text=json.dumps(
+            {
+                "output_type": "image_omitted",
+                "mime_type": mime,
+                "decoded_bytes": size,
+                "per_image_limit_bytes": _MAX_IMAGE_BYTES,
+                "response_limit_bytes": _MAX_RESPONSE_IMAGE_BYTES,
+                "reason": reason,
+            },
+            ensure_ascii=False,
+        ),
+    )
 
 
 def _require_index(state: SharedState):
@@ -67,21 +110,78 @@ def _register(mcp: FastMCP, name: str, function: Any, audit: AuditLogger) -> Non
 def _output_content(notebook: NotebookBackend) -> list[TextContent | ImageContent]:
     """Convert Jupyter MIME bundles to native MCP text and image content."""
     blocks: list[TextContent | ImageContent] = []
+    included_image_bytes = 0
     for output in notebook.active_cell_output().get("outputs", []):
-        data = output.get("data", {}) if isinstance(output, dict) else {}
-        text = output.get("text") if isinstance(output, dict) else None
+        if not isinstance(output, dict):
+            continue
+        if output.get("output_type") == "error":
+            traceback_lines = output.get("traceback") or []
+            if not isinstance(traceback_lines, list):
+                traceback_lines = [traceback_lines]
+            error = {
+                "output_type": "error",
+                "ename": _clean_output_text(output.get("ename", "Error")),
+                "evalue": _clean_output_text(output.get("evalue", "")),
+                "traceback": [_clean_output_text(line) for line in traceback_lines],
+            }
+            blocks.append(
+                TextContent(
+                    type="text",
+                    text=json.dumps(error, ensure_ascii=False),
+                )
+            )
+            continue
+        data = output.get("data", {})
+        if not isinstance(data, dict):
+            data = {}
+        omitted_by_frontend = data.get(_OMITTED_IMAGE_MIME, [])
+        if isinstance(omitted_by_frontend, list):
+            for item in omitted_by_frontend:
+                if isinstance(item, dict):
+                    try:
+                        omitted_size = max(0, int(item.get("decoded_bytes", 0)))
+                    except (TypeError, ValueError):
+                        omitted_size = 0
+                    blocks.append(
+                        _image_omitted_content(
+                            str(item.get("mime_type", "image/unknown")),
+                            omitted_size,
+                            reason=str(item.get("reason", "frontend_limit")),
+                        )
+                    )
+        text = output.get("text")
         if text:
             blocks.append(TextContent(type="text", text="".join(text) if isinstance(text, list) else str(text)))
+        output_has_image = False
         for mime in ("image/png", "image/jpeg", "image/svg+xml"):
             payload = data.get(mime)
             if not payload:
                 continue
             payload = "".join(payload) if isinstance(payload, list) else str(payload)
             if mime == "image/svg+xml":
-                payload = base64.b64encode(payload.encode("utf-8")).decode("ascii")
-            blocks.append(ImageContent(type="image", mimeType=mime, data=payload))
+                raw = payload.encode("utf-8")
+                image_bytes = len(raw)
+                encoded_payload = base64.b64encode(raw).decode("ascii")
+            else:
+                image_bytes = _base64_decoded_size(payload)
+                encoded_payload = payload
+            if image_bytes > _MAX_IMAGE_BYTES:
+                blocks.append(
+                    _image_omitted_content(mime, image_bytes, reason="per_image_limit")
+                )
+                continue
+            if included_image_bytes + image_bytes > _MAX_RESPONSE_IMAGE_BYTES:
+                blocks.append(
+                    _image_omitted_content(mime, image_bytes, reason="response_limit")
+                )
+                continue
+            blocks.append(
+                ImageContent(type="image", mimeType=mime, data=encoded_payload)
+            )
+            included_image_bytes += image_bytes
+            output_has_image = True
         plain = data.get("text/plain")
-        if plain and not any(isinstance(block, ImageContent) for block in blocks[-3:]):
+        if plain and not output_has_image:
             blocks.append(TextContent(type="text", text="".join(plain) if isinstance(plain, list) else str(plain)))
     return blocks or [TextContent(type="text", text="No active-cell output.")]
 
@@ -136,12 +236,14 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
 
 
 def register_unsafe_tools(mcp: FastMCP, notebook: UnsafeNotebookBackend, audit: AuditLogger) -> None:
-    """Register the four consent-gated mutation tools.
+    """Register the four mutation tools.
 
     Writes are append-only: ``notebook_execute_code`` / ``notebook_add_cell``
     always append a new cell at the end of the notebook and never overwrite an
     existing one; ``notebook_delete_cell`` removes a cell only with explicit
-    consent.
+    consent. Code execution is scanned and audit-logged, and follows the active
+    mode's consent policy. Explicit-consent findings are confirmed in every
+    mode.
 
     Parameters
     ----------

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import uuid
 
 import uvicorn
 from fastmcp import FastMCP
@@ -21,6 +22,7 @@ class JupyterPeaksMCPServer:
 
     def __init__(self, state: SharedState, host: str = "127.0.0.1", port: int = 8123, allow_remote: bool = False) -> None:
         self.state = state
+        self.state.mcp_instance_id = uuid.uuid4().hex
         self.host = host
         self.port = int(port)
         self.allow_remote = allow_remote
@@ -50,8 +52,11 @@ class JupyterPeaksMCPServer:
         )
         register_safe_tools(mcp, self.state, self.notebook, self.audit)
         # All tools are always exposed to the model. The security mode only
-        # controls whether execution/editing asks for in-notebook consent
-        # (safe/unsafe) or auto-approves after the static scan (dangerous).
+        # controls whether ordinary execution/editing asks for in-notebook
+        # consent in every mode. The scanner rejects known-dangerous patterns
+        # before the consent request, but is not treated as a complete security
+        # boundary for arbitrary Python. Dangerous only relaxes non-executing,
+        # append-only mutations.
         register_unsafe_tools(mcp, self.unsafe, self.audit)
         return mcp
 

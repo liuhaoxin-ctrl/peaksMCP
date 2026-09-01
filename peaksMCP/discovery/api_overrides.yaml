@@ -31,4 +31,10 @@ aliases:
   disp_from_hv: [dispersion from hv, photon energy dispersion, 光子能色散]
   correct_isolated_bad_pixels: [bad pixel removal, clean bad pixels, 坏点修复, 去坏点]
   History: [processing history, provenance, 处理历史]
-overrides: {}
+overrides:
+  k_convert:
+    docstring_note: |
+      Note: ordinary angle-to-momentum conversion (k_convert) does NOT require
+      photon energy (hv). The `return_kz_scan_in_hv` option is only used when
+      converting photon-energy (hv) scans to out-of-plane momentum (kz); regular
+      spectrum conversion needs no hv.

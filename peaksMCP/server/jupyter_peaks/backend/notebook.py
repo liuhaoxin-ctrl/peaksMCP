@@ -10,6 +10,8 @@ import xarray as xr
 
 from .base import SharedState
 
+_MAX_CACHED_CELL_OUTPUTS = 128
+
 
 def _json_value(value: Any, limit: int = 80) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
@@ -19,6 +21,29 @@ def _json_value(value: Any, limit: int = 80) -> Any:
     if isinstance(value, dict):
         return {str(key): _json_value(item, limit) for key, item in list(value.items())[:limit]}
     return repr(value)[:500]
+
+
+def _peaks_api_names(value: Any) -> list[str]:
+    """Find Peaks-owned xarray descriptors without invoking their getters."""
+    names: set[str] = set()
+    for cls in type(value).__mro__:
+        for name, descriptor in vars(cls).items():
+            candidates = (
+                descriptor,
+                getattr(descriptor, "_accessor", None),
+                getattr(descriptor, "func", None),
+            )
+            modules = {
+                str(getattr(candidate, "__module__", ""))
+                for candidate in candidates
+                if candidate is not None
+            }
+            module_name = str(getattr(descriptor, "module_name", ""))
+            if module_name:
+                modules.add(module_name)
+            if any(module == "peaks" or module.startswith("peaks.") for module in modules):
+                names.add(name)
+    return sorted(names)
 
 
 def summarize_xarray(value: xr.DataArray | xr.Dataset | xr.DataTree) -> dict[str, Any]:
@@ -57,7 +82,7 @@ def summarize_xarray(value: xr.DataArray | xr.Dataset | xr.DataTree) -> dict[str
             "units": coordinate.attrs.get("units") or coordinate.attrs.get("unit"),
             "attrs": _json_value(dict(coordinate.attrs)),
         }
-    accessors = [name for name in ("S", "T", "F", "G", "M", "k", "spatial", "tr", "sym") if hasattr(value, name)]
+    peaks_apis = _peaks_api_names(value)
     chunks = getattr(value, "chunks", None)
     return {
         "type": f"xarray.{type(value).__name__}",
@@ -73,7 +98,8 @@ def summarize_xarray(value: xr.DataArray | xr.Dataset | xr.DataTree) -> dict[str
         "units": value.attrs.get("units") or value.attrs.get("unit"),
         "attrs": _json_value(dict(value.attrs)),
         "chunks": _json_value(chunks),
-        "peaks_accessors": accessors,
+        "peaks_accessors": peaks_apis,
+        "peaks_apis": peaks_apis,
         "lazy": chunks is not None or hasattr(getattr(value, "data", None), "dask"),
     }
 
@@ -113,12 +139,31 @@ class NotebookBackend:
                 result = self.state.bridge.request("read_active_cell", timeout=5)
                 if isinstance(result, dict):
                     self.state.active_cell = result
+                    outputs = result.get("outputs")
+                    cell_id = result.get("id")
+                    if isinstance(outputs, list):
+                        self.state.active_cell_output = list(outputs)
+                        if isinstance(cell_id, str) and cell_id:
+                            self.state.cell_outputs.pop(cell_id, None)
+                            self.state.cell_outputs[cell_id] = list(outputs)
+                            while (
+                                len(self.state.cell_outputs)
+                                > _MAX_CACHED_CELL_OUTPUTS
+                            ):
+                                oldest = next(iter(self.state.cell_outputs))
+                                self.state.cell_outputs.pop(oldest, None)
             except Exception:
                 pass
         return dict(self.state.active_cell)
 
     def active_cell_output(self) -> dict[str, Any]:
-        return {"outputs": list(self.state.active_cell_output)}
+        cell_id = self.state.active_cell.get("id")
+        if isinstance(cell_id, str) and cell_id in self.state.cell_outputs:
+            return {
+                "cell_id": cell_id,
+                "outputs": list(self.state.cell_outputs[cell_id]),
+            }
+        return {"cell_id": cell_id, "outputs": list(self.state.active_cell_output)}
 
     def notebook_content(self) -> dict[str, Any]:
         if not self.state.bridge:
@@ -138,6 +183,7 @@ class NotebookBackend:
             "mode": self.state.mode.value,
             "uptime_s": round(time.time() - self.state.started_at, 3),
             "kernel_instance_id": self.state.kernel_instance_id,
+            "mcp_instance_id": self.state.mcp_instance_id,
             "extension_loaded": True,
             "comm_connected": bool(self.state.bridge and self.state.bridge.connected),
             "api_index_ready": self.state.api_index is not None,

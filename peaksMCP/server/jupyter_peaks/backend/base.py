@@ -35,9 +35,12 @@ class SharedState:
     busy_since: float | None = None
     active_cell: dict[str, Any] = field(default_factory=dict)
     active_cell_output: list[dict[str, Any]] = field(default_factory=list)
+    cell_outputs: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    last_execution_cell_id: str | None = None
     lock: threading.RLock = field(default_factory=threading.RLock)
     started_at: float = field(default_factory=time.time)
     kernel_instance_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    mcp_instance_id: str | None = None
 
     @property
     def namespace(self) -> dict[str, Any]:

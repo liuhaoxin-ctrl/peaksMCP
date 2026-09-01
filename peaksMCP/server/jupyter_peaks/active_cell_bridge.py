@@ -12,6 +12,7 @@ class CommBridge:
     """Track a Jupyter Comm and provide request/reply operations."""
 
     target_name = "peaksMCP:frontend"
+    MAX_CACHED_CELLS = 128
 
     #: A frontend is considered disconnected only after this long without a
     #: heartbeat. The frontend heartbeats every 2s, but browsers throttle
@@ -104,6 +105,39 @@ class CommBridge:
             outputs = data.get("outputs")
             if isinstance(outputs, list):
                 self.state.active_cell_output = outputs
+                self._cache_cell_outputs(cell.get("id"), outputs)
+            elif isinstance(cell, dict) and cell.get("id") in self.state.cell_outputs:
+                self.state.active_cell_output = list(
+                    self.state.cell_outputs[cell["id"]]
+                )
+            return
+        if message_type == "cell_output":
+            # Execution results may arrive after the user has moved to another
+            # cell. Cache them by identity without changing active_cell.
+            cell = data.get("cell") or {}
+            cell_id = data.get("cell_id") or (
+                cell.get("id") if isinstance(cell, dict) else None
+            )
+            outputs = data.get("outputs")
+            if isinstance(cell_id, str) and isinstance(outputs, list):
+                self._cache_cell_outputs(cell_id, outputs)
+                self.state.last_execution_cell_id = cell_id
+                if self.state.active_cell.get("id") == cell_id:
+                    self.state.active_cell_output = list(outputs)
+
+    def _cache_cell_outputs(
+        self,
+        cell_id: Any,
+        outputs: list[dict[str, Any]],
+    ) -> None:
+        """Store bounded per-cell output history for active-cell lookups."""
+        if not isinstance(cell_id, str) or not cell_id:
+            return
+        self.state.cell_outputs.pop(cell_id, None)
+        self.state.cell_outputs[cell_id] = list(outputs)
+        while len(self.state.cell_outputs) > self.MAX_CACHED_CELLS:
+            oldest = next(iter(self.state.cell_outputs))
+            self.state.cell_outputs.pop(oldest, None)
 
     def request(self, operation: str, payload: dict[str, Any] | None = None, timeout: float = 30) -> dict[str, Any]:
         """Send a request on the current Comm and wait for its correlated reply.

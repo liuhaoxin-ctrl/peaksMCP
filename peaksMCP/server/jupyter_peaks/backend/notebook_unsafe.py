@@ -11,21 +11,39 @@ from .base import ExecutionMode, SharedState
 class UnsafeNotebookBackend:
     """Execute or mutate notebook cells after security checks and consent."""
 
+    _PYTHON_EXECUTION_OPERATIONS = {
+        "notebook_execute_code",
+        "notebook_execute_active_cell",
+    }
+
     def __init__(self, state: SharedState, consent: ConsentManager, audit: AuditLogger) -> None:
         self.state = state
         self.consent = consent
         self.audit = audit
 
-    def _authorize(self, operation: str, code: str = "", force_consent: bool = False, cell: dict[str, Any] | None = None) -> None:
+    def _authorize(
+        self,
+        operation: str,
+        code: str = "",
+        force_consent: bool = False,
+        cell: dict[str, Any] | None = None,
+    ) -> None:
         scan = scan_code(code) if code else None
         if scan and scan.blocked:
             self.audit.write(operation, "blocked", {"scan": scan.to_dict()})
             raise PermissionError(scan.block_reason or "code was blocked by security scanner")
-        # Patterns such as ``plt.savefig``, and destructive cell operations
-        # (delete / patch existing cells), require an explicit, informed consent
-        # in every mode (including dangerous): existing cells must never be
-        # deleted or overwritten unless the user actively approves it.
-        requires_consent = force_consent or bool(scan and scan.requires_explicit_consent)
+        # AST scanning is a useful early rejection layer, but it cannot prove
+        # arbitrary Python safe: reflection, import side effects and higher-order
+        # calls can hide behavior from static name matching.  Therefore every
+        # operation that actually executes Python requires informed consent in
+        # every mode, including dangerous.  Dangerous only relaxes consent for
+        # non-executing, append-only mutations such as adding a cell.
+        executes_python = operation in self._PYTHON_EXECUTION_OPERATIONS
+        requires_consent = (
+            executes_python
+            or force_consent
+            or bool(scan and scan.requires_explicit_consent)
+        )
         if self.state.mode is not ExecutionMode.DANGEROUS or requires_consent:
             details: dict[str, Any] = {"code": code[:4000], "scan": scan.to_dict() if scan else None}
             if cell is not None:
@@ -79,4 +97,3 @@ class UnsafeNotebookBackend:
             },
         )
         return self.state.bridge.request("delete_cell", {"index": index, "expected_id": cell_id})
-

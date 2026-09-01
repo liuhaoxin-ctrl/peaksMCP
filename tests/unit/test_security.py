@@ -312,8 +312,10 @@ def test_execute_active_cell_scans_live_source_not_cache():
         def __init__(self) -> None:
             super().__init__()
             self.seen_codes: list[str] = []
+            self.calls: list[str] = []
 
-        def request(self, _operation, details, timeout=60):
+        def request(self, operation, details, timeout=60):
+            self.calls.append(operation)
             self.seen_codes.append(str(details.get("code")))
             return True
 
@@ -321,10 +323,121 @@ def test_execute_active_cell_scans_live_source_not_cache():
     notebook = UnsafeNotebookBackend(state, consent, AuditLogger("/tmp/peaksmcp-test-audit.jsonl"))
     notebook.execute_active_cell(timeout=5)
 
-    # The scanned/authorised source is the LIVE one, not the stale cache.
+    # Unsafe mode requires consent, and the authorised source is the LIVE one,
+    # not the stale cache:
+    assert consent.calls == ["notebook_execute_active_cell"]
     assert consent.seen_codes == [live_source]
-    # And the frontend receives the expected id + source for its TOCTOU re-check.
+    # the frontend receives the expected id + source for its TOCTOU re-check.
     assert executed[0]["payload"] == {"expected_id": "cell-42", "expected_source": live_source}
+
+
+def test_execute_code_requires_explicit_consent_for_network_even_in_dangerous_mode():
+    """Explicit-consent findings are never bypassed by dangerous mode."""
+    from unittest.mock import Mock
+
+    from peaksMCP.server.jupyter_peaks.backend import (
+        ExecutionMode,
+        SharedState,
+        UnsafeNotebookBackend,
+    )
+
+    state = SharedState(Mock(user_ns={}))
+    state.mode = ExecutionMode.DANGEROUS
+    state.bridge = Mock()
+    consent, audit = Mock(), Mock()
+    consent.request.return_value = False
+    notebook = UnsafeNotebookBackend(state, consent, audit)
+
+    with pytest.raises(PermissionError):
+        notebook.execute_code("import requests\nrequests.post('https://example.com')")
+
+    consent.request.assert_called_once()
+    state.bridge.request.assert_not_called()
+
+
+@pytest.mark.parametrize("operation", ["execute_code", "execute_active_cell"])
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import os\nf = os.__dict__['system']\nf('echo blocked-by-consent')",
+        "import os\nf = getattr(os, 'sys' + 'tem')\nf('echo blocked-by-consent')",
+        "from os import system\nlist(map(system, ['echo blocked-by-consent']))",
+        "f = __builtins__.__dict__['exec']\nf('x = 1')",
+    ],
+)
+def test_dangerous_mode_never_executes_unrecognised_python_without_consent(
+    operation, code
+):
+    """Scanner blind spots must still stop at the user-consent boundary."""
+    from unittest.mock import Mock
+
+    from peaksMCP.server.jupyter_peaks.backend import (
+        ExecutionMode,
+        SharedState,
+        UnsafeNotebookBackend,
+    )
+
+    state = SharedState(Mock(user_ns={}))
+    state.mode = ExecutionMode.DANGEROUS
+    state.bridge = Mock()
+    state.bridge.request.return_value = {"id": "cell-1", "source": code}
+    consent, audit = Mock(), Mock()
+    consent.request.return_value = False
+    notebook = UnsafeNotebookBackend(state, consent, audit)
+
+    with pytest.raises(PermissionError, match="did not approve"):
+        if operation == "execute_code":
+            notebook.execute_code(code)
+        else:
+            notebook.execute_active_cell()
+
+    consent.request.assert_called_once()
+    if operation == "execute_code":
+        state.bridge.request.assert_not_called()
+    else:
+        state.bridge.request.assert_called_once_with("read_active_cell", timeout=10)
+
+
+def test_execute_active_cell_blocks_dangerous_live_source():
+    """Even without the consent dialog, the security scanner must hard-block a
+    dangerous LIVE cell source before it reaches the kernel."""
+    from peaksMCP.server.jupyter_peaks.backend import (
+        ExecutionMode,
+        SharedState,
+        UnsafeNotebookBackend,
+    )
+
+    class FakeIPython:
+        user_ns = {}
+
+    dangerous_source = "import os\nos.system('rm -rf /tmp/x')"
+    executed: list[dict] = []
+
+    class FakeBridge:
+        connected = True
+
+        def request(self, operation, payload=None, timeout=60):
+            if operation == "read_active_cell":
+                return {"id": "cell-7", "source": dangerous_source, "index": 0}
+            executed.append({"operation": operation, "payload": payload or {}})
+            return {"ok": True}
+
+    from unittest.mock import Mock
+
+    state = SharedState(FakeIPython())
+    state.bridge = FakeBridge()
+    state.mode = ExecutionMode.UNSAFE
+    state.active_cell = {"id": "cell-7", "source": "print('stale safe code')", "index": 0}
+
+    consent = Mock()
+    notebook = UnsafeNotebookBackend(state, consent, AuditLogger("/tmp/peaksmcp-test-audit.jsonl"))
+    with pytest.raises(PermissionError):
+        notebook.execute_active_cell(timeout=5)
+
+    # Blocked by the scanner using the LIVE source; no consent needed and no
+    # execution reached the frontend.
+    consent.request.assert_not_called()
+    assert executed == []
 
 
 def test_audit_is_jsonl_and_private(tmp_path):

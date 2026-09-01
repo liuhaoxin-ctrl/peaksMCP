@@ -80,6 +80,28 @@ def test_stale_messages_cannot_update_state_or_heartbeat(bridge, message_type):
     assert bridge.connected
 
 
+def test_delayed_execution_output_does_not_replace_the_active_cell(bridge):
+    comm = _Comm()
+    _open(bridge, comm, "active")
+    comm.emit({
+        "type": "active_cell",
+        "cell": {"id": "active", "source": "current = 1"},
+        "outputs": [{"output_type": "stream", "text": "current"}],
+    })
+
+    comm.emit({
+        "type": "cell_output",
+        "cell_id": "executed",
+        "cell": {"id": "executed", "source": "data.plot()"},
+        "outputs": [{"output_type": "display_data", "data": {"image/png": "AA=="}}],
+    })
+
+    assert bridge.state.active_cell["id"] == "active"
+    assert bridge.state.active_cell_output[0]["text"] == "current"
+    assert bridge.state.last_execution_cell_id == "executed"
+    assert bridge.state.cell_outputs["executed"][0]["output_type"] == "display_data"
+
+
 def test_stale_reply_cannot_complete_new_request(bridge):
     old = _Comm()
     _open(bridge, old)

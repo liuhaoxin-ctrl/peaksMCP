@@ -25,6 +25,7 @@ def _start(ipython: Any, host: str | None = None, port: int | None = None) -> Ju
     global _server, _state
     if _state is None:
         _state = SharedState(ipython=ipython)
+        _state.mode = ExecutionMode(os.environ.get("PEAKSMCP_MODE", "safe"))
         register_comm_target(_state)
         ipython.events.register("pre_run_cell", _state.mark_busy)
         ipython.events.register("post_run_cell", _state.mark_idle)
@@ -68,9 +69,13 @@ class PeaksMCPMagics(Magics):
     def peaksMCP_restart(self, _line: str = "") -> dict[str, Any]:
         global _server
         if _server:
-            host, port, mode = _server.host, _server.port, _server.state.mode
+            host, port, mode, allow_remote = (
+                _server.host, _server.port, _server.state.mode, _server.allow_remote
+            )
             _server.stop()
-            _server = JupyterPeaksMCPServer(_state, host=host, port=port)
+            _server = JupyterPeaksMCPServer(
+                _state, host=host, port=port, allow_remote=allow_remote
+            )
             _server.state.mode = mode
             _server.mcp = _server._build_mcp()
         return self.peaksMCP_start("")
@@ -127,4 +132,3 @@ def unload_ipython_extension(ipython: Any) -> None:
                 pass
     _server = None
     _state = None
-

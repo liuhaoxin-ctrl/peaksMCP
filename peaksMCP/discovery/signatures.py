@@ -132,6 +132,10 @@ def describe_api(entry: dict[str, Any], package_dir: str | None = None) -> dict[
     details = extract_from_source(package_dir, str(entry.get("module") or ""), func_name)
     if details is None:
         details = _inspect_runtime(entry) or {}
+    note = str(entry.get("docstring_note") or "").strip()
+    if note:
+        doc = details.get("docstring") or ""
+        details["docstring"] = f"{note}\n\n{doc}".strip()
     signature = details.get("signature") or entry.get("signature")
     return {
         **entry,
