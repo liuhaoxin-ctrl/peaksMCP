@@ -95,9 +95,6 @@ def _record(
         experiment["data_format"] = row["Data format"].strip()
     if row.get("Comment", "").strip():
         experiment["comment"] = row["Comment"].strip()
-    agent_notes = [row[name].strip() for name in note_headers if row.get(name, "").strip()]
-    if agent_notes:
-        experiment["agent_notes"] = agent_notes
 
     polarization = row.get("Polarization", "").strip()
     return ExperimentRecord(

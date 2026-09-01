@@ -61,7 +61,9 @@ def test_datasheet_reports_all_invalid_numeric_fields_and_actual_agent_notes(tmp
     )
     document = translate_datasheet(source)
     assert document.notes == ["Index 7: check analyzer grounding"]
-    assert document.records["7"].experiment["agent_notes"] == ["check analyzer grounding"]
+    # Notes are agent/human-facing and live only in the top-level document
+    # notes, never embedded in the per-index record.
+    assert "agent_notes" not in document.records["7"].experiment
     for field in ("Theta", "Temperature", "Ei", "Pass E."):
         assert any(field in warning and "not numeric" in warning for warning in document.warnings)
 
