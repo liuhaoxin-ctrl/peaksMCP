@@ -74,6 +74,7 @@ def _dashboard_tool(supervisor, name: str, arguments: dict):
 
 @pytest.fixture(scope="module")
 def supervisor(tmp_path_factory):
+    from peaksMCP.app.kernel import uninstall_kernel
     from peaksMCP.app.profiles import Profile
     from peaksMCP.app.runtime import RuntimeSupervisor
 
@@ -85,25 +86,29 @@ def supervisor(tmp_path_factory):
     # supervisor's cwd, so without this the e2e would mutate the real
     # peaksMCP-runtime.ipynb (test cells leaking into the user notebook).
     os.chdir(str(home))
+    kernel_name = f"peaksmcp-e2e-{os.getpid()}"
     profile = Profile(
         name="e2e",
-        jupyter={"host": "127.0.0.1", "port": _free_port(), "kernel_name": "peaksmcp"},
+        jupyter={
+            "host": "127.0.0.1",
+            "port": _free_port(),
+            "kernel_name": kernel_name,
+        },
         mcp={"host": "127.0.0.1", "port": _free_port(), "mode": "safe"},
         dashboard={"host": "127.0.0.1", "port": _free_port()},
     )
     supervisor = RuntimeSupervisor(profile)
     try:
         supervisor.start(timeout=120)
-    except Exception:
+        yield supervisor
+    finally:
         supervisor.stop()
-        raise
-    yield supervisor
-    supervisor.stop()
-    os.chdir(saved_cwd)
-    if saved_home is None:
-        os.environ.pop("PEAKSMCP_HOME", None)
-    else:
-        os.environ["PEAKSMCP_HOME"] = saved_home
+        uninstall_kernel(kernel_name)
+        os.chdir(saved_cwd)
+        if saved_home is None:
+            os.environ.pop("PEAKSMCP_HOME", None)
+        else:
+            os.environ["PEAKSMCP_HOME"] = saved_home
 
 
 def test_plot_cell_image_flows_through_comm_to_mcp(supervisor):
@@ -127,7 +132,8 @@ def test_plot_cell_image_flows_through_comm_to_mcp(supervisor):
     # Wait until the extension has loaded and the in-kernel MCP is serving.
     ready = supervisor.wait_ready(timeout=120, require_comm=False)
     assert ready["ready"], ready
-    # Dangerous mode: execution/editing tools auto-approve, so no consent dialog.
+    # Dangerous mode still requires consent for Python execution: the AST scanner
+    # is an early rejection layer, not proof that arbitrary Python is safe.
     supervisor.execute_kernel(
         "from peaksMCP.server.jupyter_peaks.jupyter_mcp_extension import get_server as _g; _g().set_mode('dangerous')",
         timeout=30,
@@ -161,18 +167,28 @@ def test_plot_cell_image_flows_through_comm_to_mcp(supervisor):
             # canvas.print_png and display it as an IPython Image — this exercises
             # the exact pipeline: cell produces an image/png output -> frontend
             # Comm push -> MCP ImageContent.
-            result = _tool_call_thread("notebook_execute_code", {
-                "code": (
-                    "import io\n"
-                    "import matplotlib.pyplot as plt\n"
-                    "from IPython.display import Image, display\n"
-                    "fig = plt.figure(); plt.plot([1, 2, 3])\n"
-                    "buf = io.BytesIO()\n"
-                    "fig.canvas.print_png(buf)\n"
-                    "display(Image(data=buf.getvalue(), format='png'))\n"
-                    "print('png bytes:', len(buf.getvalue()))"
-                ),
-            })
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    _tool_call,
+                    supervisor,
+                    "notebook_execute_code",
+                    {
+                        "code": (
+                            "import io\n"
+                            "import matplotlib.pyplot as plt\n"
+                            "from IPython.display import Image, display\n"
+                            "fig = plt.figure(); plt.plot([1, 2, 3])\n"
+                            "buf = io.BytesIO()\n"
+                            "fig.canvas.print_png(buf)\n"
+                            "display(Image(data=buf.getvalue(), format='png'))\n"
+                            "print('png bytes:', len(buf.getvalue()))"
+                        ),
+                    },
+                )
+                page.get_by_role("button", name="允许", exact=True).click(
+                    timeout=30000
+                )
+                result = future.result(timeout=90)
             assert result is not None
             # Wait for the PNG output to arrive and be served as ImageContent.
             deadline = time.monotonic() + 60
@@ -300,14 +316,23 @@ def test_mcp_tool_surface_and_search(supervisor):
 
     health = asyncio.run(check_http_mcp_server(supervisor.profile.mcp.host, supervisor.profile.mcp.port))
     assert health["ok"]
-    assert health["tool_count"] >= 12
+    assert health["tool_count"] == 16
     safe_tools = {
         "peaks_search_api", "peaks_get_api", "askuserquestion",
         "notebook_list_variables", "notebook_read_variable", "notebook_read_active_cell",
         "notebook_read_active_cell_output", "notebook_read_content", "notebook_move_cursor",
         "notebook_server_status", "notebook_kernel_status", "notebook_wait_for_kernel",
     }
-    assert safe_tools <= set(health["tools"])
+    mutation_tools = {
+        "notebook_execute_code",
+        "notebook_execute_active_cell",
+        "notebook_add_cell",
+        "notebook_delete_cell",
+    }
+    assert set(health["tools"]) == safe_tools | mutation_tools
+    assert health["missing_tools"] == []
+    assert health["unexpected_tools"] == []
+    assert health["duplicate_tools"] == []
 
     data = _tool_call(supervisor, "peaks_search_api", {"query": "动量转换", "limit": 3})
     assert data["count"] >= 1

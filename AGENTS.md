@@ -122,6 +122,10 @@ explicit e2e acceptance:
 - **Never let test/agent processes hold CPU above 60% sustained.** Keep compute light,
   prefer single-threaded workloads, and cap native thread pools (BLAS/OpenMP) when
   tests exercise numeric code.
+- Batch conversion uses best-effort progressive throttling: it starts with one
+  in-flight worker, increases concurrency only below the resume threshold, and
+  stops new submissions while CPU is high. It is not an operating-system CPU quota;
+  reports expose the requested budget, strategy, peak and whether it was exceeded.
 - Check CPU before/after a heavy run (`ps aux -r | head`); if anything lingers above
   60%, stop and investigate rather than piling on more work.
 
@@ -141,21 +145,24 @@ When adding, removing or renaming an MCP tool, update **all** of these:
 - [ ] Run `ruff check peaksMCP tests tools` and the unit tests
 
 Tool metadata lives in YAML, not hardcoded in Python. `config/metadata.py` loads
-`metadata_baseline.yaml` (17 tools) as the single source of truth for titles and
+`metadata_baseline.yaml` (16 tools) as the single source of truth for titles and
 descriptions.
 
 ---
 
 ## 6. Security modes
 
-All 17 tools (12 read-only + 5 execution/editing) are **always exposed** in every
-mode; the mode only changes the consent policy for the 5 mutation tools
+All 16 tools (12 read-only + 4 execution/editing) are **always exposed** in every
+mode; the mode only changes the consent policy for the 4 mutation tools
 (`notebook_execute_code`, `notebook_execute_active_cell`, `notebook_add_cell`,
-`notebook_delete_cell`, `notebook_apply_patch`):
+`notebook_delete_cell`):
 
 - **safe** / **unsafe** (identical tool surface): each mutation tool asks for
   explicit frontend consent shown in the notebook.
-- **dangerous**: consent auto-approved; the **security scanner is the only gate**.
+- **dangerous**: Python execution and destructive edits still require explicit
+  frontend consent. Only non-executing, append-only mutations may be auto-approved.
+  The scanner remains an early rejection layer, not a complete security boundary
+  for arbitrary Python reflection or import side effects.
   The scanner (`security/code_scanner.py`) is AST-semantic (alias-aware,
   attribute-chain matching) and must block: exec/eval/compile, indirect fetches,
   `os.environ` mutation, `open(mode=w/a/+)`, destructive `pathlib` methods,
@@ -177,7 +184,7 @@ Consent decisions and every tool call are written to the audit log
 %peaksMCP_status         # show status
 %peaksMCP_safe           # switch to safe mode
 %peaksMCP_unsafe         # switch to unsafe mode
-%peaksMCP_dangerous      # switch to dangerous mode (auto-approve consent)
+%peaksMCP_dangerous      # relax only non-executing append operations
 ```
 
 ---
@@ -211,9 +218,8 @@ Consent decisions and every tool call are written to the audit log
 ```bash
 peaksMCP launch          # start supervisor (idempotent)
 peaksMCP status          # supervisor + kernel state
-peaksMCP mcp-ping        # verify in-kernel MCP endpoint (expect ok: true, 12+ tools)
-peaksMCP doctor          # deps / kernel / extension / ports
-peaksMCP open            # dashboard (127.0.0.1:8765)
+peaksMCP mcp-ping        # verify in-kernel MCP endpoint (expect ok: true, 16 tools)
+peaksMCP dash            # dashboard (127.0.0.1:8765)
 peaksMCP stop            # stop supervisor
 peaksMCP restart kernel  # restart kernel (rebuilds the API index; new code takes effect)
 peaksMCP logs -f         # follow supervisor logs
@@ -224,7 +230,8 @@ Notes:
 - The in-kernel MCP only listens while the supervisor/kernel are running; the STDIO
   proxy forwards to it, so `launch` must precede Claude Desktop usage.
 - Running instances load code at process start — after editing source, restart the
-  kernel (`peaksMCP restart kernel` or `restart all`) for changes to take effect.
+  kernel (`peaksMCP restart kernel` or `peaksMCP restart 'kernel&mcp'`) for changes
+  to take effect.
 - Do not configure peaksMCP as a *remote* MCP server in Claude Desktop: remote URLs
   must be `https://`, but the in-kernel MCP is plain HTTP on localhost. Use the STDIO
   proxy (`claude_plugin/.mcp.json`) instead.

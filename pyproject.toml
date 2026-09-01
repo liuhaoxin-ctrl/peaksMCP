@@ -16,7 +16,7 @@ dependencies = [
   "pydantic>=2.7",
   "pyyaml>=6",
   "numpy>=1.26",
-  "xarray>=2024.1",
+  "xarray>=2024.10",
   "matplotlib>=3.8",
   "psutil>=5.9",
   "threadpoolctl>=3.5",
@@ -26,6 +26,7 @@ dependencies = [
   "ipython>=8",
   "jupyter-core>=5",
   "jupyter-client>=8",
+  "ipykernel>=6.25",
   "starlette>=0.37",
   "uvicorn>=0.30",
 ]
@@ -39,7 +40,6 @@ dev = [
   "ruff>=0.6",
   "build>=1.2",
   "playwright>=1.50",
-  "httpx2>=2.0.0",
 ]
 
 [project.scripts]

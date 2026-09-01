@@ -13,12 +13,22 @@ const compiled = ts.transpileModule(source, {
 }).outputText;
 
 function makeCell(id, source = 'print(1)', deletable = true) {
+  let outputJSON = [{ output_type: 'stream', text: 'done' }];
+  const outputListeners = new Set();
   return {
     model: {
       id, type: 'code',
       getMetadata: key => key === 'deletable' ? deletable : undefined,
       sharedModel: { getSource: () => source, setSource: value => { source = value; } },
-      outputs: { toJSON: () => [{ output_type: 'stream', text: 'done' }] },
+      outputs: {
+        toJSON: () => outputJSON,
+        setJSON: value => { outputJSON = value; },
+        changed: {
+          connect: callback => outputListeners.add(callback),
+          disconnect: callback => outputListeners.delete(callback),
+          emit: () => { for (const callback of outputListeners) { callback(); } },
+        },
+      },
     },
   };
 }
@@ -68,10 +78,16 @@ function harness({ moveCursorDuringRun = false, executionSuccess = true } = {}) 
       return modules[name];
     },
   };
-  vm.runInNewContext(`${compiled}\nexports.testHandle = handle;`, context);
+  vm.runInNewContext(
+    `${compiled}\nexports.testHandle = handle; exports.testBoundedOutputs = boundedOutputs;`,
+    context,
+  );
   const panel = { content: notebook, sessionContext: {}, context: { async save() { saves++; } } };
   return {
-    notebook, runs, deleted, selected,
+    notebook, runs, deleted, selected, messages,
+    boundOutputs(outputs, perImageLimit, totalLimit) {
+      return context.exports.testBoundedOutputs(outputs, perImageLimit, totalLimit);
+    },
     get saves() { return saves; },
     async request(operation, payload = {}) {
       await context.exports.testHandle(panel, { send: message => messages.push(message) }, {
@@ -97,6 +113,43 @@ test('execute_code runs only the newly inserted cell', async () => {
   assert.deepEqual(h.runs, ['inserted']);
   assert.equal(reply.result.source, 'answer = 42');
   assert.equal(h.saves, 1);
+});
+
+test('execution output is published without changing active-cell identity', async () => {
+  const h = harness({ moveCursorDuringRun: true });
+  await h.request('execute_active_cell', { expected_id: 'a', expected_source: 'print(1)' });
+  const pushes = h.messages.filter(message => !message.request_id);
+  assert.ok(pushes.length >= 1);
+  assert.ok(pushes.every(message => message.type === 'cell_output'));
+  assert.ok(pushes.every(message => message.cell_id === 'a'));
+  assert.equal(h.notebook.activeCell.model.id, 'c');
+});
+
+test('a delayed image remains attached to the executed cell after cursor movement', async () => {
+  const h = harness({ moveCursorDuringRun: true });
+  await h.request('execute_active_cell', { expected_id: 'a', expected_source: 'print(1)' });
+  const executed = h.notebook.widgets[0];
+  executed.model.outputs.setJSON([
+    {output_type: 'display_data', data: {'image/png': 'QUJD'}},
+  ]);
+  executed.model.outputs.changed.emit();
+
+  const pushes = h.messages.filter(message => message.type === 'cell_output');
+  const latest = pushes[pushes.length - 1];
+  assert.equal(h.notebook.activeCell.model.id, 'c');
+  assert.equal(latest.cell_id, 'a');
+  assert.equal(latest.outputs[0].data['image/png'], 'QUJD');
+});
+
+test('oversized images are removed before crossing the Comm', () => {
+  const h = harness();
+  const bounded = h.boundOutputs([
+    {output_type: 'display_data', data: {'image/png': 'QUJDREVGRw=='}},
+  ], 4, 8);
+  assert.equal(bounded[0].data['image/png'], undefined);
+  const omitted = bounded[0].data['application/vnd.peaksmcp.image-omitted+json'];
+  assert.equal(omitted[0].decoded_bytes, 7);
+  assert.equal(omitted[0].reason, 'per_image_limit');
 });
 
 for (const operation of ['execute_active_cell', 'execute_code']) {

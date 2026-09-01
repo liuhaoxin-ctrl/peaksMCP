@@ -2,9 +2,8 @@
   "mcpServers": {
     "peaksMCP": {
       "type": "stdio",
-      "command": "peaksMCP",
-      "args": ["stdio-proxy"]
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/peaksmcp-proxy",
+      "args": []
     }
   }
 }
-

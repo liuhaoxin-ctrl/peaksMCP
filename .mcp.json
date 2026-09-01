@@ -2,9 +2,8 @@
   "mcpServers": {
     "peaksMCP": {
       "type": "stdio",
-      "command": "peaksMCP",
-      "args": ["stdio-proxy"]
+      "command": "${CLAUDE_PROJECT_DIR}/claude_plugin/bin/peaksmcp-proxy",
+      "args": []
     }
   }
 }
-

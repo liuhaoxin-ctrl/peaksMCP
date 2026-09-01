@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+
+if [ -n "${PEAKSMCP_EXECUTABLE:-}" ] && [ -x "${PEAKSMCP_EXECUTABLE}" ]; then
+  executable="${PEAKSMCP_EXECUTABLE}"
+elif command -v peaksMCP >/dev/null 2>&1; then
+  executable="$(command -v peaksMCP)"
+elif [ -n "${CONDA_PREFIX:-}" ] && [ -x "${CONDA_PREFIX}/bin/peaksMCP" ]; then
+  executable="${CONDA_PREFIX}/bin/peaksMCP"
+elif [ -x "/opt/homebrew/Caskroom/miniforge/base/envs/peaks/bin/peaksMCP" ]; then
+  executable="/opt/homebrew/Caskroom/miniforge/base/envs/peaks/bin/peaksMCP"
+elif [ -x "${HOME}/miniforge3/envs/peaks/bin/peaksMCP" ]; then
+  executable="${HOME}/miniforge3/envs/peaks/bin/peaksMCP"
+else
+  echo "peaksMCP executable not found; set PEAKSMCP_EXECUTABLE to its absolute path" >&2
+  exit 127
+fi
+
+exec "${executable}" stdio-proxy "$@"

@@ -5,6 +5,62 @@ import { Kernel } from '@jupyterlab/services';
 import { Widget } from '@lumino/widgets';
 
 const TARGET = 'peaksMCP:frontend';
+const MAX_COMM_IMAGE_BYTES = 8 * 1024 * 1024;
+const MAX_COMM_IMAGE_TOTAL_BYTES = 16 * 1024 * 1024;
+const OMITTED_IMAGE_MIME = 'application/vnd.peaksmcp.image-omitted+json';
+
+function outputString(value: any): string {
+  return Array.isArray(value) ? value.join('') : String(value ?? '');
+}
+
+function utf8Bytes(value: string): number {
+  let bytes = 0;
+  for (const character of value) {
+    const point = character.codePointAt(0) ?? 0;
+    bytes += point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4;
+  }
+  return bytes;
+}
+
+function imageBytes(mime: string, payload: string): number {
+  if (mime === 'image/svg+xml') { return utf8Bytes(payload); }
+  const compact = payload.replace(/\s/g, '');
+  const padding = compact.endsWith('==') ? 2 : compact.endsWith('=') ? 1 : 0;
+  return Math.max(0, Math.floor(compact.length * 3 / 4) - padding);
+}
+
+function boundedOutputs(
+  outputs: any[],
+  perImageLimit = MAX_COMM_IMAGE_BYTES,
+  totalLimit = MAX_COMM_IMAGE_TOTAL_BYTES,
+): any[] {
+  let includedBytes = 0;
+  return (Array.isArray(outputs) ? outputs : []).map(output => {
+    if (!output || typeof output !== 'object' || !output.data || typeof output.data !== 'object') {
+      return output;
+    }
+    const data: any = {...output.data};
+    const omitted: any[] = [];
+    for (const mime of ['image/png', 'image/jpeg', 'image/svg+xml']) {
+      if (!data[mime]) { continue; }
+      const bytes = imageBytes(mime, outputString(data[mime]));
+      if (bytes > perImageLimit || includedBytes + bytes > totalLimit) {
+        delete data[mime];
+        omitted.push({
+          mime_type: mime,
+          decoded_bytes: bytes,
+          per_image_limit_bytes: perImageLimit,
+          response_limit_bytes: totalLimit,
+          reason: bytes > perImageLimit ? 'per_image_limit' : 'response_limit',
+        });
+      } else {
+        includedBytes += bytes;
+      }
+    }
+    if (omitted.length > 0) { data[OMITTED_IMAGE_MIME] = omitted; }
+    return {...output, data};
+  });
+}
 
 function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]!));
@@ -113,7 +169,9 @@ function cellJSON(panel: NotebookPanel): any {
     index: notebook.activeCellIndex,
     cell_type: cell.model.type,
     source: cell.model.sharedModel.getSource(),
-    outputs: cell.model.type === 'code' ? (cell.model as any).outputs?.toJSON() ?? [] : []
+    outputs: cell.model.type === 'code'
+      ? boundedOutputs((cell.model as any).outputs?.toJSON() ?? [])
+      : []
   };
 }
 
@@ -121,11 +179,25 @@ async function handle(panel: NotebookPanel, comm: Kernel.IComm, data: any): Prom
   if (data.type !== 'request') { return; }
   const request_id = data.request_id;
   const notebook = panel.content;
-  // Push the live cell + its latest outputs so the backend cache (and therefore
-  // the MCP notebook_read_active_cell_output tool) never serves stale output.
-  const publishLive = (cellData?: any) => {
-    const cell = cellData ?? cellJSON(panel);
-    try { comm.send({type: 'active_cell', cell: cell, outputs: cell.outputs}); } catch { /* noop */ }
+  // Execution output is identity-scoped. It must not masquerade as a cursor
+  // change when a delayed Matplotlib image arrives after the user moved away.
+  const publishExecution = (cellData: any) => {
+    try {
+      comm.send({
+        type: 'cell_output', cell_id: cellData.id,
+        cell: cellData, outputs: cellData.outputs,
+      });
+    } catch { /* noop */ }
+  };
+  const watchExecutionOutputs = (cell: any, snapshot: () => any) => {
+    publishExecution(snapshot());
+    const outputs = cell?.model?.type === 'code' ? cell.model.outputs : null;
+    if (!outputs?.changed?.connect || !outputs?.changed?.disconnect) { return; }
+    const onChanged = () => { publishExecution(snapshot()); };
+    outputs.changed.connect(onChanged);
+    window.setTimeout(() => {
+      try { outputs.changed.disconnect(onChanged); } catch { /* noop */ }
+    }, 30000);
   };
   try {
     let result: any = {};
@@ -168,23 +240,14 @@ async function handle(panel: NotebookPanel, comm: Kernel.IComm, data: any): Prom
           id: executed?.model.id, index: notebook.widgets.findIndex(w => w.model.id === executed?.model.id),
           cell_type: executed?.model.type, source: executed?.model.sharedModel.getSource(),
           execution_success: executionSuccess,
-          outputs: executed && executed.model.type === 'code' ? (executed.model as any).outputs?.toJSON() ?? [] : [],
+          outputs: executed && executed.model.type === 'code'
+            ? boundedOutputs((executed.model as any).outputs?.toJSON() ?? [])
+            : [],
         });
         result = executedJSON();
-        publishLive(result);
-        // Matplotlib images can arrive at the outputs model after the cell
-        // finishes; poll the executed cell and re-push so the backend cache
-        // never serves stale (empty) output. outputs.changed is the long-tail
-        // fallback for user-driven edits.
-        (() => {
-          const deadline = Date.now() + 30000;
-          const poll = () => {
-            const latest = executedJSON();
-            if (latest.outputs.length > 0 || Date.now() > deadline) { publishLive(latest); }
-            else { window.setTimeout(poll, 400); }
-          };
-          poll();
-        })();
+        // Matplotlib images may arrive after text output and after the user has
+        // moved the cursor. Watch this exact cell, preserving its identity.
+        watchExecutionOutputs(executed, executedJSON);
         break;
       }
       case 'execute_active_cell': {
@@ -205,17 +268,12 @@ async function handle(panel: NotebookPanel, comm: Kernel.IComm, data: any): Prom
           id: cell.model.id, index: notebook.widgets.findIndex(w => w.model.id === cell.model.id),
           cell_type: cell.model.type, source: cell.model.sharedModel.getSource(),
           execution_success: executionSuccess,
-          outputs: cell.model.type === 'code' ? (cell.model as any).outputs?.toJSON() ?? [] : [],
+          outputs: cell.model.type === 'code'
+            ? boundedOutputs((cell.model as any).outputs?.toJSON() ?? [])
+            : [],
         });
         result = executedJSON();
-        publishLive(result);
-        const deadline = Date.now() + 30000;
-        const poll = () => {
-          const latest = executedJSON();
-          if (latest.outputs.length > 0 || Date.now() > deadline) { publishLive(latest); }
-          else { window.setTimeout(poll, 400); }
-        };
-        poll();
+        watchExecutionOutputs(cell, executedJSON);
         break;
       }
       case 'add_cell':

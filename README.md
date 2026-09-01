@@ -96,8 +96,8 @@ credential in an HttpOnly, SameSite cookie. Opening port 8765 directly is intent
 rejected. Control APIs require the same credential and reject cross-origin requests.
 
 In the console: **Start MCP** (when the in-kernel MCP is down), **Restart MCP** (kernel
-variables preserved), **Restart Kernel**, **Restart All** and **Open managed Notebook**.
-Stopping the whole stack is done from the CLI with . PXT conversion and
+variables preserved), **Restart Kernel**, **Restart Kernel + MCP** and **Open managed Notebook**.
+Stopping the whole stack is done from the CLI with `peaksMCP stop`. PXT conversion and
 datasheet translation are pure file operations and always available.
 
 ### CLI reference
@@ -110,20 +110,13 @@ peaksMCP stop                                           # stop the supervisor (a
 peaksMCP restart                                   # restart the whole stack (like launch)
 peaksMCP restart {kernel|mcp|'kernel&mcp'}          # kernel-side only (kernel&mcp = kernel + MCP)
 peaksMCP logs [-n LINES] [-f]                           # show / follow supervisor logs
-```
-
-`peaksMCP launch` runs the supervisor as a detached background process, so a terminal
-`Ctrl+C` does **not** stop it — use `peaksMCP stop`.
-
 # Verification & diagnostics
-peaksMCP doctor [--profile NAME]                        # deps / kernel / extension / ports
 peaksMCP mcp-ping [--profile NAME]                      # verify the MCP endpoint + tool count
 peaksMCP version                                        # package version
 
 # Open in browser
 peaksMCP dash                                           # operator-console dashboard  (http://127.0.0.1:8765)
 peaksMCP dash --jupyter                                 # JupyterLab (tokenised URL)
-# http://127.0.0.1:8765/?token=t99boB3au1qRb1xZxxt4IWdwhZKAeJfB remains as a legacy alias.
 
 # Install
 peaksMCP install-extension [--develop]                  # install the JupyterLab extension
@@ -144,6 +137,9 @@ peaksMCP load path/to/converted.nc     # load a NetCDF into the notebook as a
                                         # visible data = load(...) cell (or use
                                         # the dashboard Load button after convert)
 ```
+
+`peaksMCP launch` runs the supervisor as a detached background process, so a terminal
+`Ctrl+C` does **not** stop it — use `peaksMCP stop`.
 
 Examples:
 
