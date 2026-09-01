@@ -58,21 +58,30 @@ def _flush_frontend_save(supervisor: RuntimeSupervisor) -> None:
         raise RuntimeError(f"Notebook save failed: {result}")
 
 
-def load_into_notebook(supervisor: RuntimeSupervisor, nc_path: str | None, *, timeout: float = 45) -> bool:
-    """Load a converted NetCDF into the notebook as a visible cell.
+def load_into_notebook(
+    supervisor: RuntimeSupervisor,
+    nc_path: str | list[str] | None,
+    *,
+    timeout: float = 45,
+) -> bool:
+    """Load converted NetCDF file(s) into the notebook as one visible cell.
 
-    Asks the kernel to insert and run ``from peaks import load\ndata = load(...)``
+    Asks the kernel to insert and run a single code cell that loads all paths,
+    e.g. ``from peaks import load\ndata = load(...)\ndata_2 = load(...)``,
     through the frontend Comm bridge (so the cell appears in the notebook and is
-    saved), instead of silently loading into the kernel namespace.
+    saved), instead of silently loading into the kernel namespace or creating
+    one cell per file.
 
     Parameters
     ----------
     supervisor : RuntimeSupervisor
         Supervisor connected to the managed kernel.
-    nc_path : str or None
-        NetCDF file passed to ``peaks.load`` in the visible cell.
+    nc_path : str, list of str, or None
+        NetCDF file(s) passed to ``peaks.load`` in the visible cell.  A single
+        path is loaded as ``data``; additional paths become ``data_2``,
+        ``data_3``, ... in the same cell (no ``data`` overwrite).
     timeout : float, default 45
-        Seconds allowed to confirm this particular Load operation.
+        Seconds allowed to confirm this Load operation.
 
     Returns
     -------
@@ -93,7 +102,17 @@ def load_into_notebook(supervisor: RuntimeSupervisor, nc_path: str | None, *, ti
 
     if not nc_path or timeout <= 0:
         return False
-    load_code = f"from peaks import load\ndata = load({json.dumps(str(nc_path))})"
+    # Accept a single path (legacy) or a list of paths.  All paths are loaded in
+    # ONE visible cell with distinct variable names (``data``, ``data_2``, ...)
+    # instead of one cell per file overwriting ``data``.
+    paths = [nc_path] if isinstance(nc_path, str) else [p for p in nc_path if p]
+    if not paths:
+        return False
+    load_lines = []
+    for i, p in enumerate(paths):
+        var = "data" if i == 0 else f"data_{i + 1}"
+        load_lines.append(f"{var} = load({json.dumps(str(p))})")
+    load_code = "from peaks import load\n" + "\n".join(load_lines)
     slot = f"_peaksMCP_load_{secrets.token_hex(16)}"
     # Each request gets an independent job, captured by the worker closure.
     # The shell must be released so Jupyter can execute the frontend's cell.
@@ -416,11 +435,12 @@ def create_app(supervisor: RuntimeSupervisor) -> Starlette:
         return JSONResponse(payload)
 
     async def load_notebook(request: Request) -> JSONResponse:
-        """Insert and run ``data = load(...)`` cells for the given NetCDF path(s).
+        """Insert and run one ``data = load(...)`` cell for the given NetCDF path(s).
 
         Accepts a ``paths`` list (multi-load from the dashboard) or a single
-        ``path`` (legacy, used by ``peaksMCP load``).  Each path becomes its own
-        visible cell; results are reported per path.
+        ``path`` (legacy, used by ``peaksMCP load``).  All paths are loaded in a
+        single visible cell (variables ``data``, ``data_2``, ...) rather than one
+        cell per file; results are reported per path (all-or-nothing).
         """
         require_auth(request, mutation=True)
         body = await request.json()
@@ -440,12 +460,20 @@ def create_app(supervisor: RuntimeSupervisor) -> Starlette:
         if not paths:
             return JSONResponse({"error": "path or paths is required"}, status_code=400)
         results: dict[str, bool] = {}
+        try:
+            # All paths go into ONE notebook cell (variables data, data_2, ...);
+            # previously each path created its own cell overwriting ``data``.
+            ok = await asyncio.to_thread(
+                load_into_notebook,
+                supervisor,
+                paths,
+                timeout=min(300, 45 + 10 * len(paths)),
+            )
+        except Exception:
+            ok = False
         for p in paths:
-            try:
-                results[p] = await asyncio.to_thread(load_into_notebook, supervisor, p)
-            except Exception:
-                results[p] = False
-        return JSONResponse({"paths": paths, "results": results, "loaded": all(results.values())})
+            results[p] = ok
+        return JSONResponse({"paths": paths, "results": results, "loaded": ok})
 
     async def snapshot_notebook(request: Request) -> JSONResponse:
         """Save the current notebook as a timestamped snapshot without touching

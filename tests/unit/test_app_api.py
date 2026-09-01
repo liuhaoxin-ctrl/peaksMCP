@@ -45,11 +45,14 @@ def test_auto_load_skips_without_output():
 
 
 def test_load_notebook_accepts_paths_list(monkeypatch):
-    calls: list[str] = []
+    calls: list[object] = []
 
     def fake_load(_supervisor, nc_path, **_kwargs):
         calls.append(nc_path)
-        return nc_path != "/data/bad.nc"
+        # A single visible cell loads all paths together (all-or-nothing):
+        # one failing file fails the whole load.
+        paths = nc_path if isinstance(nc_path, list) else [nc_path]
+        return not any("bad" in str(p) for p in paths)
 
     monkeypatch.setattr("peaksMCP.app.api.load_into_notebook", fake_load)
     client, _supervisor = _authenticated_client()
@@ -60,9 +63,10 @@ def test_load_notebook_accepts_paths_list(monkeypatch):
     assert resp.status_code == 200
     body = resp.json()
     assert body["paths"] == ["/data/a.nc", "/data/bad.nc"]
-    assert body["results"] == {"/data/a.nc": True, "/data/bad.nc": False}
+    # All paths share the single-cell outcome.
+    assert body["results"] == {"/data/a.nc": False, "/data/bad.nc": False}
     assert body["loaded"] is False
-    assert calls == ["/data/a.nc", "/data/bad.nc"]
+    assert calls == [["/data/a.nc", "/data/bad.nc"]]
 
 
 def test_load_notebook_single_path_legacy(monkeypatch):
