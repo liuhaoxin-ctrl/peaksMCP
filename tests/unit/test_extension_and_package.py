@@ -39,7 +39,7 @@ def test_every_declared_tool_has_curated_metadata():
         "peaks_search_api", "peaks_get_api", "askuserquestion", "notebook_list_variables",
         "notebook_read_variable", "notebook_read_active_cell", "notebook_read_active_cell_output",
         "notebook_read_content", "notebook_move_cursor", "notebook_server_status",
-        "notebook_kernel_status", "notebook_wait_for_kernel", "notebook_execute_with_api_check",
+        "notebook_kernel_status", "notebook_wait_for_kernel", "notebook_write_with_api_check",
         "notebook_execute_active_cell", "notebook_add_cell", "notebook_delete_cell",
     }
     for name in names:

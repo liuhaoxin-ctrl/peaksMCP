@@ -48,16 +48,15 @@ tools:
   notebook_wait_for_kernel:
     title: Wait for Kernel
     description: Wait for the current kernel to become idle up to a bounded timeout.
-  notebook_execute_with_api_check:
-    title: Execute Code With API Check
+  notebook_write_with_api_check:
+    title: Write Code With API Check
     description: >
-      THE ONLY code-execution tool: executes code AND automatically verifies every
-      Peaks API reference against the live API index in one call (no separate
-      peaks_search_api / peaks_get_api round-trip needed). Returns
+      Write model-generated code to a new notebook cell, execute it, and automatically
+      verify every Peaks API reference against the live API index. Returns
       verified_peaks_apis (names resolved to Peaks APIs) and generic_refs (names
       with no Peaks counterpart). RULE: only use non-Peaks functions when Peaks
-      has no corresponding API. ALL Peaks analysis code MUST be run through this
-      tool.
+      has no corresponding API. ALL model-generated Peaks analysis code MUST be
+      written through this tool.
   notebook_execute_active_cell:
     title: Execute Active Cell
     description: With consent, execute the currently selected notebook cell.
@@ -67,4 +66,3 @@ tools:
   notebook_delete_cell:
     title: Delete Notebook Cell
     description: With consent, delete the active or numbered notebook cell.
-

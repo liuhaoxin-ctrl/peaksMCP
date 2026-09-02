@@ -154,7 +154,7 @@ descriptions.
 
 All 16 tools (12 read-only + 4 execution/editing) are **always exposed** in every
 mode; the mode only changes the consent policy for the 4 mutation tools
-(`notebook_execute_code`, `notebook_execute_active_cell`, `notebook_add_cell`,
+(`notebook_write_with_api_check`, `notebook_execute_active_cell`, `notebook_add_cell`,
 `notebook_delete_cell`):
 
 - **safe** / **unsafe** (identical tool surface): each mutation tool asks for

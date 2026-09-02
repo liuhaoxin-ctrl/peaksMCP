@@ -157,31 +157,31 @@ def test_plot_cell_image_flows_through_comm_to_mcp(supervisor):
                 if (status.get("components") or {}).get("comm", {}).get("state") == "ready":
                     break
                 time.sleep(1)
-            # Execute a plotting cell through the MCP tool (frontend runs it).
-            # New kernels have no matplotlib backend configured; enable inline so
-            # the PNG lands in the cell output (matches the user notebooks that
-            # call matplotlib.use(inline) explicitly).
-            # Execute a plotting cell through the MCP tool (frontend runs it).
-            # matplotlib inline display needs IPython integration; to keep the
-            # executed code plain-Python (scanner-parsable) we render the PNG via
-            # canvas.print_png and display it as an IPython Image — this exercises
-            # the exact pipeline: cell produces an image/png output -> frontend
-            # Comm push -> MCP ImageContent.
+            # Satisfy the current select-then-run gate before writing the
+            # model-generated plotting cell.
+            search = _tool_call_thread(
+                "peaks_search_api", {"query": "k_convert", "limit": 3}
+            )
+            candidate = next(
+                item for item in search["matches"] if item["name"] == "k_convert"
+            )
+            _tool_call_thread("peaks_get_api", {"canonical_id": candidate["id"]})
+            # Save through the recognised pyplot receiver, then display the PNG
+            # as an IPython Image. This exercises the exact pipeline: cell
+            # produces image/png -> frontend Comm push -> MCP ImageContent.
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(
                     _tool_call,
                     supervisor,
-                    "notebook_execute_code",
+                    "notebook_write_with_api_check",
                     {
                         "code": (
-                            "import io\n"
                             "import matplotlib.pyplot as plt\n"
                             "from IPython.display import Image, display\n"
-                            "fig = plt.figure(); plt.plot([1, 2, 3])\n"
-                            "buf = io.BytesIO()\n"
-                            "fig.canvas.print_png(buf)\n"
-                            "display(Image(data=buf.getvalue(), format='png'))\n"
-                            "print('png bytes:', len(buf.getvalue()))"
+                            "plt.figure(); plt.plot([1, 2, 3])\n"
+                            "plt.savefig('e2e_plot.png')\n"
+                            "display(Image(filename='e2e_plot.png'))\n"
+                            "print('plot rendered')"
                         ),
                     },
                 )
@@ -324,7 +324,7 @@ def test_mcp_tool_surface_and_search(supervisor):
         "notebook_server_status", "notebook_kernel_status", "notebook_wait_for_kernel",
     }
     mutation_tools = {
-        "notebook_execute_code",
+        "notebook_write_with_api_check",
         "notebook_execute_active_cell",
         "notebook_add_cell",
         "notebook_delete_cell",

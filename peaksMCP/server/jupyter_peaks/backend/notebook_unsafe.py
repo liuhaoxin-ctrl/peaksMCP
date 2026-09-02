@@ -51,7 +51,7 @@ class UnsafeNotebookBackend:
     """Execute or mutate notebook cells after security checks and consent."""
 
     _PYTHON_EXECUTION_OPERATIONS = {
-        "notebook_execute_code",
+        "notebook_write_with_api_check",
         "notebook_execute_active_cell",
     }
 
@@ -118,17 +118,18 @@ class UnsafeNotebookBackend:
         self.audit.write(operation, "approved", {})
 
     def execute_code(self, code: str, timeout: float = 120.0) -> dict[str, Any]:
-        self._authorize("notebook_execute_code", code)
+        self._authorize("notebook_write_with_api_check", code)
         return self.state.bridge.request("execute_code", {"code": code}, timeout=timeout)
 
-    def execute_with_api_check(
+    def write_with_api_check(
         self, code: str, timeout: float = 120.0, strict: bool = True
     ) -> dict[str, Any]:
-        """Execute ``code`` after verifying every Peaks API reference against the live index.
+        """Write and execute ``code`` after checking Peaks API references.
 
-        The ONLY code-execution tool: it makes the ``peaks_search_api`` /
-        ``peaks_get_api`` step mandatory in one call.  All method references in
-        ``code`` are extracted via AST and classified:
+        This is the model-generated-code entry point: it appends a new notebook
+        cell, executes it, and makes the ``peaks_search_api`` / ``peaks_get_api``
+        step mandatory. All method references in ``code`` are extracted via AST
+        and classified:
 
         - ``verified_peaks_apis``: names resolved to Peaks APIs (index hit);
         - ``generic_refs``: names from known generic libraries (numpy, xarray,
@@ -189,7 +190,7 @@ class UnsafeNotebookBackend:
         # the agent genuinely explores before writing/running code.
         if strict and self.state.exploration_count < 2:
             self.audit.write(
-                "notebook_execute_with_api_check",
+                "notebook_write_with_api_check",
                 "blocked",
                 {"reason": "task not selected"},
             )
@@ -217,7 +218,7 @@ class UnsafeNotebookBackend:
         }
         if strict and unknown:
             self.audit.write(
-                "notebook_execute_with_api_check", "blocked", {"unknown_refs": unknown}
+                "notebook_write_with_api_check", "blocked", {"unknown_refs": unknown}
             )
             return {
                 "success": False,

@@ -476,25 +476,25 @@ def test_select_then_run_state_machine():
     code = "da.k_convert(quiet=True)"
 
     # 1) No exploration yet -> blocked by the task-level gate.
-    r = nb.execute_with_api_check(code, timeout=5)
+    r = nb.write_with_api_check(code, timeout=5)
     assert r["blocked"] is True
     assert "select-then-run" in r["message"]
 
     # 2) One exploration is NOT enough; two unlock execution for the task.
     state.exploration_count = 1
-    r1 = nb.execute_with_api_check(code, timeout=5)
+    r1 = nb.write_with_api_check(code, timeout=5)
     assert r1["blocked"] is True
     state.exploration_count = 2
-    r2 = nb.execute_with_api_check(code, timeout=5)
+    r2 = nb.write_with_api_check(code, timeout=5)
     assert r2.get("blocked") is not True
 
     # 3) Invented APIs are still hard-blocked after unlocking.
-    r3 = nb.execute_with_api_check("da.correct_EF()", timeout=5)
+    r3 = nb.write_with_api_check("da.correct_EF()", timeout=5)
     assert r3["blocked"] is True
     assert "correct_EF" in str(r3.get("unknown_refs"))
 
 
-def test_execute_with_api_check_classifies_generic_and_verified_calls():
+def test_write_with_api_check_classifies_generic_and_verified_calls():
     from unittest.mock import Mock
 
     from peaksMCP.discovery.index import build_index
@@ -525,17 +525,17 @@ def test_execute_with_api_check_classifies_generic_and_verified_calls():
         'plt.savefig("f.png")',
         "json.dumps(x)",
     ):
-        result = nb.execute_with_api_check(code, timeout=5)
+        result = nb.write_with_api_check(code, timeout=5)
         assert not result.get("blocked"), (code, result)
 
     # Peaks APIs are reported as verified regardless of calling convention.
-    verified = nb.execute_with_api_check("fit_gold(data)", timeout=5)
+    verified = nb.write_with_api_check("fit_gold(data)", timeout=5)
     assert not verified.get("blocked")
     assert "fit_gold" in [v["name"] for v in verified["api_check"]["verified_peaks_apis"]]
-    verified = nb.execute_with_api_check("da.k_convert(quiet=True)", timeout=5)
+    verified = nb.write_with_api_check("da.k_convert(quiet=True)", timeout=5)
     assert "k_convert" in [v["name"] for v in verified["api_check"]["verified_peaks_apis"]]
 
     # Invented / typo'd Peaks APIs are hard-blocked after unlocking.
-    blocked = nb.execute_with_api_check("da.correct_EF()", timeout=5)
+    blocked = nb.write_with_api_check("da.correct_EF()", timeout=5)
     assert blocked["blocked"] is True
     assert "correct_EF" in str(blocked.get("unknown_refs"))

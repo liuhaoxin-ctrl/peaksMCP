@@ -357,7 +357,7 @@ def test_inspector_whitelist_and_call(monkeypatch):
     # Execution tools are NOT in the inspector whitelist: rejected.
     blocked = client.post(
         "/api/mcp/tool",
-        json={"name": "notebook_execute_with_api_check", "arguments": {"code": "1+1"}},
+        json={"name": "notebook_write_with_api_check", "arguments": {"code": "1+1"}},
     )
     assert blocked.status_code == 403
     allowed = client.post("/api/mcp/tool", json={"name": "peaks_search_api", "arguments": {"query": "norm"}})

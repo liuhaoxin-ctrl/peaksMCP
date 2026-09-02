@@ -52,9 +52,9 @@ class JupyterPeaksMCPServer:
             version=__version__,
             instructions=(
                 "Use peaks_search_api and peaks_get_api before writing unfamiliar Peaks code. "
-                "All Peaks analysis code must be executed through notebook_execute_with_api_check "
-                "(the only code-execution tool), which verifies every Peaks API reference against "
-                "the live API index before running; there is no other way to execute code. "
+                "Write model-generated Peaks analysis code through notebook_write_with_api_check, "
+                "which verifies every Peaks API reference against the live API index before "
+                "appending and executing a new cell. "
                 "Inspect xarray variables before analysis and preserve units in every figure. "
                 "Never save figures to disk (plt.savefig / fig.savefig) unless the user "
                 "explicitly asks for a saved file — figures are shown inline in the notebook. "
