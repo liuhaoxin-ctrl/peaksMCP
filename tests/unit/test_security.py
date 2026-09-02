@@ -369,10 +369,10 @@ def test_audit_is_jsonl_and_private(tmp_path):
     assert path.stat().st_mode & 0o777 == 0o600
 
 
-def test_select_then_run_state_machine():
-    """First code execution must be preceded by at least one peaks_search_api /
-    peaks_get_api call (task-level select-then-run gate); after that, execution
-    is unlocked but invented APIs are still blocked by the code scanner."""
+def test_write_without_exploration_runs_but_invented_apis_still_block():
+    """The select-then-run gate was removed: write_with_api_check no longer
+    requires prior peaks_search_api/peaks_get_api calls.  The API check itself
+    still hard-blocks invented/typo'd Peaks APIs."""
     from unittest.mock import Mock
 
     from peaksMCP.discovery.index import build_index
@@ -389,25 +389,11 @@ def test_select_then_run_state_machine():
     state.bridge.request.return_value = {"ok": True}
     nb = UnsafeNotebookBackend(state, ConsentManager(), AuditLogger("/tmp/t.jsonl"))
 
-    code = "da.k_convert(quiet=True)"
-
-    # 1) No exploration yet -> blocked by the task-level gate.
-    r = nb.write_with_api_check(code, timeout=5)
-    assert r["blocked"] is True
-    assert "select-then-run" in r["message"]
-
-    # 2) One exploration is NOT enough; two unlock execution for the task.
-    state.exploration_count = 1
-    r1 = nb.write_with_api_check(code, timeout=5)
-    assert r1["blocked"] is True
-    state.exploration_count = 2
-    r2 = nb.write_with_api_check(code, timeout=5)
-    assert r2.get("blocked") is not True
-
-    # 3) Invented APIs are still hard-blocked after unlocking.
-    r3 = nb.write_with_api_check("da.correct_EF()", timeout=5)
-    assert r3["blocked"] is True
-    assert "correct_EF" in str(r3.get("unknown_refs"))
+    # No exploration at all: a verified call runs, an invented API blocks.
+    assert not nb.write_with_api_check("da.k_convert(quiet=True)", timeout=5).get("blocked")
+    blocked = nb.write_with_api_check("da.correct_EF()", timeout=5)
+    assert blocked["blocked"] is True
+    assert "correct_EF" in str(blocked.get("unknown_refs"))
 
 
 def test_write_with_api_check_classifies_generic_and_verified_calls():
@@ -425,7 +411,6 @@ def test_write_with_api_check_classifies_generic_and_verified_calls():
     state.api_index = build_index()
     state.bridge = Mock()
     state.bridge.request.return_value = {"ok": True}
-    state.exploration_count = 2
     nb = UnsafeNotebookBackend(state, ConsentManager(), AuditLogger("/tmp/t.jsonl"))
 
     # Builtins and generic-library calls (including module-member chains like
@@ -474,7 +459,6 @@ def test_write_with_api_check_receiver_aware_and_scope_aware(monkeypatch):
         state.api_index = build_index()
         state.bridge = Mock()
         state.bridge.request.return_value = {"ok": True}
-        state.exploration_count = 2
         return UnsafeNotebookBackend(state, ConsentManager(), AuditLogger("/tmp/t.jsonl"))
 
     nb = make_backend()

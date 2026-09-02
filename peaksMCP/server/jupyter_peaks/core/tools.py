@@ -204,8 +204,6 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
     """
     def peaks_search_api(query: str, scope: str = "all", limit: int = 5) -> dict[str, Any]:
         index = _require_index(state)
-        # Each successful exploration counts toward the select-then-run gate.
-        state.exploration_count += 1
         matches = index.search(query, scope, limit)
         return {"query": query, "scope": scope, "count": len(matches), "peaks_version": index.peaks_version, "fingerprint": index.fingerprint, "matches": matches}
 
@@ -214,8 +212,6 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
         entry = index.get(canonical_id)
         if entry is None:
             raise KeyError(f"unknown canonical API ID: {canonical_id}")
-        # Fetching API details also counts toward the select-then-run gate.
-        state.exploration_count += 1
         return describe_api(entry)
 
     def askuserquestion(prompt: str, hint: str | None = None, options: list[str] | None = None) -> dict[str, Any]:

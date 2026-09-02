@@ -157,8 +157,7 @@ def test_plot_cell_image_flows_through_comm_to_mcp(supervisor):
                 if (status.get("components") or {}).get("comm", {}).get("state") == "ready":
                     break
                 time.sleep(1)
-            # Satisfy the current select-then-run gate before writing the
-            # model-generated plotting cell.
+            # Explore the API first (good practice, no longer a hard gate).
             search = _tool_call_thread(
                 "peaks_search_api", {"query": "k_convert", "limit": 3}
             )

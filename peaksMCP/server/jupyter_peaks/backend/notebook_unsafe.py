@@ -121,9 +121,10 @@ class UnsafeNotebookBackend:
         """Write and execute ``code`` after checking Peaks API references.
 
         This is the model-generated-code entry point: it appends a new notebook
-        cell, executes it, and makes the ``peaks_search_api`` / ``peaks_get_api``
-        step mandatory.  Every call site is classified by receiver origin and
-        leaf name:
+        cell, executes it, and verifies every Peaks API reference against the
+        live index (agents are expected to ``peaks_search_api`` /
+        ``peaks_get_api`` first, but that exploration is not a hard gate).
+        Every call site is classified by receiver origin and leaf name:
 
         - ``verified_peaks_apis``: exact Peaks index hits whose scope matches the
           receiver (DataArray/Dataset/DataTree or accessor like ``metadata``);
@@ -220,27 +221,6 @@ class UnsafeNotebookBackend:
                 generic.append(target.leaf)
             else:
                 unknown.append({"name": target.leaf, "suggested": [str(m.get("id")) for m in matches]})
-
-        # Task-level select-then-run gate: the first execution of a task must be
-        # preceded by at least TWO peaks_search_api / peaks_get_api calls, so
-        # the agent genuinely explores before writing/running code.
-        if self.state.exploration_count < 2:
-            self.audit.write(
-                "notebook_write_with_api_check",
-                "blocked",
-                {"reason": "task not selected"},
-            )
-            return {
-                "success": False,
-                "executed": False,
-                "blocked": True,
-                "message": (
-                    "Execution blocked by the select-then-run rule: no Peaks API has "
-                    "been explored yet. First call peaks_search_api to find the APIs "
-                    "this task needs, then peaks_get_api to read their signatures and "
-                    "return conventions, then execute."
-                ),
-            }
 
         api_check: dict[str, Any] = {
             "verified_peaks_apis": verified,
