@@ -57,9 +57,6 @@ tools:
       with no Peaks counterpart). RULE: only use non-Peaks functions when Peaks
       has no corresponding API. ALL model-generated Peaks analysis code MUST be
       written through this tool.
-  notebook_execute_active_cell:
-    title: Execute Active Cell
-    description: With consent, execute the currently selected notebook cell.
   notebook_add_cell:
     title: Add Notebook Cell
     description: With consent, insert a code, Markdown or raw cell.

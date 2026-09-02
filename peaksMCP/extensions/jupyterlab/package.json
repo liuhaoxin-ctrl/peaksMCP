@@ -1,7 +1,7 @@
 {
   "name": "peaksmcp-jupyterlab",
   "version": "0.1.0",
-  "description": "Active-cell, consent and inline-output bridge for peaksMCP",
+  "description": "Consent and inline-output bridge for peaksMCP",
   "license": "MIT",
   "files": [
     "lib/**/*.{d.ts,js,js.map}"

@@ -250,32 +250,6 @@ async function handle(panel: NotebookPanel, comm: Kernel.IComm, data: any): Prom
         watchExecutionOutputs(executed, executedJSON);
         break;
       }
-      case 'execute_active_cell': {
-        // TOCTOU guard: the scanned/authorised source must match the live cell
-        // right now.  If the user edited the cell after the scan, refuse and ask
-        // the agent to re-run instead of executing unchecked code.
-        const cell = notebook.activeCell;
-        if (!cell) { throw new Error('no active cell'); }
-        if (data.expected_id && cell.model.id !== data.expected_id) {
-          throw new Error('active cell changed since scan — please re-run');
-        }
-        if (typeof data.expected_source === 'string' && cell.model.sharedModel.getSource() !== data.expected_source) {
-          throw new Error('cell content changed since scan — please re-run');
-        }
-        const executionSuccess = await NotebookActions.runCells(notebook, [cell], panel.sessionContext);
-        // Report the authorised cell, regardless of the current UI selection.
-        const executedJSON = () => ({
-          id: cell.model.id, index: notebook.widgets.findIndex(w => w.model.id === cell.model.id),
-          cell_type: cell.model.type, source: cell.model.sharedModel.getSource(),
-          execution_success: executionSuccess,
-          outputs: cell.model.type === 'code'
-            ? boundedOutputs((cell.model as any).outputs?.toJSON() ?? [])
-            : [],
-        });
-        result = executedJSON();
-        watchExecutionOutputs(cell, executedJSON);
-        break;
-      }
       case 'add_cell':
         // Append-only: the new cell always lands at the END of the notebook.
         notebook.activeCellIndex = notebook.widgets.length - 1;
@@ -338,7 +312,7 @@ async function handle(panel: NotebookPanel, comm: Kernel.IComm, data: any): Prom
     // to disk so the analysis history survives a supervisor or JupyterLab restart.
     // A failed save is reported to the caller instead of being silently swallowed:
     // "executed" and "persisted" are distinct outcomes.
-    if (['execute_code', 'execute_active_cell', 'add_cell', 'delete_cell'].includes(data.operation)) {
+    if (['execute_code', 'add_cell', 'delete_cell'].includes(data.operation)) {
       try {
         await panel.context.save();
         result.saved = true;

@@ -145,17 +145,16 @@ When adding, removing or renaming an MCP tool, update **all** of these:
 - [ ] Run `ruff check peaksMCP tests tools` and the unit tests
 
 Tool metadata lives in YAML, not hardcoded in Python. `config/metadata.py` loads
-`metadata_baseline.yaml` (16 tools) as the single source of truth for titles and
+`metadata_baseline.yaml` (15 tools) as the single source of truth for titles and
 descriptions.
 
 ---
 
 ## 6. Security modes
 
-All 16 tools (12 read-only + 4 execution/editing) are **always exposed** in every
-mode; the mode only changes the consent policy for the 4 mutation tools
-(`notebook_write_with_api_check`, `notebook_execute_active_cell`, `notebook_add_cell`,
-`notebook_delete_cell`):
+All 15 tools (12 read-only + 3 execution/editing) are **always exposed** in every
+mode; the mode only changes the consent policy for the 3 mutation tools
+(`notebook_write_with_api_check`, `notebook_add_cell`, `notebook_delete_cell`):
 
 - **safe** / **unsafe** (identical tool surface): each mutation tool asks for
   explicit frontend consent shown in the notebook.
@@ -218,7 +217,7 @@ Consent decisions and every tool call are written to the audit log
 ```bash
 peaksMCP launch          # start supervisor (idempotent)
 peaksMCP status          # supervisor + kernel state
-peaksMCP mcp-ping        # verify in-kernel MCP endpoint (expect ok: true, 16 tools)
+peaksMCP mcp-ping        # verify in-kernel MCP endpoint (expect ok: true, 15 tools)
 peaksMCP dash            # dashboard (127.0.0.1:8765)
 peaksMCP stop            # stop supervisor
 peaksMCP restart kernel  # restart kernel (rebuilds the API index; new code takes effect)

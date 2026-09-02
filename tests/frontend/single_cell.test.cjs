@@ -98,14 +98,6 @@ function harness({ moveCursorDuringRun = false, executionSuccess = true } = {}) 
   };
 }
 
-test('execute_active_cell runs only the approved cell in a multi-selection', async () => {
-  const h = harness();
-  const reply = await h.request('execute_active_cell', { expected_id: 'a', expected_source: 'print(1)' });
-  assert.equal(reply.ok, true);
-  assert.deepEqual(h.runs, ['a']);
-  assert.equal(h.saves, 1);
-});
-
 test('execute_code runs only the newly inserted cell', async () => {
   const h = harness();
   const reply = await h.request('execute_code', { code: 'answer = 42' });
@@ -117,18 +109,18 @@ test('execute_code runs only the newly inserted cell', async () => {
 
 test('execution output is published without changing active-cell identity', async () => {
   const h = harness({ moveCursorDuringRun: true });
-  await h.request('execute_active_cell', { expected_id: 'a', expected_source: 'print(1)' });
+  await h.request('execute_code', { code: 'print(1)' });
   const pushes = h.messages.filter(message => !message.request_id);
   assert.ok(pushes.length >= 1);
   assert.ok(pushes.every(message => message.type === 'cell_output'));
-  assert.ok(pushes.every(message => message.cell_id === 'a'));
-  assert.equal(h.notebook.activeCell.model.id, 'c');
+  assert.ok(pushes.every(message => message.cell_id === 'inserted'));
+  assert.equal(h.notebook.activeCell.model.id, 'inserted');
 });
 
 test('a delayed image remains attached to the executed cell after cursor movement', async () => {
   const h = harness({ moveCursorDuringRun: true });
-  await h.request('execute_active_cell', { expected_id: 'a', expected_source: 'print(1)' });
-  const executed = h.notebook.widgets[0];
+  await h.request('execute_code', { code: 'print(1)' });
+  const executed = h.notebook.widgets.find(cell => cell.model.id === 'inserted');
   executed.model.outputs.setJSON([
     {output_type: 'display_data', data: {'image/png': 'QUJD'}},
   ]);
@@ -136,8 +128,8 @@ test('a delayed image remains attached to the executed cell after cursor movemen
 
   const pushes = h.messages.filter(message => message.type === 'cell_output');
   const latest = pushes[pushes.length - 1];
-  assert.equal(h.notebook.activeCell.model.id, 'c');
-  assert.equal(latest.cell_id, 'a');
+  assert.equal(h.notebook.activeCell.model.id, 'inserted');
+  assert.equal(latest.cell_id, 'inserted');
   assert.equal(latest.outputs[0].data['image/png'], 'QUJD');
 });
 
@@ -152,37 +144,22 @@ test('oversized images are removed before crossing the Comm', () => {
   assert.equal(omitted[0].reason, 'per_image_limit');
 });
 
-for (const operation of ['execute_active_cell', 'execute_code']) {
-  test(`${operation} reports failed execution separately from a successful Comm reply`, async () => {
-    const h = harness({ executionSuccess: false });
-    const reply = await h.request(operation, { code: 'raise ValueError("failed")' });
-    assert.equal(reply.ok, true);
-    assert.equal(reply.result.execution_success, false);
-  });
+test('execute_code reports failed execution separately from a successful Comm reply', async () => {
+  const h = harness({ executionSuccess: false });
+  const reply = await h.request('execute_code', { code: 'raise ValueError("failed")' });
+  assert.equal(reply.ok, true);
+  assert.equal(reply.result.execution_success, false);
+});
 
-  test(`${operation} reports the executed cell even if the active cell changes`, async () => {
-    const h = harness({ moveCursorDuringRun: true });
-    const reply = await h.request(operation, { code: 'answer = 42' });
-    const expected = operation === 'execute_code' ? 'inserted' : 'a';
-    assert.equal(reply.ok, true);
-    assert.equal(reply.result.execution_success, true);
-    assert.deepEqual(h.runs, [expected]);
-    assert.equal(reply.result.id, expected);
-    // execute_code appends at the end, so the executed cell IS the last cell;
-    // execute_active_cell runs the focused cell, so a cursor move leaves 'c'.
-    const expectedActive = operation === 'execute_code' ? 'inserted' : 'c';
-    assert.equal(h.notebook.activeCell.model.id, expectedActive);
-  });
-}
-
-for (const payload of [{ expected_id: 'other' }, { expected_source: 'different source' }]) {
-  test(`execution rejects a changed approved cell: ${JSON.stringify(payload)}`, async () => {
-    const h = harness();
-    assert.equal((await h.request('execute_active_cell', payload)).ok, false);
-    assert.deepEqual(h.runs, []);
-    assert.equal(h.saves, 0);
-  });
-}
+test('execute_code reports the executed cell even if the active cell changes', async () => {
+  const h = harness({ moveCursorDuringRun: true });
+  const reply = await h.request('execute_code', { code: 'answer = 42' });
+  assert.equal(reply.ok, true);
+  assert.equal(reply.result.execution_success, true);
+  assert.deepEqual(h.runs, ['inserted']);
+  assert.equal(reply.result.id, 'inserted');
+  assert.equal(h.notebook.activeCell.model.id, 'inserted');
+});
 
 for (const [index, expected] of [[1, 'b'], [null, 'a']]) {
   test(`delete_cell deletes only its target (${index}) despite a multi-selection`, async () => {

@@ -240,7 +240,7 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
 
 
 def register_unsafe_tools(mcp: FastMCP, notebook: UnsafeNotebookBackend, audit: AuditLogger) -> None:
-    """Register the four mutation tools.
+    """Register the three mutation tools.
 
     Writes are append-only: ``notebook_write_with_api_check`` / ``notebook_add_cell``
     always append a new cell at the end of the notebook and never overwrite an
@@ -262,9 +262,7 @@ def register_unsafe_tools(mcp: FastMCP, notebook: UnsafeNotebookBackend, audit: 
     """
     functions = {
         # Model-generated code is written through the API-checked entry point.
-        # Executing the user's existing active cell remains a separate operation.
         "notebook_write_with_api_check": notebook.write_with_api_check,
-        "notebook_execute_active_cell": notebook.execute_active_cell,
         "notebook_add_cell": notebook.add_cell,
         "notebook_delete_cell": notebook.delete_cell,
     }

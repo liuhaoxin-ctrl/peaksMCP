@@ -133,8 +133,7 @@ def test_network_client_aliases_require_explicit_consent(code):
     "import builtins\nbuiltins.open('x', 'w')",
     "from os import environ\nenviron['A'] = 'B'",
 ])
-@pytest.mark.parametrize("operation", ["execute_code", "execute_active_cell"])
-def test_alias_bypasses_are_rejected_before_kernel_execution(code, operation):
+def test_alias_bypasses_are_rejected_before_kernel_execution(code):
     """Check the real backend gate without executing any of the unsafe source."""
     from unittest.mock import Mock
 
@@ -152,15 +151,9 @@ def test_alias_bypasses_are_rejected_before_kernel_execution(code, operation):
     notebook = UnsafeNotebookBackend(state, consent, audit)
 
     with pytest.raises(PermissionError):
-        if operation == "execute_code":
-            notebook.execute_code(code)
-        else:
-            notebook.execute_active_cell()
+        notebook.execute_code(code)
 
-    if operation == "execute_code":
-        state.bridge.request.assert_not_called()
-    else:
-        state.bridge.request.assert_called_once_with("read_active_cell", timeout=10)
+    state.bridge.request.assert_not_called()
     consent.request.assert_not_called()
     audit.write.assert_called_once()
     assert audit.write.call_args.args[1] == "blocked"
@@ -278,61 +271,6 @@ def test_destructive_cell_ops_require_consent_even_in_dangerous_mode():
     assert consent.calls == ["notebook_delete_cell"]
 
 
-def test_execute_active_cell_scans_live_source_not_cache():
-    """execute_active_cell must read the LIVE cell source through the frontend
-    and scan/authorise that same source (TOCTOU: the cached active_cell goes
-    stale when the user edits a cell without switching away)."""
-    from peaksMCP.server.jupyter_peaks.backend import (
-        ExecutionMode,
-        SharedState,
-        UnsafeNotebookBackend,
-    )
-
-    class FakeIPython:
-        user_ns = {}
-
-    live_source = "print('live edited code')"
-    executed: list[dict] = []
-
-    class FakeBridge:
-        connected = True
-
-        def request(self, operation, payload=None, timeout=60):
-            if operation == "read_active_cell":
-                return {"id": "cell-42", "source": live_source, "index": 3}
-            executed.append({"operation": operation, "payload": payload or {}})
-            return {"ok": True}
-
-    state = SharedState(FakeIPython())
-    state.bridge = FakeBridge()
-    state.mode = ExecutionMode.UNSAFE  # consent enabled for the test
-    state.require_consent = True
-    # The stale cache deliberately differs from the live source.
-    state.active_cell = {"id": "cell-42", "source": "print('old cached code')", "index": 3}
-
-    class TrackingConsent(ConsentManager):
-        def __init__(self) -> None:
-            super().__init__()
-            self.seen_codes: list[str] = []
-            self.calls: list[str] = []
-
-        def request(self, operation, details, timeout=60):
-            self.calls.append(operation)
-            self.seen_codes.append(str(details.get("code")))
-            return True
-
-    consent = TrackingConsent()
-    notebook = UnsafeNotebookBackend(state, consent, AuditLogger("/tmp/peaksmcp-test-audit.jsonl"))
-    notebook.execute_active_cell(timeout=5)
-
-    # Unsafe mode requires consent, and the authorised source is the LIVE one,
-    # not the stale cache:
-    assert consent.calls == ["notebook_execute_active_cell"]
-    assert consent.seen_codes == [live_source]
-    # the frontend receives the expected id + source for its TOCTOU re-check.
-    assert executed[0]["payload"] == {"expected_id": "cell-42", "expected_source": live_source}
-
-
 def test_execute_code_requires_explicit_consent_for_network_even_in_dangerous_mode():
     """Explicit-consent findings are never bypassed by dangerous mode."""
     from unittest.mock import Mock
@@ -358,7 +296,6 @@ def test_execute_code_requires_explicit_consent_for_network_even_in_dangerous_mo
     state.bridge.request.assert_not_called()
 
 
-@pytest.mark.parametrize("operation", ["execute_code", "execute_active_cell"])
 @pytest.mark.parametrize(
     "code",
     [
@@ -368,9 +305,7 @@ def test_execute_code_requires_explicit_consent_for_network_even_in_dangerous_mo
         "f = __builtins__.__dict__['exec']\nf('x = 1')",
     ],
 )
-def test_dangerous_mode_never_executes_unrecognised_python_without_consent(
-    operation, code
-):
+def test_dangerous_mode_never_executes_unrecognised_python_without_consent(code):
     """Scanner blind spots must still stop at the user-consent boundary."""
     from unittest.mock import Mock
 
@@ -392,58 +327,10 @@ def test_dangerous_mode_never_executes_unrecognised_python_without_consent(
     notebook = UnsafeNotebookBackend(state, consent, audit)
 
     with pytest.raises(PermissionError, match="did not approve"):
-        if operation == "execute_code":
-            notebook.execute_code(code)
-        else:
-            notebook.execute_active_cell()
+        notebook.execute_code(code)
 
     consent.request.assert_called_once()
-    if operation == "execute_code":
-        state.bridge.request.assert_not_called()
-    else:
-        state.bridge.request.assert_called_once_with("read_active_cell", timeout=10)
-
-
-def test_execute_active_cell_blocks_dangerous_live_source():
-    """Even without the consent dialog, the security scanner must hard-block a
-    dangerous LIVE cell source before it reaches the kernel."""
-    from peaksMCP.server.jupyter_peaks.backend import (
-        ExecutionMode,
-        SharedState,
-        UnsafeNotebookBackend,
-    )
-
-    class FakeIPython:
-        user_ns = {}
-
-    dangerous_source = "import os\nos.system('rm -rf /tmp/x')"
-    executed: list[dict] = []
-
-    class FakeBridge:
-        connected = True
-
-        def request(self, operation, payload=None, timeout=60):
-            if operation == "read_active_cell":
-                return {"id": "cell-7", "source": dangerous_source, "index": 0}
-            executed.append({"operation": operation, "payload": payload or {}})
-            return {"ok": True}
-
-    from unittest.mock import Mock
-
-    state = SharedState(FakeIPython())
-    state.bridge = FakeBridge()
-    state.mode = ExecutionMode.UNSAFE
-    state.active_cell = {"id": "cell-7", "source": "print('stale safe code')", "index": 0}
-
-    consent = Mock()
-    notebook = UnsafeNotebookBackend(state, consent, AuditLogger("/tmp/peaksmcp-test-audit.jsonl"))
-    with pytest.raises(PermissionError):
-        notebook.execute_active_cell(timeout=5)
-
-    # Blocked by the scanner using the LIVE source; no consent needed and no
-    # execution reached the frontend.
-    consent.request.assert_not_called()
-    assert executed == []
+    state.bridge.request.assert_not_called()
 
 
 def test_audit_is_jsonl_and_private(tmp_path):
@@ -539,3 +426,74 @@ def test_write_with_api_check_classifies_generic_and_verified_calls():
     blocked = nb.write_with_api_check("da.correct_EF()", timeout=5)
     assert blocked["blocked"] is True
     assert "correct_EF" in str(blocked.get("unknown_refs"))
+
+
+def test_write_with_api_check_receiver_aware_and_scope_aware(monkeypatch):
+    import inspect
+    from unittest.mock import Mock
+
+    from peaksMCP.discovery.index import build_index
+    from peaksMCP.server.jupyter_peaks.backend import (
+        SharedState,
+        UnsafeNotebookBackend,
+    )
+    from peaksMCP.server.jupyter_peaks.security import AuditLogger, ConsentManager
+
+    def make_backend(user_ns=None):
+        state = SharedState(Mock(user_ns=user_ns or {}))
+        state.require_consent = False
+        state.api_index = build_index()
+        state.bridge = Mock()
+        state.bridge.request.return_value = {"ok": True}
+        state.exploration_count = 2
+        return UnsafeNotebookBackend(state, ConsentManager(), AuditLogger("/tmp/t.jsonl"))
+
+    nb = make_backend()
+
+    # 1) strict is removed from the public signature (no bypass path).
+    assert "strict" not in inspect.signature(nb.write_with_api_check).parameters
+
+    # 2) import aliases and constructor/variable origins are generic.
+    for code in (
+        "import numpy as n\nn.linalg.svd(x)",
+        "import matplotlib.pyplot as plt\nfig = plt.figure()\nfig.savefig('a.png')",
+        "data = load('/x.nc')\ndata.k_convert(quiet=True)",
+        "import peaks as pks\ndata = pks.load('/x.nc')\ndata.k_convert(quiet=True)",
+    ):
+        assert not nb.write_with_api_check(code, timeout=5).get("blocked"), code
+
+    # 4) external-module members never match Peaks APIs by name.
+    assert not nb.write_with_api_check("np.linalg.svd(x)", timeout=5).get("blocked")
+
+    # 6) mixed None/str receivers sort by source position without a TypeError.
+    assert not nb.write_with_api_check("da[i].mean(); da.k_convert()", timeout=5).get("blocked")
+
+    # 5) fail-closed: invented/typo'd APIs on unprovable receivers are blocked.
+    blocked = nb.write_with_api_check("make().correct_EF()", timeout=5)
+    assert blocked.get("blocked") and "correct_EF" in str(blocked.get("unknown_refs"))
+    blocked = nb.write_with_api_check("da[i].correct_EF()", timeout=5)
+    assert blocked.get("blocked") and "correct_EF" in str(blocked.get("unknown_refs"))
+
+    # 3) scope matching: a known DataArray receiver only accepts dataarray-scope
+    # Peaks APIs; a top_level API (plot_bz) on it is an unverifiable reference.
+    import numpy as np
+    import xarray as xr
+
+    nb2 = make_backend({"da": xr.DataArray(np.zeros((4, 4)), dims=("eV", "theta_par"))})
+    assert not nb2.write_with_api_check("da.k_convert(quiet=True)", timeout=5).get("blocked")
+    blocked = nb2.write_with_api_check("da.plot_bz(...)", timeout=5)
+    assert blocked.get("blocked") and "plot_bz" in str(blocked.get("unknown_refs"))
+    assert not nb2.write_with_api_check("da[i].mean()", timeout=5).get("blocked")
+
+    # 7) a stale index blocks with a kernel-restart request.
+    class StaleIndex:
+        def is_stale(self):
+            return True
+
+        def search(self, *_a, **_k):
+            return []
+
+    stale = make_backend()
+    stale.state.api_index = StaleIndex()
+    result = stale.write_with_api_check("da.k_convert()", timeout=5)
+    assert result.get("blocked") and "INDEX_STALE" in result.get("message", "")

@@ -1,7 +1,7 @@
 {
   "name": "peaksmcp-jupyterlab",
   "version": "0.1.0",
-  "description": "Active-cell, consent and inline-output bridge for peaksMCP",
+  "description": "Consent and inline-output bridge for peaksMCP",
   "license": "MIT",
   "files": [
     "lib/**/*.{d.ts,js,js.map}"
@@ -31,7 +31,7 @@
     "extension": true,
     "outputDir": "labextension",
     "_build": {
-      "load": "static/remoteEntry.46e4d4b517bf0d388739.js",
+      "load": "static/remoteEntry.fa1940f26826b5471eb5.js",
       "extension": "./extension"
     }
   }
