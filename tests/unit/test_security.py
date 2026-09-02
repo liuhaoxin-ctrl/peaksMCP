@@ -17,6 +17,35 @@ def test_dangerous_patterns_are_blocked(code):
 
 
 @pytest.mark.parametrize("code", [
+    # Capability domains: process/native/deserialization/reflection/star-import
+    # are blocked uniformly by module, not by method name.
+    "from os import *\nsystem('id')",
+    "__builtins__.exec('x=1')",
+    "import ctypes\nctypes.CDLL(None).system('id')",
+    "globals()['os'].system('id')",
+    "import pickle\npickle.loads(x)",
+    "import joblib\njoblib.load(path)",
+    "import subprocess\nsubprocess.run(['ls'])",
+    "import importlib\nimportlib.import_module('os')",
+])
+def test_capability_domains_block_outside_sandbox(code):
+    result = scan_code(code)
+    assert result.blocked, result.to_dict()
+
+
+@pytest.mark.parametrize("code", [
+    "os.getcwd()",
+    "os.path.join('a', 'b')",
+    "import numpy as np\nnp.arange(4)",
+    "import xarray as xr\nxr.DataArray([1, 2, 3])",
+])
+def test_capability_domains_allow_scientific_and_readonly(code):
+    result = scan_code(code)
+    assert result.is_safe, result.to_dict()
+    assert result.requires_explicit_consent == []
+
+
+@pytest.mark.parametrize("code", [
     # Alias bypass of the environment-mutation rule.
     "import os as o\no.environ['A']='B'",
     "import os as o\no.environ.update({'A': 'B'})",

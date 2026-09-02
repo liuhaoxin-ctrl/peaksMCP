@@ -257,17 +257,51 @@ def _call_name(node: ast.Call, aliases: _Aliases) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Rule sets                                                                    #
+# Capability domains                                                          #
+# --------------------------------------------------------------------------- #
+# An ARPES analysis notebook uses a small, well-defined capability surface.
+# Classification is per MODULE capability, not per method: any call routed
+# through a module outside the sandbox is flagged uniformly, so star imports,
+# ctypes, reflection and deserialization cannot hide behind an unlisted method
+# name.  Mixed modules (``os``, ``pathlib``, ``builtins``) stay method-level
+# below, because they legitimately carry read-only members too.
+
+# Pure-compute modules: fully allowed (also the only safe star-import source).
+_COMPUTE_MODULES = frozenset({
+    "xarray", "numpy", "matplotlib", "pandas", "scipy", "peaks", "peaksMCP",
+    "math", "datetime", "re", "copy", "itertools", "functools", "collections",
+    "dataclasses", "enum", "numbers", "statistics", "decimal", "fractions",
+    "random", "typing", "contextlib", "abc", "string", "traceback", "operator",
+    "warnings", "calendar", "hashlib", "uuid",
+})
+
+# Network egress: any access requires explicit consent (never a hard block).
+_NETWORK_MODULES = frozenset({
+    "requests", "httpx", "urllib", "urllib3", "socket", "aiohttp", "http",
+    "websockets",
+})
+
+# Process / native-code / dynamic-import / deserialization modules: hard block
+# on any access — the code-execution sinks of an analysis sandbox.
+_BLOCK_MODULES = frozenset({"subprocess", "ctypes", "importlib", "pickle", "joblib"})
+
+# Reflection bases: fetching anything from them is a hard block (``globals()``,
+# ``locals()``, ``vars()``, ``__builtins__`` can reach any callable).
+_REFLECTION_BASES = frozenset({"globals", "locals", "vars", "__builtins__"})
+
+
+# --------------------------------------------------------------------------- #
+# Method-level rules for mixed modules                                         #
 # --------------------------------------------------------------------------- #
 _CRITICAL_CALLS = {"exec", "eval", "compile", "builtins.exec", "builtins.eval", "builtins.compile"}
 _SYSTEM_CALLS = {
     "os.system", "os.popen", "os.remove", "os.unlink", "os.rmdir", "os.removedirs",
-    "os.replace", "os.rename",
-    "subprocess.run", "subprocess.call", "subprocess.Popen", "subprocess.check_call",
-    "subprocess.check_output", "subprocess.getoutput", "subprocess.getstatusoutput",
-    "shutil.rmtree", "shutil.rmdir", "shutil.move",
+    "os.replace", "os.rename", "os.fork", "os.kill", "os.putenv", "os.unsetenv",
+    "os.execv", "os.execve", "os.execvp", "os.execvpe", "os.spawnl", "os.spawnle",
+    "os.spawnlp", "os.spawnlpe", "os.spawnv", "os.spawnve", "os.spawnvp", "os.spawnvpe",
+    "os.posix_spawn", "shutil.rmtree", "shutil.rmdir", "shutil.move",
 }
-_DYNAMIC_IMPORTS = {"__import__", "builtins.__import__", "importlib.import_module"}
+_DYNAMIC_IMPORTS = {"__import__", "builtins.__import__"}
 _PATH_METHODS = {"unlink", "write_text", "write_bytes", "rmdir", "rename", "replace", "symlink_to", "hardlink_to"}
 _PATH_CONSTRUCTORS = {
     "Path", "PosixPath", "WindowsPath", "pathlib.Path", "pathlib.PosixPath", "pathlib.WindowsPath",
@@ -282,14 +316,11 @@ _FILE_WRITERS = {
     "np.save", "numpy.save", "np.savetxt", "numpy.savetxt", "np.savez", "numpy.savez",
     "np.savez_compressed", "numpy.savez_compressed", "plt.imsave", "matplotlib.pyplot.imsave",
     "pd.to_csv", "pandas.DataFrame.to_csv", "xr.to_netcdf", "xarray.DataArray.to_netcdf",
-    "xarray.Dataset.to_netcdf", "json.dump", "pickle.dump", "joblib.dump",
+    "xarray.Dataset.to_netcdf", "json.dump",
 }
 _FILE_WRITE_METHOD_NAMES = {"save", "savetxt", "savez", "savez_compressed", "imsave", "to_csv", "to_netcdf", "dump"}
-_NETWORK_CALLS = {
-    "requests.get", "requests.post", "requests.put", "requests.patch", "requests.delete",
-    "requests.head", "requests.options", "urllib.request.urlopen", "urllib.request.Request",
-    "httpx.get", "httpx.post", "httpx.put", "httpx.patch", "httpx.delete",
-}
+# Constructors that propagate a network origin through aliases
+# (``s = requests.Session(); client = s; client.get(...)``).
 _NETWORK_CLIENTS = {"requests.Session", "requests.sessions.Session", "httpx.Client", "httpx.AsyncClient"}
 
 
@@ -379,6 +410,55 @@ def _is_savefig(node: ast.Call, aliases: _Aliases) -> bool:
 # --------------------------------------------------------------------------- #
 # Public API                                                                   #
 # --------------------------------------------------------------------------- #
+def _classify_call(
+    node: ast.Call,
+    name: str,
+    aliases: _Aliases,
+    issues: list[SecurityIssue],
+    consent_issues: list[SecurityIssue],
+) -> None:
+    """Method-level rules for calls whose module is inside the sandbox.
+
+    ``name`` is the alias-resolved canonical call name.  Runs after the
+    capability-module layer, so it only sees allowed/mixed modules (``os``,
+    ``pathlib``, ``builtins``, numpy, ...).
+    """
+    if name in _CRITICAL_CALLS or (name.split(".")[-1] in _CRITICAL_CALLS and name.startswith("builtins.")):
+        issues.append(SecurityIssue("EXEC001", f"dynamic code execution via {name}", RiskLevel.CRITICAL, getattr(node, "lineno", 0), ast.unparse(node)))
+    elif name in _SYSTEM_CALLS:
+        issues.append(SecurityIssue("SYS001", f"system or destructive operation via {name}", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+    elif name in _DYNAMIC_IMPORTS:
+        issues.append(SecurityIssue("IMPORT001", f"dynamic import via {name}", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+    elif name in {"open", "builtins.open", "io.open"} and _open_modes(node) == "w":
+        issues.append(SecurityIssue("FILE001", "file opened in a modifying mode", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+    elif name in {"open", "builtins.open", "io.open"} and _open_modes(node) is None:
+        # mode is a variable/expression: read-only-ness cannot be
+        # confirmed, so it always requires explicit consent.
+        consent_issues.append(SecurityIssue("FILE002", "open() with a non-constant mode; read-only-ness cannot be confirmed — approve only if safe", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+    elif name.endswith(".open") and _has_path_origin(_chain(node.func, aliases)) and _open_modes(node, mode_position=0) == "w":
+        issues.append(SecurityIssue("FILE001", "path opened in a modifying mode", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+    elif _is_path_method_call(node, aliases):
+        issues.append(SecurityIssue("SYS001", f"destructive path operation via {name}", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+    elif _is_env_mutation_call(node, aliases):
+        issues.append(SecurityIssue("ENV001", "process environment modification", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+    elif _is_savefig(node, aliases):
+        consent_issues.append(SecurityIssue("SAVE001", "figure save (savefig); figures are shown inline by default — approve only to write to disk", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+    elif name in _FILE_WRITERS or name.rsplit(".", 1)[-1] in _FILE_WRITE_METHOD_NAMES:
+        consent_issues.append(SecurityIssue("SAVE002", f"file write via {name}; approve only to write to disk", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+    target = _indirect_call_target(node, aliases)
+    if target:
+        if target in _INDIRECT_TARGETS:
+            issues.append(SecurityIssue("EXEC001", f"dynamic code execution via indirect fetch of {target}", RiskLevel.CRITICAL, getattr(node, "lineno", 0), ast.unparse(node)))
+        elif target in _SYSTEM_METHOD_NAMES | _PATH_METHODS:
+            issues.append(SecurityIssue("SYS001", f"system or destructive operation via indirect fetch of {target}", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+        elif target == "open" and _open_modes(node) == "w":
+            issues.append(SecurityIssue("FILE001", "file opened in a modifying mode via indirect fetch", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+        elif target == "open" and _open_modes(node) is None:
+            consent_issues.append(SecurityIssue("FILE002", "open() with a non-constant mode via indirect fetch; read-only-ness cannot be confirmed", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+        elif target in _FILE_WRITE_METHOD_NAMES:
+            consent_issues.append(SecurityIssue("SAVE002", f"file write via indirect fetch of {target}; approve only to write to disk", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+
+
 def scan_code(code: str) -> ScanResult:
     """Detect the same broad classes of dangerous code guarded by instrMCP.
 
@@ -414,47 +494,38 @@ def scan_code(code: str) -> ScanResult:
     bindings.visit(tree)
     for node in ast.walk(tree):
         aliases = bindings.at(node)
+        if isinstance(node, ast.ImportFrom) and any(item.name == "*" for item in node.names):
+            root = (node.module or "").split(".")[0]
+            if root not in _COMPUTE_MODULES:
+                # Star imports defeat all name-based tracking: pull in an
+                # unlisted ``os.system`` etc. that would never be seen.
+                issues.append(SecurityIssue(
+                    "CAP003", f"star import from {node.module} defeats name tracking; import the names explicitly",
+                    RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node),
+                ))
         if isinstance(node, ast.Call):
             name = _call_name(node, aliases)
-            if name in _CRITICAL_CALLS or (name.split(".")[-1] in _CRITICAL_CALLS and name.startswith("builtins.")):
-                issues.append(SecurityIssue("EXEC001", f"dynamic code execution via {name}", RiskLevel.CRITICAL, getattr(node, "lineno", 0), ast.unparse(node)))
-            elif name in _SYSTEM_CALLS:
-                issues.append(SecurityIssue("SYS001", f"system or destructive operation via {name}", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
-            elif name in _DYNAMIC_IMPORTS:
-                issues.append(SecurityIssue("IMPORT001", f"dynamic import via {name}", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
-            elif name in {"open", "builtins.open", "io.open"} and _open_modes(node) == "w":
-                issues.append(SecurityIssue("FILE001", "file opened in a modifying mode", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
-            elif name in {"open", "builtins.open", "io.open"} and _open_modes(node) is None:
-                # mode is a variable/expression: read-only-ness cannot be
-                # confirmed, so it always requires explicit consent.
-                consent_issues.append(SecurityIssue("FILE002", "open() with a non-constant mode; read-only-ness cannot be confirmed — approve only if safe", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
-            elif name.endswith(".open") and _has_path_origin(_chain(node.func, aliases)) and _open_modes(node, mode_position=0) == "w":
-                issues.append(SecurityIssue("FILE001", "path opened in a modifying mode", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
-            elif _is_path_method_call(node, aliases):
-                issues.append(SecurityIssue("SYS001", f"destructive path operation via {name}", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
-            elif _is_env_mutation_call(node, aliases):
-                issues.append(SecurityIssue("ENV001", "process environment modification", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
-            elif _is_savefig(node, aliases):
-                consent_issues.append(SecurityIssue("SAVE001", "figure save (savefig); figures are shown inline by default — approve only to write to disk", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
-            elif name in _FILE_WRITERS or name.rsplit(".", 1)[-1] in _FILE_WRITE_METHOD_NAMES:
-                consent_issues.append(SecurityIssue("SAVE002", f"file write via {name}; approve only to write to disk", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
-            elif name in _NETWORK_CALLS or (
-                name.rsplit(".", 1)[0] in _NETWORK_CLIENTS
-                and name.rsplit(".", 1)[-1] in {"get", "post", "put", "patch", "delete", "head", "options", "request", "send"}
-            ):
-                consent_issues.append(SecurityIssue("NET001", f"network request via {name}; approve only to send data externally", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
-            target = _indirect_call_target(node, aliases)
-            if target:
-                if target in _INDIRECT_TARGETS:
-                    issues.append(SecurityIssue("EXEC001", f"dynamic code execution via indirect fetch of {target}", RiskLevel.CRITICAL, getattr(node, "lineno", 0), ast.unparse(node)))
-                elif target in _SYSTEM_METHOD_NAMES | _PATH_METHODS:
-                    issues.append(SecurityIssue("SYS001", f"system or destructive operation via indirect fetch of {target}", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
-                elif target == "open" and _open_modes(node) == "w":
-                    issues.append(SecurityIssue("FILE001", "file opened in a modifying mode via indirect fetch", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
-                elif target == "open" and _open_modes(node) is None:
-                    consent_issues.append(SecurityIssue("FILE002", "open() with a non-constant mode via indirect fetch; read-only-ness cannot be confirmed", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
-                elif target in _FILE_WRITE_METHOD_NAMES:
-                    consent_issues.append(SecurityIssue("SAVE002", f"file write via indirect fetch of {target}; approve only to write to disk", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+            root = name.split(".")[0]
+            if root in _BLOCK_MODULES:
+                # subprocess / ctypes / importlib / pickle / joblib: process,
+                # native-code, dynamic-import and deserialization sinks.
+                issues.append(SecurityIssue(
+                    "CAP001", f"operation outside the analysis sandbox via {name}",
+                    RiskLevel.CRITICAL, getattr(node, "lineno", 0), ast.unparse(node),
+                ))
+            elif root in _REFLECTION_BASES:
+                # globals/locals/vars/__builtins__ can reach any callable.
+                issues.append(SecurityIssue(
+                    "CAP002", f"reflection through {name}; its effect cannot be bounded statically",
+                    RiskLevel.CRITICAL, getattr(node, "lineno", 0), ast.unparse(node),
+                ))
+            elif root in _NETWORK_MODULES:
+                consent_issues.append(SecurityIssue(
+                    "NET001", f"network request via {name}; approve only to send data externally",
+                    RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node),
+                ))
+            else:
+                _classify_call(node, name, aliases, issues, consent_issues)
         if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             for target in targets:

@@ -2,215 +2,12 @@
 
 from __future__ import annotations
 
-import ast
-from typing import Any, NamedTuple
+from typing import Any
 
 from ..security import AuditLogger, ConsentManager, scan_code
+from ..security.api_allowlists import BUILTIN_NAMES, GENERIC_METHODS, GENERIC_MODULES
+from ..security.api_provenance import CallTarget, analyze_provenance, extract_call_targets
 from .base import ExecutionMode, SharedState
-
-# Accessor names whose members are Peaks APIs callable as ``da.<accessor>.<method>``
-# (e.g. ``da.metadata.set_EF_correction``).
-_ACCESSOR_NAMES = frozenset({"metadata", "quick_fit", "history", "dt", "tr", "ML", "xps"})
-
-# Known peaks/xarray constructors and the receiver type they produce, used to
-# propagate variable origins (``data = load(...)`` -> DataArray).
-_CONSTRUCTOR_TYPES = {
-    "load": "dataarray",
-    "DataArray": "dataarray",
-    "Dataset": "dataset",
-    "DataTree": "datatree",
-    "concat": "dataarray",
-    "open_dataset": "dataset",
-    "open_dataarray": "dataarray",
-    "from_dict": "datatree",
-}
-
-
-class _CallTarget(NamedTuple):
-    """One call site: the receiver root identifier (or None), the accessor
-    segment (``da.metadata.xxx`` -> ``metadata``) when present, and the invoked
-    leaf name, positioned by source location for a stable, crash-free order."""
-
-    root_id: str | None
-    accessor: str | None
-    leaf: str
-    lineno: int
-    col_offset: int
-    subscripted: bool = False
-
-
-def _extract_call_targets(code: str) -> list[_CallTarget]:
-    """Return every call site in ``code``, sorted by source position.
-
-    ``np.linalg.svd(x)``              -> root="np",  leaf="svd"
-    ``da.k_convert()``                -> root="da",  leaf="k_convert"
-    ``da.metadata.set_EF_correction(x)`` -> root="da", accessor="metadata", leaf="set_EF_correction"
-    ``fit_gold(data)``                -> root="fit_gold", leaf="fit_gold"
-    ``da[i].mean()``                  -> root="da",  leaf="mean", subscripted=True
-    ``make().correct_EF()``           -> root=None,  leaf="correct_EF"
-
-    Sorting by ``(lineno, col_offset)`` avoids comparing ``None`` roots with
-    string roots (a TypeError), and makes the reported order deterministic.
-    """
-    try:
-        tree = ast.parse(code)
-    except SyntaxError:
-        return []
-    targets: list[_CallTarget] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        chain: list[str] = []
-        while isinstance(func, ast.Attribute):
-            chain.append(func.attr)
-            func = func.value
-        base = func
-        leaf = chain[0] if chain else None
-        root_id: str | None = None
-        subscripted = False
-        if isinstance(base, ast.Name):
-            root_id = base.id
-            if leaf is None:
-                leaf = base.id  # bare call (``print(...)``, ``fit_gold(data)``)
-        elif isinstance(base, ast.Subscript):
-            # ``da[i].method()`` -> receiver inherits from ``da``.
-            inner = base.value
-            if isinstance(inner, ast.Name):
-                root_id = inner.id
-                subscripted = True
-        if leaf is None:
-            continue
-        accessor = chain[1] if len(chain) >= 2 and chain[1] in _ACCESSOR_NAMES else None
-        targets.append(
-            _CallTarget(root_id, accessor, leaf, node.lineno, node.col_offset, subscripted)
-        )
-    targets.sort(key=lambda target: (target.lineno, target.col_offset))
-    return targets
-
-
-def _receiver_module(node: ast.AST, imports: dict[str, str], generic: set[str]) -> str | None:
-    """Return the module name for an attribute chain rooted on a module name.
-
-    ``plt.savefig`` with ``import matplotlib.pyplot as plt`` resolves to
-    ``matplotlib`` (generic).  Returns ``None`` when the root is not a known
-    generic module.
-    """
-    base = node
-    while isinstance(base, ast.Attribute):
-        base = base.value
-    if isinstance(base, ast.Name):
-        real = imports.get(base.id, base.id)
-        if base.id in generic or real in generic:
-            return real
-    return None
-
-
-def _assign_tag(
-    value: ast.AST | None,
-    tags: dict[str, str],
-    imports: dict[str, str],
-    generic: set[str],
-) -> str:
-    """Return the receiver-type tag for an assignment RHS."""
-    if value is None:
-        return "unknown"
-    if isinstance(value, ast.Name):
-        return tags.get(value.id, "unknown")
-    if isinstance(value, ast.Subscript):
-        base = value.value
-        return tags.get(base.id, "unknown") if isinstance(base, ast.Name) else "unknown"
-    if isinstance(value, ast.Call):
-        func = value.func
-        if isinstance(func, ast.Name):
-            name = func.id
-            if _receiver_module(func, imports, generic) or (
-                imports.get(name) and imports[name] in generic
-            ):
-                return "generic"  # bare alias call into a generic module
-            if name in _CONSTRUCTOR_TYPES:
-                return _CONSTRUCTOR_TYPES[name]  # ``data = load(...)``
-            return "unknown"
-        if isinstance(func, ast.Attribute):
-            if _receiver_module(func, imports, generic):
-                return "generic"  # ``fig = plt.figure()``
-            # peaks / xarray constructors: ``data = pks.load(...)``, ``x = xr.concat(...)``
-            base = func
-            while isinstance(base, ast.Attribute):
-                base = base.value
-            if isinstance(base, ast.Name):
-                real = imports.get(base.id, base.id)
-                if real in {"peaks", "pks"} or base.id in {"xr", "xarray", "pks", "peaks"}:
-                    if func.attr in _CONSTRUCTOR_TYPES:
-                        return _CONSTRUCTOR_TYPES[func.attr]
-            return "unknown"
-    if isinstance(value, ast.Attribute):
-        if _receiver_module(value, imports, generic):
-            return "generic"
-        return "unknown"
-    return "unknown"
-
-
-def _analyze_provenance(
-    code: str, generic_roots: set[str]
-) -> tuple[dict[str, str], set[str], set[str], set[str]]:
-    """Return ``(tags, generic, defined, imported)`` for ``code``.
-
-    ``tags`` maps variable names to a receiver-type tag by walking statements in
-    order: import aliases resolve generic modules (``import numpy as n``),
-    assignments propagate origins (``fig = plt.figure()`` -> generic,
-    ``data = load(...)`` -> dataarray), and simple copies inherit their source.
-    ``defined``/``imported`` record names bound by the code (bare user helpers)
-    and names brought in by imports, so bare calls to them are treated as
-    generic rather than unknown.
-    """
-    try:
-        tree = ast.parse(code)
-    except SyntaxError:
-        return {}, set(generic_roots), set(), set()
-    tags: dict[str, str] = {}
-    imports: dict[str, str] = {}
-    defined: set[str] = set()
-    imported: set[str] = set()
-    generic = set(generic_roots)
-    for node in tree.body:
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                name = alias.asname or alias.name.split(".")[0]
-                real = alias.name.split(".")[0]
-                imports[name] = real
-                defined.add(name)
-                imported.add(name)
-                if real in generic:
-                    # Alias of a generic module (``import numpy as n``): the
-                    # alias itself becomes a generic root too.
-                    tags[name] = "module"
-                    generic.add(name)
-        elif isinstance(node, ast.ImportFrom):
-            for alias in node.names:
-                if alias.name == "*":
-                    continue
-                name = alias.asname or alias.name
-                defined.add(name)
-                imported.add(name)
-                parent = node.module.split(".")[0] if node.module else ""
-                if parent in generic or name in generic:
-                    tags[name] = "module"
-                    generic.add(name)
-        elif isinstance(node, ast.FunctionDef):
-            defined.add(node.name)
-        elif isinstance(node, ast.Assign):
-            tag = _assign_tag(node.value, tags, imports, generic)
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    tags[target.id] = tag
-                    defined.add(target.id)
-        elif isinstance(node, ast.AnnAssign):
-            tag = _assign_tag(node.value, tags, imports, generic)
-            if isinstance(node.target, ast.Name):
-                tags[node.target.id] = tag
-                defined.add(node.target.id)
-    return tags, generic, defined, imported
 
 
 class UnsafeNotebookBackend:
@@ -219,101 +16,6 @@ class UnsafeNotebookBackend:
     _PYTHON_EXECUTION_OPERATIONS = {
         "notebook_write_with_api_check",
     }
-
-    # Python builtins that appear as bare calls (``print``, ``len``, ``range``,
-    # ``str``, ...).  They are never Peaks APIs and never block execution.
-    # ``exec``/``eval``/``compile``/``getattr`` are deliberately absent: the
-    # security scanner hard-blocks them, and keeping them unverifiable adds a
-    # second rejection layer.
-    _BUILTIN_NAMES = frozenset({
-        "abs", "all", "any", "ascii", "bin", "bool", "breakpoint", "bytearray",
-        "bytes", "callable", "chr", "classmethod", "complex", "delattr", "dict",
-        "dir", "divmod", "enumerate", "filter", "float", "format", "frozenset",
-        "hash", "hasattr", "help", "hex", "id", "input", "int", "isinstance",
-        "issubclass", "iter", "len", "list", "locals", "map", "max", "memoryview",
-        "min", "next", "object", "oct", "ord", "pow", "print", "property", "range",
-        "repr", "reversed", "round", "set", "setattr", "slice", "sorted",
-        "staticmethod", "str", "sum", "super", "tuple", "type", "vars", "zip",
-    })
-    # Ordinary methods on data receivers (xarray / pandas / numpy / matplotlib /
-    # stdlib).  These are NOT Peaks APIs and never block execution; anything else
-    # used as ``obj.<name>`` that is neither a Peaks API nor in this set is an
-    # unverifiable API reference and hard-blocks execution.
-    _GENERIC_METHODS = frozenset({
-        "sel", "isel", "mean", "median", "max", "min", "sum", "std", "var",
-        "count", "cumsum", "diff", "argmax", "argmin", "clip", "abs", "round",
-        "plot", "plot_fit", "plot_residuals", "assign_coords", "drop_vars",
-        "rename", "stack", "unstack", "transpose", "squeeze", "expand_dims",
-        "swap_dims", "values", "data", "item", "to_dataset", "to_netcdf",
-        "compute", "load", "where", "fillna", "interp", "groupby", "resample",
-        "shift", "rolling", "coarsen", "quantile", "copy", "dims", "sizes",
-        "coords", "attrs", "metadata", "history", "pint", "real", "imag",
-        "astype", "reshape", "flatten", "tolist", "split",
-        "join", "replace", "strip", "lower", "upper", "format", "append",
-        "extend", "pop", "keys", "items", "get", "setdefault", "update",
-        "add", "remove", "discard", "union", "difference", "intersection",
-        "dumps", "loads", "dump", "reader", "writer", "DictReader",
-        "DictWriter", "read_csv", "read_excel", "read_json", "to_csv",
-        "to_excel", "to_json", "to_numpy", "DataFrame", "Series",
-        "value_counts", "dropna", "describe", "head", "tail", "iloc", "loc",
-        "set_index", "reset_index", "sort_values", "sort_index", "merge",
-        "concat", "pivot", "melt", "iterrows", "apply", "map", "unique",
-        "isin", "sample", "drop", "insert", "sort", "reverse", "index",
-        "read", "write", "close", "open", "readline", "readlines",
-        "writelines", "seek", "tell", "flush", "truncate", "read_text",
-        "write_text", "read_bytes", "write_bytes", "exists", "mkdir",
-        "unlink", "glob", "rglob", "iterdir",
-        "is_file", "is_dir", "resolve", "joinpath", "with_suffix", "stem",
-        "suffix", "parent", "name", "listdir", "makedirs", "walk", "getcwd",
-        "chdir", "getenv", "path", "splitext", "dirname", "basename",
-        "startswith", "endswith", "find", "zfill", "encode",
-        "decode", "isdigit", "isalpha", "isalnum", "isnumeric", "isspace",
-        "splitlines", "rstrip", "lstrip", "capitalize", "title", "partition",
-        "rpartition", "center", "expandtabs", "swapcase", "casefold",
-        "popitem", "fromkeys", "clear", "symmetric_difference", "issubset",
-        "issuperset", "any", "all", "next", "iter", "sorted",
-        "reversed", "enumerate", "zip", "filter", "hash", "id", "repr",
-        "array", "arange", "linspace", "zeros", "ones", "full", "eye",
-        "zeros_like", "ones_like", "empty", "empty_like", "full_like",
-        "meshgrid", "concatenate", "vstack", "hstack", "ravel", "dot",
-        "matmul", "prod", "sqrt", "exp", "log", "log10", "log2", "sin",
-        "cos", "tan", "asin", "acos", "atan", "atan2", "gradient",
-        "poly1d", "polyfit", "polyval", "percentile", "nanpercentile",
-        "nanmean", "nanmax", "nanmin", "histogram", "bincount", "loadtxt",
-        "genfromtxt", "savetxt", "save", "savez", "fromfile", "fromstring",
-        "asarray", "asanyarray", "seed", "random", "normal", "uniform",
-        "randint", "rand", "randn", "choice", "flip",
-        "roll", "argsort", "take", "repeat", "tile",
-        "pad", "corrcoef", "cov", "apply_along_axis", "vectorize",
-        "isnan", "isinf", "isfinite", "nonzero", "mod", "floor",
-        "ceil", "around", "sign", "power", "square", "maximum", "minimum",
-        "amax", "amin", "ptp", "trapz", "convolve", "correlate", "fft",
-        "ifft", "rfft", "irfft", "conjugate", "angle", "hypot", "diag",
-        "tril", "triu", "cumprod", "figure", "subplots", "scatter", "imshow",
-        "pcolormesh", "bar", "hist", "errorbar", "fill_between", "colorbar",
-        "xlabel", "ylabel", "legend", "tight_layout", "show", "savefig",
-        "subplots_adjust", "set_title", "set_xlabel", "set_ylabel",
-        "axhline", "axvline", "set_ylim", "set_xlim", "xticks", "yticks",
-        "grid", "axis", "contour", "contourf", "text", "annotate", "rcParams",
-        "set_visible", "get_figure", "convert_to", "twinx",
-        "twiny", "loglog", "semilogx", "semilogy", "suptitle", "clf", "cla",
-        "gcf", "gca", "xlim", "ylim", "set_xscale", "set_yscale", "cm",
-        "search", "match", "findall", "finditer", "sub", "subn", "compile",
-        "fullmatch", "escape", "pi", "e", "tau", "inf", "nan", "isclose",
-        "fabs", "fmod", "gcd", "factorial", "degrees", "radians", "strftime",
-        "strptime", "isoformat", "now", "today", "utcnow", "timestamp",
-        "fromtimestamp", "combine", "timedelta", "date", "time", "datetime",
-    })
-    # Modules whose members are treated as generic (never block).
-    _GENERIC_MODULES = frozenset({
-        "np", "numpy", "scipy", "plt", "matplotlib", "xr", "xarray",
-        "pd", "pandas", "os", "sys", "json", "math", "re", "time",
-        "glob", "shutil", "pathlib", "Path", "warnings", "pickle",
-        "copy", "itertools", "functools", "collections", "datetime",
-        "csv", "io", "tempfile", "uuid", "hashlib", "string", "traceback",
-        "threading", "dataclasses", "enum", "abc", "typing", "contextlib",
-        "calendar", "random", "statistics", "numbers", "decimal", "fractions",
-    })
 
     def __init__(self, state: SharedState, consent: ConsentManager, audit: AuditLogger) -> None:
         self.state = state
@@ -391,7 +93,7 @@ class UnsafeNotebookBackend:
 
     def _receiver_type(
         self,
-        target: _CallTarget,
+        target: CallTarget,
         tags: dict[str, str],
         generic_roots: set[str],
     ) -> str:
@@ -454,9 +156,9 @@ class UnsafeNotebookBackend:
                 ),
             }
 
-        targets = _extract_call_targets(code)
-        tags, generic_roots, defined, imported = _analyze_provenance(
-            code, set(self._GENERIC_MODULES)
+        targets = extract_call_targets(code)
+        tags, generic_roots, defined, imported = analyze_provenance(
+            code, set(GENERIC_MODULES)
         )
         verified: list[dict[str, Any]] = []
         generic: list[str] = []
@@ -483,7 +185,7 @@ class UnsafeNotebookBackend:
                 scoped = [m for m in exact if m.get("scope") == scope]
                 if scoped:
                     verified.append({"name": target.leaf, "matches": [str(m["id"]) for m in scoped]})
-                elif target.leaf in self._GENERIC_METHODS or target.leaf in self._BUILTIN_NAMES:
+                elif target.leaf in GENERIC_METHODS or target.leaf in BUILTIN_NAMES:
                     generic.append(target.leaf)
                 else:
                     unknown.append({"name": target.leaf, "suggested": [str(m.get("id")) for m in matches]})
@@ -495,7 +197,7 @@ class UnsafeNotebookBackend:
                 # exact Peaks APIs verify; anything else is unknown.
                 in_namespace = callable(self.state.namespace.get(target.leaf))
                 if (
-                    target.leaf in self._BUILTIN_NAMES
+                    target.leaf in BUILTIN_NAMES
                     or target.leaf in defined
                     or target.leaf in imported
                     or in_namespace
@@ -514,7 +216,7 @@ class UnsafeNotebookBackend:
             # variable when the receiver is complex.
             if exact:
                 verified.append({"name": target.leaf, "matches": [str(m["id"]) for m in exact]})
-            elif target.leaf in self._GENERIC_METHODS or target.leaf in self._BUILTIN_NAMES:
+            elif target.leaf in GENERIC_METHODS or target.leaf in BUILTIN_NAMES:
                 generic.append(target.leaf)
             else:
                 unknown.append({"name": target.leaf, "suggested": [str(m.get("id")) for m in matches]})
