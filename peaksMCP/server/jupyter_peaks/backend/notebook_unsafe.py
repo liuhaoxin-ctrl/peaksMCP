@@ -7,7 +7,7 @@ from typing import Any
 from ..security import AuditLogger, ConsentManager, scan_code
 from ..security.api_allowlists import BUILTIN_NAMES, GENERIC_METHODS, GENERIC_MODULES
 from ..security.api_provenance import CallTarget, analyze_provenance, extract_call_targets
-from .base import ExecutionMode, SharedState
+from .base import ExecutionMode, SharedState, ensure_fresh_index
 
 
 class UnsafeNotebookBackend:
@@ -135,26 +135,15 @@ class UnsafeNotebookBackend:
           typo'd Peaks API (e.g. ``correct_EF``).  Receivers whose origin cannot
           be proven do not grant a free pass — the leaf must still verify.
 
-        The live API index is re-checked before classifying; a stale index
-        blocks with a kernel-restart request.
+        The live API index is hot-rebuilt in the kernel when the source changed, so
+        no kernel restart is needed.
         """
-        index = self.state.api_index
-        if index is None:
+        try:
+            index = ensure_fresh_index(self.state)
+        except Exception:
             return {
                 "success": False, "executed": False, "blocked": True,
-                "message": "The Peaks API index is not available; restart the kernel.",
-            }
-        if index.is_stale():
-            self.audit.write(
-                "notebook_write_with_api_check", "blocked", {"reason": "index stale"}
-            )
-            return {
-                "success": False, "executed": False, "blocked": True,
-                "message": (
-                    "INDEX_STALE_RESTART_REQUIRED: the installed Peaks or peaksMCP "
-                    "source changed after the API index was built. Restart the kernel "
-                    "to rebuild the index before writing code."
-                ),
+                "message": "The Peaks API index could not be built; restart the kernel.",
             }
 
         targets = extract_call_targets(code)

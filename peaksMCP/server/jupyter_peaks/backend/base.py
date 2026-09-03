@@ -10,8 +10,36 @@ from enum import StrEnum
 from typing import Any
 
 
+def ensure_fresh_index(state: SharedState) -> Any:
+    """Return the live API index, hot-rebuilding it in the kernel when stale.
+
+    Replaces the old fail-fast ``INDEX_STALE_RESTART_REQUIRED`` error: if the
+    installed Peaks / peaksMCP source changed after the index was built, the
+    index is rebuilt (under the shared state lock) so searches and code
+    execution keep working without a kernel restart.  Only the actual rebuild
+    holds the lock; the staleness check and searches are lock-free.
+    """
+    from peaksMCP.discovery.index import build_index
+
+    if state.api_index is None:
+        with state.lock:
+            if state.api_index is None:
+                state.api_index = build_index()
+    elif state.api_index.is_stale():
+        with state.lock:
+            # Re-check under the lock: another call may have rebuilt already.
+            if state.api_index.is_stale():
+                state.api_index = build_index()
+    return state.api_index
+
+
 class ExecutionMode(StrEnum):
-    """Security mode controlling which notebook tools are exposed."""
+    """Security mode selecting the consent policy for mutation tools.
+
+    The exposed tool surface is identical in every mode; the mode only changes
+    how strictly mutation tools ask for consent when the ``require_consent``
+    master switch is enabled (see :mod:`peaksMCP.server.jupyter_peaks`).
+    """
 
     SAFE = "safe"
     UNSAFE = "unsafe"

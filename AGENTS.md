@@ -150,23 +150,32 @@ descriptions.
 
 ---
 
-## 6. Security modes
+## 6. Security modes and consent
 
-All 15 tools (12 read-only + 3 execution/editing) are **always exposed** in every
-mode; the mode only changes the consent policy for the 3 mutation tools
-(`notebook_write_with_api_check`, `notebook_add_cell`, `notebook_delete_cell`):
+All 15 tools (12 read-only/guidance + 3 mutation) are **always exposed** in every
+mode; the mode only changes how strictly the 3 mutation tools
+(`notebook_write_with_api_check`, `notebook_add_cell`, `notebook_delete_cell`)
+ask for frontend consent **when consent is enabled**.
 
-- **safe** / **unsafe** (identical tool surface): each mutation tool asks for
+The consent master switch is `mcp.require_consent` in the active profile
+(default **false**; the supervisor also exposes `PEAKSMCP_REQUIRE_CONSENT`).
+With consent **disabled** (the default) no frontend prompt is shown in any mode:
+the AST code scanner (always-on hard block) and the audit log are the only
+guards. With consent **enabled**:
+
+- **safe** / **unsafe** (identical tool surface): every mutation tool asks for
   explicit frontend consent shown in the notebook.
 - **dangerous**: Python execution and destructive edits still require explicit
-  frontend consent. Only non-executing, append-only mutations may be auto-approved.
-  The scanner remains an early rejection layer, not a complete security boundary
-  for arbitrary Python reflection or import side effects.
-  The scanner (`security/code_scanner.py`) is AST-semantic (alias-aware,
-  attribute-chain matching) and must block: exec/eval/compile, indirect fetches,
-  `os.environ` mutation, `open(mode=w/a/+)`, destructive `pathlib` methods,
-  subprocess, dynamic imports. Do not weaken it; add bypass cases to
-  `tests/unit/test_security.py` when extending it.
+  frontend consent; only non-executing, append-only mutations (adding a cell)
+  may be auto-approved.
+
+The scanner (`security/code_scanner.py`) is AST-semantic (alias-aware,
+attribute-chain matching) and an early rejection layer, **not a complete
+security boundary**: it blocks exec/eval/compile, indirect fetches,
+`os.environ` mutation, `open(mode=w/a/+)`, destructive `pathlib` methods,
+subprocess and dynamic imports, but cannot bound arbitrary Python reflection or
+import side effects. It hard-blocks regardless of `require_consent`; do not
+weaken it; add bypass cases to `tests/unit/test_security.py` when extending it.
 
 Consent decisions and every tool call are written to the audit log
 (`PEAKSMCP_HOME/audit/tool_audit.log`, `0o600`).
@@ -220,7 +229,7 @@ peaksMCP status          # supervisor + kernel state
 peaksMCP mcp-ping        # verify in-kernel MCP endpoint (expect ok: true, 15 tools)
 peaksMCP dash            # dashboard (127.0.0.1:8765)
 peaksMCP stop            # stop supervisor
-peaksMCP restart kernel  # restart kernel (rebuilds the API index; new code takes effect)
+peaksMCP restart kernel  # reload running code (the API index now hot-rebuilds itself when the source changes, so no restart is needed for index freshness)
 peaksMCP logs -f         # follow supervisor logs
 ```
 

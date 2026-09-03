@@ -47,6 +47,24 @@ def test_get_api_returns_source_signature_and_docstring():
     assert detail["docstring"]
 
 
+def test_get_resolves_canonical_id_name_and_alias():
+    """peaks_get_api must accept the full canonical ID, the bare API name and
+    any search alias (e.g. preprocess_cut) — all resolve to the same entry."""
+    index = build_index()
+    entry = next(
+        item
+        for item in index.entries
+        if item["id"] == "module:peaksMCP.workflows.cut_preprocessing:process_cut"
+    )
+    assert entry["name"] == "process_cut"
+    assert "preprocess_cut" in entry.get("aliases", [])
+    assert index.get(entry["id"]) is not None
+    resolved_name = index.get("process_cut")
+    assert resolved_name is not None and resolved_name["id"] == entry["id"]
+    resolved_alias = index.get("preprocess_cut")
+    assert resolved_alias is not None and resolved_alias["id"] == entry["id"]
+
+
 def test_bound_drops_receiver_by_name_not_scope():
     from peaksMCP.discovery.signatures import _bound
 
@@ -108,8 +126,7 @@ class _StubNotebook:
         return {}
 
 
-def test_stale_error_is_raised_by_search_and_get(monkeypatch):
-    from peaksMCP.discovery.index import IndexStaleError
+def test_stale_index_is_hot_rebuilt_by_search_and_get(monkeypatch, tmp_path):
     from peaksMCP.server.jupyter_peaks.backend.base import ExecutionMode, SharedState
     from peaksMCP.server.jupyter_peaks.core.tools import register_safe_tools
 
@@ -129,19 +146,16 @@ def test_stale_error_is_raised_by_search_and_get(monkeypatch):
     state.api_index.fingerprint = "changed-after-build"  # simulate stale
     mcp = FakeMCP()
     from peaksMCP.server.jupyter_peaks.security import AuditLogger
-    register_safe_tools(mcp, state, _StubNotebook(), AuditLogger("/tmp/test-audit.log"))  # type: ignore[arg-type]
+    register_safe_tools(mcp, state, _StubNotebook(), AuditLogger(tmp_path / "test-audit.log"))  # type: ignore[arg-type]
     search = mcp.registered["peaks_search_api"]
     get = mcp.registered["peaks_get_api"]
-    for call in (
-        lambda: search("k_convert"),
-        lambda: get("dataarray:peaks.core.process.k_conversion:k_convert"),
-    ):
-        try:
-            call()
-        except IndexStaleError as exc:
-            assert "INDEX_STALE_RESTART_REQUIRED" in str(exc)
-        else:
-            raise AssertionError("expected IndexStaleError")
+    # A stale index is hot-rebuilt in-kernel instead of erroring: search/get
+    # succeed and the index is fresh again.
+    result = search("k_convert")
+    assert result["count"] >= 1
+    detail = get("dataarray:peaks.core.process.k_conversion:k_convert")
+    assert "k_convert" in detail["signature"]
+    assert state.api_index.is_stale() is False
     # A fresh index is not stale and search works end to end.
     state.api_index = build_index()
     assert search("k_convert")["count"] >= 1

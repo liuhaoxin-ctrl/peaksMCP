@@ -79,6 +79,36 @@ def test_bypass_patterns_are_blocked(code):
 
 
 @pytest.mark.parametrize("code, rule", [
+    # Container/__dict__ calls and reflection chains (IND002 / REF001).
+    ("import os\nos.__dict__['system']('id')", "IND002"),
+    ("import builtins\nbuiltins.__dict__['exec']('import os')", "IND002"),
+    ("import subprocess\nd = {}\nd['p'] = subprocess.run\nd['p'](['id'])", "IND002"),
+    ("import os\nd = os.__dict__\nd['system']('id')", "IND002"),
+    ("().__class__.__base__.__subclasses__()", "REF001"),
+    ("''.__class__.__mro__[-1].__subclasses__()[0]('/tmp/x', 'w')", "REF001"),
+    # Module/class attribute smuggling and dynamic attribute writes (SMUG*).
+    ("import os\nos.run_id = os.system\nos.run_id('id')", "SMUG001"),
+    ("import os\nclass C:\n    pass\nC.get = os.system\nC.get('id')", "SMUG001"),
+    ("import os\nsetattr(os, 'run_id', os.system)", "SMUG002"),
+    ("import builtins\ndelattr(builtins, 'open')", "SMUG002"),
+    # Dynamic getattr with a computed attribute name (REF003).
+    ("import os\ngetattr(os, 'sy' + 'stem')('id')", "REF003"),
+    ("import os\nf = getattr(os, 'sy' + 'stem')\nf('id')", "REF003"),
+    # Deserialization and raw-descriptor writes (DES001 / FILE003).
+    ("import pandas as pd, io\npd.read_pickle(io.BytesIO(b'cos'))", "DES001"),
+    ("import os\nfd = os.open('/tmp/x', os.O_WRONLY | os.O_CREAT)\nos.write(fd, b'e')", "FILE003"),
+    # Environment mutation through aliases and popitem (ENV001).
+    ("import os\nos.environ.popitem()", "ENV001"),
+    ("import os\nenv = os.environ\nenv |= {'A': 'B'}", "ENV001"),
+])
+def test_container_reflection_and_smuggling_bypasses_are_blocked(code, rule):
+    """Red-team regression: the 2026 review bypass set must stay hard-blocked."""
+    result = scan_code(code)
+    assert result.blocked, result.to_dict()
+    assert any(issue.rule_id == rule for issue in result.issues), result.to_dict()
+
+
+@pytest.mark.parametrize("code, rule", [
     ("from pathlib import Path\np = Path('x')\np.write_text('bad')", "SYS001"),
     ("import pathlib as pl\np = pl.Path('x')\np.write_bytes(b'bad')", "SYS001"),
     ("from pathlib import Path as P\np = P('x')\nq = p\nq.unlink()", "SYS001"),
@@ -260,7 +290,7 @@ def test_consent_fails_closed_without_frontend():
     assert ConsentManager().request("delete", {}) is False
 
 
-def test_destructive_cell_ops_require_consent_even_in_dangerous_mode():
+def test_destructive_cell_ops_require_consent_even_in_dangerous_mode(tmp_path):
     """delete_cell must ask for explicit consent in every mode, including
     dangerous: an existing cell must never be removed unless the user approves.
     (apply_patch was removed: it overwrote an existing cell's source.)"""
@@ -293,7 +323,7 @@ def test_destructive_cell_ops_require_consent_even_in_dangerous_mode():
     state.mode = ExecutionMode.DANGEROUS
     state.require_consent = True
     consent = DenyingConsent()
-    notebook = UnsafeNotebookBackend(state, consent, AuditLogger("/tmp/peaksmcp-test-audit.jsonl"))
+    notebook = UnsafeNotebookBackend(state, consent, AuditLogger(tmp_path / "peaksmcp-test-audit.jsonl"))
 
     with pytest.raises(PermissionError):
         notebook.delete_cell(0)
@@ -355,10 +385,15 @@ def test_dangerous_mode_never_executes_unrecognised_python_without_consent(code)
     consent.request.return_value = False
     notebook = UnsafeNotebookBackend(state, consent, audit)
 
-    with pytest.raises(PermissionError, match="did not approve"):
+    # The code must stop before the kernel: either the scanner now hard-blocks
+    # the pattern itself, or the consent boundary rejects it.  Never both a
+    # kernel request and a silent pass.
+    with pytest.raises(PermissionError):
         notebook.execute_code(code)
-
-    consent.request.assert_called_once()
+    if scan_code(code).blocked:
+        consent.request.assert_not_called()
+    else:
+        consent.request.assert_called_once()
     state.bridge.request.assert_not_called()
 
 
@@ -369,7 +404,7 @@ def test_audit_is_jsonl_and_private(tmp_path):
     assert path.stat().st_mode & 0o777 == 0o600
 
 
-def test_write_without_exploration_runs_but_invented_apis_still_block():
+def test_write_without_exploration_runs_but_invented_apis_still_block(tmp_path):
     """The select-then-run gate was removed: write_with_api_check no longer
     requires prior peaks_search_api/peaks_get_api calls.  The API check itself
     still hard-blocks invented/typo'd Peaks APIs."""
@@ -387,7 +422,7 @@ def test_write_without_exploration_runs_but_invented_apis_still_block():
     state.api_index = build_index()
     state.bridge = Mock()
     state.bridge.request.return_value = {"ok": True}
-    nb = UnsafeNotebookBackend(state, ConsentManager(), AuditLogger("/tmp/t.jsonl"))
+    nb = UnsafeNotebookBackend(state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl"))
 
     # No exploration at all: a verified call runs, an invented API blocks.
     assert not nb.write_with_api_check("da.k_convert(quiet=True)", timeout=5).get("blocked")
@@ -396,7 +431,7 @@ def test_write_without_exploration_runs_but_invented_apis_still_block():
     assert "correct_EF" in str(blocked.get("unknown_refs"))
 
 
-def test_write_with_api_check_classifies_generic_and_verified_calls():
+def test_write_with_api_check_classifies_generic_and_verified_calls(tmp_path):
     from unittest.mock import Mock
 
     from peaksMCP.discovery.index import build_index
@@ -411,7 +446,7 @@ def test_write_with_api_check_classifies_generic_and_verified_calls():
     state.api_index = build_index()
     state.bridge = Mock()
     state.bridge.request.return_value = {"ok": True}
-    nb = UnsafeNotebookBackend(state, ConsentManager(), AuditLogger("/tmp/t.jsonl"))
+    nb = UnsafeNotebookBackend(state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl"))
 
     # Builtins and generic-library calls (including module-member chains like
     # np.linalg.svd / scipy.signal.savgol_filter) never block.
@@ -442,7 +477,7 @@ def test_write_with_api_check_classifies_generic_and_verified_calls():
     assert "correct_EF" in str(blocked.get("unknown_refs"))
 
 
-def test_write_with_api_check_receiver_aware_and_scope_aware(monkeypatch):
+def test_write_with_api_check_receiver_aware_and_scope_aware(monkeypatch, tmp_path):
     import inspect
     from unittest.mock import Mock
 
@@ -459,7 +494,7 @@ def test_write_with_api_check_receiver_aware_and_scope_aware(monkeypatch):
         state.api_index = build_index()
         state.bridge = Mock()
         state.bridge.request.return_value = {"ok": True}
-        return UnsafeNotebookBackend(state, ConsentManager(), AuditLogger("/tmp/t.jsonl"))
+        return UnsafeNotebookBackend(state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl"))
 
     nb = make_backend()
 
@@ -498,15 +533,9 @@ def test_write_with_api_check_receiver_aware_and_scope_aware(monkeypatch):
     assert blocked.get("blocked") and "plot_bz" in str(blocked.get("unknown_refs"))
     assert not nb2.write_with_api_check("da[i].mean()", timeout=5).get("blocked")
 
-    # 7) a stale index blocks with a kernel-restart request.
-    class StaleIndex:
-        def is_stale(self):
-            return True
-
-        def search(self, *_a, **_k):
-            return []
-
+    # 7) a stale index is hot-rebuilt in-kernel instead of erroring.
     stale = make_backend()
-    stale.state.api_index = StaleIndex()
+    stale.state.api_index.fingerprint = "changed-after-build"
     result = stale.write_with_api_check("da.k_convert()", timeout=5)
-    assert result.get("blocked") and "INDEX_STALE" in result.get("message", "")
+    assert not result.get("blocked")
+    assert stale.state.api_index.is_stale() is False

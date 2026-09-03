@@ -12,10 +12,9 @@ from fastmcp import FastMCP
 from mcp.types import ImageContent, TextContent
 
 from peaksMCP.config import tool_metadata
-from peaksMCP.discovery.index import IndexStaleError, build_index
 from peaksMCP.discovery.signatures import describe_api
 
-from ..backend import NotebookBackend, SharedState, UnsafeNotebookBackend
+from ..backend import NotebookBackend, SharedState, UnsafeNotebookBackend, ensure_fresh_index
 from ..security import AuditLogger
 
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -61,16 +60,8 @@ def _image_omitted_content(
 
 
 def _require_index(state: SharedState):
-    """Return the live index, raising a structured stale error when a restart is needed."""
-    if state.api_index is None:
-        state.api_index = build_index()
-    if state.api_index.is_stale():
-        raise IndexStaleError(
-            "INDEX_STALE_RESTART_REQUIRED: the installed Peaks or peaksMCP adapter "
-            "source changed after the API index was built. Restart the kernel to "
-            "rebuild the index (peaksMCP restart kernel) before searching again."
-        )
-    return state.api_index
+    """Return the live index, hot-rebuilding it in the kernel when stale."""
+    return ensure_fresh_index(state)
 
 
 def _summarize_arguments(args: tuple, kwargs: dict[str, Any]) -> dict[str, Any]:
