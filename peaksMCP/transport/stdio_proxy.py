@@ -15,7 +15,7 @@ EXPECTED_TOOL_NAMES = frozenset({
     "notebook_read_content", "notebook_move_cursor", "notebook_server_status",
     "notebook_kernel_status", "notebook_wait_for_kernel",
     "notebook_write_with_api_check",
-    "notebook_add_cell", "notebook_delete_cell",
+    "notebook_add_cell",
 })
 
 

@@ -290,44 +290,28 @@ def test_consent_fails_closed_without_frontend():
     assert ConsentManager().request("delete", {}) is False
 
 
-def test_destructive_cell_ops_require_consent_even_in_dangerous_mode(tmp_path):
-    """delete_cell must ask for explicit consent in every mode, including
-    dangerous: an existing cell must never be removed unless the user approves.
-    (apply_patch was removed: it overwrote an existing cell's source.)"""
+def test_notebook_is_append_only_no_delete_or_reorder():
+    """The mutation surface is strictly append-only: notebook_delete_cell was
+    removed, so an existing cell can never be removed or overwritten by the
+    agent (its full work history is preserved top-to-bottom)."""
+    from unittest.mock import Mock
+
     from peaksMCP.server.jupyter_peaks.backend import (
-        ExecutionMode,
         SharedState,
         UnsafeNotebookBackend,
     )
 
-    class FakeIPython:
-        user_ns = {}
+    state = SharedState(Mock(user_ns={}))
+    state.require_consent = False
+    state.bridge = Mock()
+    state.bridge.request.return_value = {"ok": True}
+    notebook = UnsafeNotebookBackend(state, ConsentManager(), AuditLogger("/tmp/t.jsonl"))
 
-    class FakeBridge:
-        connected = True
+    assert not hasattr(notebook, "delete_cell")
+    # add_cell is append-only: no position parameter, it always lands at the end.
+    import inspect
 
-        def request(self, *_args, **_kwargs):
-            return {"ok": True}
-
-    class DenyingConsent(ConsentManager):
-        def __init__(self) -> None:
-            super().__init__()
-            self.calls: list[str] = []
-
-        def request(self, operation, _details, timeout=60):
-            self.calls.append(operation)
-            return False
-
-    state = SharedState(FakeIPython())
-    state.bridge = FakeBridge()
-    state.mode = ExecutionMode.DANGEROUS
-    state.require_consent = True
-    consent = DenyingConsent()
-    notebook = UnsafeNotebookBackend(state, consent, AuditLogger(tmp_path / "peaksmcp-test-audit.jsonl"))
-
-    with pytest.raises(PermissionError):
-        notebook.delete_cell(0)
-    assert consent.calls == ["notebook_delete_cell"]
+    assert "position" not in inspect.signature(notebook.add_cell).parameters
 
 
 def test_execute_code_requires_explicit_consent_for_network_even_in_dangerous_mode():

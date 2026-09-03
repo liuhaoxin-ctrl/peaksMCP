@@ -315,7 +315,7 @@ def test_mcp_tool_surface_and_search(supervisor):
 
     health = asyncio.run(check_http_mcp_server(supervisor.profile.mcp.host, supervisor.profile.mcp.port))
     assert health["ok"]
-    assert health["tool_count"] == 15
+    assert health["tool_count"] == 14
     safe_tools = {
         "peaks_search_api", "peaks_get_api", "askuserquestion",
         "notebook_list_variables", "notebook_read_variable", "notebook_read_active_cell",
@@ -325,7 +325,6 @@ def test_mcp_tool_surface_and_search(supervisor):
     mutation_tools = {
         "notebook_write_with_api_check",
         "notebook_add_cell",
-        "notebook_delete_cell",
     }
     assert set(health["tools"]) == safe_tools | mutation_tools
     assert health["missing_tools"] == []

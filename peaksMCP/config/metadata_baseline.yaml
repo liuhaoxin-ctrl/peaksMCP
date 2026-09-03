@@ -17,8 +17,8 @@ tools:
     title: Ask User Question
     description: >
       Report missing experimental information/essential information to the conversation.
-      Returns {"status": "needs_input", ...} — the frontend will ask the user in the
-      next turn. options MUST be a plain list of strings (e.g. ["S", "P"]) — NOT a
+      Returns {"status": "needs_input", ...} — the caller should then ask the user in the
+      conversation. options MUST be a plain list of strings (e.g. ["S", "P"]) — NOT a
       list of objects. NEVER invent missing physical values (Fermi level, angle
       conventions, polarization, temperature); ask instead.
   notebook_list_variables:
@@ -59,7 +59,9 @@ tools:
       written through this tool.
   notebook_add_cell:
     title: Add Notebook Cell
-    description: With consent, insert a code, Markdown or raw cell.
-  notebook_delete_cell:
-    title: Delete Notebook Cell
-    description: With consent, delete the active or numbered notebook cell.
+    description: >
+      Append a code, Markdown or raw cell to the END of the notebook. The
+      notebook is a strictly append-only log: cells can never be edited,
+      deleted or reordered, so the agent's work history is preserved top to
+      bottom. Mutation tool: always scanner-checked and audit-logged; when
+      mcp.require_consent is enabled the user first approves it.

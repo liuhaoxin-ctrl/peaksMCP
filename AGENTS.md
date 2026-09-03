@@ -145,17 +145,22 @@ When adding, removing or renaming an MCP tool, update **all** of these:
 - [ ] Run `ruff check peaksMCP tests tools` and the unit tests
 
 Tool metadata lives in YAML, not hardcoded in Python. `config/metadata.py` loads
-`metadata_baseline.yaml` (15 tools) as the single source of truth for titles and
+`metadata_baseline.yaml` (14 tools) as the single source of truth for titles and
 descriptions.
 
 ---
 
 ## 6. Security modes and consent
 
-All 15 tools (12 read-only/guidance + 3 mutation) are **always exposed** in every
-mode; the mode only changes how strictly the 3 mutation tools
-(`notebook_write_with_api_check`, `notebook_add_cell`, `notebook_delete_cell`)
-ask for frontend consent **when consent is enabled**.
+All 14 tools (12 read-only/guidance + 2 mutation) are **always exposed** in every
+mode; the mode only changes how strictly the 2 mutation tools
+(`notebook_write_with_api_check`, `notebook_add_cell`) ask for frontend consent
+**when consent is enabled**.
+
+The notebook is a **strictly append-only log**: both mutation tools only append
+a new cell at the END and can never edit, delete or reorder an existing cell, so
+the agent's full work history is preserved top-to-bottom. `notebook_delete_cell`
+was removed for exactly this reason.
 
 The consent master switch is `mcp.require_consent` in the active profile
 (default **false**; the supervisor also exposes `PEAKSMCP_REQUIRE_CONSENT`).

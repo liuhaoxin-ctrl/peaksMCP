@@ -244,26 +244,14 @@ class UnsafeNotebookBackend:
         result["api_check"] = api_check
         return result
 
-    def add_cell(self, source: str = "", cell_type: str = "code", position: str = "below") -> dict[str, Any]:
+    def add_cell(self, source: str = "", cell_type: str = "code") -> dict[str, Any]:
+        """Append one cell at the END of the notebook (append-only log).
+
+        There is intentionally no way to insert in the middle, edit or delete an
+        existing cell: the notebook preserves the agent's full work history in
+        top-to-bottom order, so nothing can be silently overwritten or removed.
+        """
         if cell_type not in {"code", "markdown", "raw"}:
             raise ValueError("cell_type must be code, markdown, or raw")
         self._authorize("notebook_add_cell", source if cell_type == "code" else "")
-        return self.state.bridge.request("add_cell", {"source": source, "cell_type": cell_type, "position": position})
-
-    def delete_cell(self, index: int | None = None) -> dict[str, Any]:
-        # Bind the consent to the actual cell identity (id + current content),
-        # not just the index: concurrent edits / other tabs can shift indices
-        # between authorisation and execution.
-        cell = self.state.bridge.request("read_cell_at", {"index": index}, timeout=10)
-        cell_id = cell.get("id")
-        self._authorize(
-            "notebook_delete_cell",
-            force_consent=True,
-            cell={
-                "index": index,
-                "action": "delete",
-                "id": cell_id,
-                "current_source": str(cell.get("source", ""))[:200],
-            },
-        )
-        return self.state.bridge.request("delete_cell", {"index": index, "expected_id": cell_id})
+        return self.state.bridge.request("add_cell", {"source": source, "cell_type": cell_type})

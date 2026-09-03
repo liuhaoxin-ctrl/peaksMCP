@@ -21,22 +21,24 @@ def test_exact_tool_surface_all_exposed():
         "notebook_read_variable", "notebook_read_active_cell", "notebook_read_active_cell_output",
         "notebook_read_content", "notebook_move_cursor", "notebook_server_status",
         "notebook_kernel_status", "notebook_wait_for_kernel",
-        "notebook_write_with_api_check", "notebook_add_cell", "notebook_delete_cell",
+        "notebook_write_with_api_check", "notebook_add_cell",
     ])
 
 
 def test_mode_changes_consent_policy_not_tool_surface():
     server = JupyterPeaksMCPServer(SharedState(FakeIPython()))
-    assert len(names(server)) == 15
+    assert len(names(server)) == 14
     for mode in ("unsafe", "dangerous", "safe"):
         server.set_mode(mode)
-        assert len(names(server)) == 15
+        assert len(names(server)) == 14
         assert {"notebook_write_with_api_check",
-                "notebook_add_cell", "notebook_delete_cell"} <= set(names(server))
+                "notebook_add_cell"} <= set(names(server))
         # The old model-generated code entry points are no longer exposed.
         assert "notebook_execute_code" not in names(server)
         assert "notebook_execute_with_api_check" not in names(server)
         assert "notebook_execute_active_cell" not in names(server)
+        # delete_cell was removed: the notebook is a strictly append-only log.
+        assert "notebook_delete_cell" not in names(server)
         # apply_patch was removed: patching an existing cell would overwrite it.
         assert "notebook_apply_patch" not in names(server)
 

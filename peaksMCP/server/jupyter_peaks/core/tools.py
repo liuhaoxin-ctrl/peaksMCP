@@ -227,14 +227,14 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
 
 
 def register_unsafe_tools(mcp: FastMCP, notebook: UnsafeNotebookBackend, audit: AuditLogger) -> None:
-    """Register the three mutation tools.
+    """Register the two mutation tools.
 
-    Writes are append-only: ``notebook_write_with_api_check`` / ``notebook_add_cell``
-    always append a new cell at the end of the notebook and never overwrite an
-    existing one; ``notebook_delete_cell`` removes a cell only with explicit
-    consent. Code execution is scanned and audit-logged, and follows the active
-    mode's consent policy. Explicit-consent findings are confirmed in every
-    mode.
+    The notebook is a STRICTLY APPEND-ONLY log: ``notebook_write_with_api_check``
+    and ``notebook_add_cell`` always add a new cell at the END and never edit,
+    delete or reorder an existing cell.  This preserves the agent's full work
+    history top-to-bottom.  Code execution is scanned and audit-logged, and
+    follows the active mode's consent policy. Explicit-consent findings are
+    confirmed in every mode.
 
     Parameters
     ----------
@@ -251,7 +251,6 @@ def register_unsafe_tools(mcp: FastMCP, notebook: UnsafeNotebookBackend, audit: 
         # Model-generated code is written through the API-checked entry point.
         "notebook_write_with_api_check": notebook.write_with_api_check,
         "notebook_add_cell": notebook.add_cell,
-        "notebook_delete_cell": notebook.delete_cell,
     }
     for name, function in functions.items():
         _register(mcp, name, function, audit)

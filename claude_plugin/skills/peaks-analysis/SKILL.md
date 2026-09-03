@@ -11,6 +11,11 @@ For every unfamiliar Peaks operation, call `peaks_search_api` with the user's in
 `peaks_get_api` for the selected canonical ID before writing code. Prefer deterministic functions
 from `peaksMCP.workflows` and `peaksMCP.plotting.plot_batch` for repeated work.
 
+The notebook is a STRICTLY APPEND-ONLY, top-to-bottom log: every step adds ONE new cell at the
+END (`notebook_write_with_api_check` / `notebook_add_cell`) and you can NEVER edit, delete,
+reorder or rewrite an earlier cell — the work history must stay intact in order. Work linearly:
+each analysis step is a new cell appended below the previous one, never a modification of it.
+
 Ask the user through `askuserquestion` when a physical input such as Fermi level, polarization
 geometry, temperature or angle convention cannot be derived from notebook variables or experiment
 metadata. Never invent missing experimental values. Ordinary angle-to-momentum conversion
@@ -18,7 +23,8 @@ metadata. Never invent missing experimental values. Ordinary angle-to-momentum c
 photon-energy (hv) scans to out-of-plane momentum (kz, `return_kz_scan_in_hv=True`).
 
 Use Matplotlib inline output. Never save figures to disk (`plt.savefig` / `fig.savefig`)
-unless the user explicitly asks for a saved file — saving triggers an extra consent prompt.
+unless the user explicitly asks for a saved file (when the profile enables
+`mcp.require_consent`, saving also prompts for consent in the notebook).
 Verify axis names, units, color normalization, labels, panel order and
 DPI before presenting a figure as publication-ready. Read `cut-preprocessing.md` when the task
 involves cut preprocessing, background subtraction, normalization or momentum conversion.
