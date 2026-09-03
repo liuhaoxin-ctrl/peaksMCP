@@ -554,7 +554,7 @@ def _classify_call(
     elif _is_env_mutation_call(node, aliases):
         issues.append(SecurityIssue("ENV001", "process environment modification", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
     elif _is_savefig(node, aliases):
-        consent_issues.append(SecurityIssue("SAVE001", "figure save (savefig); figures are shown inline by default — approve only to write to disk", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+        issues.append(SecurityIssue("SAVE001", "figure save to disk (savefig) is disabled; figures are rendered inline", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
     elif name in _FILE_WRITERS or name.rsplit(".", 1)[-1] in _FILE_WRITE_METHOD_NAMES:
         consent_issues.append(SecurityIssue("SAVE002", f"file write via {name}; approve only to write to disk", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
     target = _indirect_call_target(node, aliases)
@@ -692,3 +692,42 @@ def scan_code(code: str) -> ScanResult:
                     ))
     reason = "; ".join(issue.description for issue in issues[:3]) if issues else None
     return ScanResult(bool(issues), issues, reason, requires_explicit_consent=consent_issues)
+
+
+def call_names(code: str) -> list[str]:
+    """Return the alias-resolved canonical name of every call expression.
+
+    Uses the same alias tracking as :func:`scan_code`, so
+    ``import matplotlib.pyplot as plt; plt.subplots()`` yields
+    ``matplotlib.pyplot.subplots``.  Subscript calls (``d['fn'](...)``) surface
+    their base chain because the callee itself is untrackable.
+
+    Returns an empty list when the code does not parse — callers should treat
+    unparsable input as having no matches and let the normal syntax-error path
+    handle it.
+
+    Parameters
+    ----------
+    code : str
+        Python source proposed for execution.
+
+    Returns
+    -------
+    list of str
+        Canonical call names, in source order.
+    """
+    try:
+        tree = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return []
+    bindings = _Aliases()
+    bindings.visit(tree)
+    names: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Subscript):
+            names.append(".".join(_chain(node.func.value, bindings.at(node))))
+        else:
+            names.append(_call_name(node, bindings.at(node)))
+    return names

@@ -163,3 +163,31 @@ def _theta_offset_from_metadata(da: xr.DataArray) -> float | None:
 #: resolves.  The discovery index and search aliases stay canonical on
 #: ``process_cut`` (see peaksMCP/discovery/api_overrides.yaml).
 preprocess_cut = process_cut
+
+
+def save_processed(data: xr.DataArray, fpath: str) -> str:
+    """Save a processed cut to NetCDF, serialising peaks metadata for reload.
+
+    ``da.to_netcdf`` fails on the rich metadata ``process_cut`` carries in
+    ``attrs`` (pint units, pydantic records, dicts).  This wraps ``peaks.save``,
+    which serialises those attrs so the file round-trips correctly when loaded
+    again with ``peaks.load``.
+
+    Parameters
+    ----------
+    data : xr.DataArray
+        Processed cut (k-space, EF-corrected) — e.g. the ``data`` entry
+        returned by :func:`process_cut`.
+    fpath : str
+        Output path; a ``.nc`` extension is added when omitted.
+
+    Returns
+    -------
+    str
+        The path the file was written to.
+    """
+    from peaks.core.fileIO.data_saving import save as peaks_save
+
+    target = fpath if fpath.lower().endswith(".nc") else f"{fpath}.nc"
+    peaks_save(data, target)
+    return target

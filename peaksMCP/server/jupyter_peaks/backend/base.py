@@ -70,6 +70,7 @@ class SharedState:
     started_at: float = field(default_factory=time.time)
     kernel_instance_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     mcp_instance_id: str | None = None
+    read_plot_resources: bool = False
 
     @property
     def namespace(self) -> dict[str, Any]:

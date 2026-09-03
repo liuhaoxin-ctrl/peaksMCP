@@ -4,10 +4,39 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..security import AuditLogger, ConsentManager, scan_code
+from ..security import AuditLogger, ConsentManager, call_names, scan_code
 from ..security.api_allowlists import BUILTIN_NAMES, GENERIC_METHODS, GENERIC_MODULES
 from ..security.api_provenance import CallTarget, analyze_provenance, extract_call_targets
 from .base import ExecutionMode, SharedState, ensure_fresh_index
+
+#: Callable leaves that draw or store a figure, matched against alias-resolved
+#: canonical call names (AST, so comments/strings never trip the guard).
+_PLOT_LEAVES = frozenset({"pcolormesh", "imshow", "subplots", "plot_batch", "savefig"})
+
+
+def _plot_intent(names: list[str]) -> bool:
+    """Whether the parsed cell draws a figure.
+
+    Any ``matplotlib.pyplot`` / bare ``plt.`` usage, or a call whose leaf is a
+    known plotting or saving API (``fig.savefig``, ``ax.pcolormesh``,
+    ``plot_batch``...).
+    """
+    return any(
+        name.startswith("matplotlib.pyplot")
+        or name.startswith("plt.")
+        or name.rsplit(".", 1)[-1] in _PLOT_LEAVES
+        for name in names
+    )
+
+
+def _saves_figure(names: list[str]) -> bool:
+    """Whether the parsed cell writes a figure to disk (``*.savefig``)."""
+    return any(name.rsplit(".", 1)[-1] == "savefig" for name in names)
+
+
+def _refused(message: str) -> dict[str, Any]:
+    """Build the standard refusal payload for a non-executed cell."""
+    return {"success": False, "executed": False, "blocked": True, "message": message}
 
 
 class UnsafeNotebookBackend:
@@ -137,14 +166,42 @@ class UnsafeNotebookBackend:
 
         The live API index is hot-rebuilt in the kernel when the source changed, so
         no kernel restart is needed.
+
+        Plotting code additionally requires ``mcp_list_resources()`` to have been
+        read once this session: that tool returns every canonical plotting
+        template inline, so the model always has the tested formats available
+        before it draws a figure.  The requirement is satisfied by a single call
+        and does not force the model to use any template.
         """
         try:
             index = ensure_fresh_index(self.state)
         except Exception:
-            return {
-                "success": False, "executed": False, "blocked": True,
-                "message": "The Peaks API index could not be built; restart the kernel.",
-            }
+            return _refused(
+                "The Peaks API index could not be built; restart the kernel."
+            )
+
+        names = call_names(code)
+        if not getattr(self.state, "read_plot_resources", False) and _plot_intent(names):
+            self.audit.write(
+                "notebook_write_with_api_check", "blocked", {"reason": "plot_resources_not_read"}
+            )
+            return _refused(
+                "Plotting code detected, but the canonical plot templates have not been "
+                "read yet this session. Call mcp_list_resources() first — it returns every "
+                "plotting format's template inline. After that single call this guard stays "
+                "satisfied and plotting code runs freely."
+            )
+
+        if _saves_figure(names):
+            self.audit.write(
+                "notebook_write_with_api_check", "blocked", {"reason": "savefig_forbidden"}
+            )
+            return _refused(
+                "This cell saves a figure to disk (savefig), which is permanently "
+                "disabled: figures are rendered inline in the notebook. Remove the "
+                "savefig call — there is no user-confirmation path for saving "
+                "figures."
+            )
 
         targets = extract_call_targets(code)
         tags, generic_roots, defined, imported = analyze_provenance(
