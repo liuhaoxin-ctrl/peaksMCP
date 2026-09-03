@@ -17,9 +17,10 @@ tools:
     title: List Plot Resources
     description: >
       Discover the canonical publication plotting formats before drawing a figure.
-      Returns every resource with its uri, when-to-use and a usage example, plus
-      guidance on when to fetch a template (resources/read, peaksmcp://plot/<id>)
-      versus using tools. Call this FIRST when a figure is needed.
+      Returns every resource with its uri, when-to-use, figure contract and the full
+      template inline (some clients reject custom-scheme URIs, so templates are
+      embedded directly), plus guidance on when to use the resource versus tools.
+      Call this FIRST when a figure is needed.
   askuserquestion:
     title: Ask User Question
     description: >
@@ -77,6 +78,39 @@ tools:
 # its `template` verbatim (adjusted variable names); `figure` documents the
 # styling contract (axes, colorbar, dpi) a valid result must satisfy.
 resources:
+  figure_conventions:
+    title: Shared figure conventions (fonts, layout, math, output)
+    when_to_use: Read FIRST whenever a figure is drawn; the format templates
+      below assume it.
+    figure:
+      layout: constrained_layout (no subplots_adjust; tight_layout only fallback)
+      fonts: DejaVu Sans + mathtext dejavusans, unicode_minus off; CJK fallback PingFang SC (mac) / Microsoft YaHei (win)
+      text: English labels, symbols in mathtext (never raw Unicode)
+      dpi: 150 screen, 300 save; papers use vector PDF
+    example: 'fig, ax = plt.subplots(figsize=(6, 4), constrained_layout=True); ax.set_xlabel(r"$k_x$ ($\mathrm{\AA}^{-1}$)")'
+    template: |
+      import matplotlib.pyplot as plt
+      import matplotlib as mpl
+
+      # Same defaults for every figure (CJK fallback: ["Arial","PingFang SC",
+      # "DejaVu Sans"] mac | ["Arial","Microsoft YaHei","DejaVu Sans"] win).
+      mpl.rcParams.update({
+          "font.family": "DejaVu Sans", "font.size": 11,
+          "axes.unicode_minus": False, "mathtext.fontset": "dejavusans",
+          "figure.dpi": 150, "savefig.dpi": 300,
+      })
+
+      # Layout: constrained_layout spaces labels/ticks/colorbars/subplots itself.
+      fig, ax = plt.subplots(figsize=(6, 4), constrained_layout=True)
+
+      # Symbols in mathtext, never raw Unicode ($\theta$ $E_F$ $k_x$
+      # $\mathrm{\AA}^{-1}$ $\Delta E$); keep axis text English.
+      ax.set_xlabel(r"$k_x$ ($\mathrm{\AA}^{-1}$)")
+      ax.set_ylabel(r"$E - E_F$ (eV)")
+
+      # 2D maps: add fig.colorbar(im, ax=ax).  Save only when the user asks:
+      # fig.savefig("figure.pdf", bbox_inches="tight")
+
   fermi_surface:
     title: Fermi surface map (kx–ky at E_F)
     when_to_use: 2D (kx, ky) slice at the Fermi level from a 3D Fermi-surface
@@ -90,6 +124,8 @@ resources:
     example: 'plot_batch([fs], figsize_per_panel=(5.0, 5.0), dpi=200, cmap="magma", shared_colorbar=True)'
     template: |
       from peaksMCP.plotting import plot_batch
+      # Run this cell verbatim — plot_batch renders the map inline itself.
+      # Do NOT append `figs`, `plt.show()` or `display(...)` (double-renders).
       # fs: 2D (kx, ky) DataArray taken at E = E_F (binding energy 0)
       figs = plot_batch([fs], figsize_per_panel=(5.0, 5.0), dpi=200,
                         cmap="magma", shared_colorbar=True)
@@ -108,16 +144,23 @@ resources:
     example: 'fig, ax = plt.subplots(figsize=(4.5, 5.0), dpi=200); ax.pcolormesh(k.values, cut.eV.values, cut.values, vmin=0, vmax=v, shading="auto")'
     template: |
       import matplotlib.pyplot as plt, numpy as np
+      # Run this cell verbatim — the final plt.show() renders exactly ONE figure.
+      # Do NOT append `fig`, `plt.show()` or `display(...)` (double-renders).
       # cut: 2D (eV, k_par) DataArray in binding energy (E_F = 0)
-      k = cut.kx if "kx" in cut.dims else cut[list(set(cut.dims) - {"eV"})[0]]
+      # Read coordinates via cut.coords[name].values (or cut.<name>.values).
+      # NEVER assign an attribute to a DataArray: `cut.coV = ...` raises
+      # AttributeError; set metadata with cut.attrs[...] instead.
+      eV = cut.coords["eV"].values
+      k = cut.coords["kx"].values if "kx" in cut.dims else cut.coords[list(set(cut.dims) - {"eV"})[0]].values
       v = np.nanpercentile(cut.values, 99)
       fig, ax = plt.subplots(figsize=(4.5, 5.0), dpi=200)
-      ax.pcolormesh(k.values, cut.eV.values, cut.values, vmin=0, vmax=v,
-                    cmap="viridis", shading="auto")
+      im = ax.pcolormesh(k, eV, cut.values, vmin=0, vmax=v,
+                         cmap="viridis", shading="auto")
       ax.axhline(0, color="w", ls="--", lw=0.6)
       ax.set_xlabel("k$_{∥}$ (Å$^{-1}$)")
       ax.set_ylabel("E − E$_F$ (eV)")
-      fig.colorbar(ax.images[-1], ax=ax, label="intensity")
+      fig.colorbar(im, ax=ax, label="intensity")
+      plt.show()
 
   dispersion_grid:
     title: Grid of dispersions (batch E–k cuts)
@@ -133,6 +176,8 @@ resources:
     example: 'plot_batch(cuts, titles=titles, max_cols=4, figsize_per_panel=(3.5, 3.2), dpi=160, cmap="magma", shared_colorbar=True)'
     template: |
       from peaksMCP.plotting import plot_batch
+      # Run this cell verbatim — plot_batch renders the grid inline itself.
+      # Do NOT append `figs`, `plt.show()` or `display(...)` (double-renders).
       # cuts: list of 2D (eV, k_par) DataArrays; titles: same length, e.g.
       # [f"Idx {i}  pol={pol}"] for the index i and its polarization
       figs = plot_batch(cuts, titles=titles, max_cols=4,
@@ -151,6 +196,8 @@ resources:
     example: 'for i, c in enumerate(curves): ax.plot(c.coords[axis].values, c.values + off, color=plt.cm.viridis(i / max(len(curves) - 1, 1)))'
     template: |
       import matplotlib.pyplot as plt, numpy as np
+      # Run this cell verbatim — the final plt.show() renders exactly ONE figure.
+      # Do NOT append `fig`, `plt.show()` or `display(...)` (double-renders).
       # curves: list of 1D DataArray; axis = curves[0]'s sole dimension name
       axis = list(curves[0].dims)[0]
       fig, ax = plt.subplots(figsize=(6.0, 4.5), dpi=180)
@@ -161,6 +208,7 @@ resources:
           off += float(np.nanmax(c.values)) * 0.1
       ax.set_xlabel(axis)
       ax.set_ylabel("intensity + offset")
+      plt.show()
 
   before_after:
     title: Before / after preprocessing
@@ -174,16 +222,23 @@ resources:
     example: 'fig, axes = plt.subplots(1, 2, figsize=(9.0, 4.5), dpi=180, sharey=True)'
     template: |
       import matplotlib.pyplot as plt, numpy as np
+      # Run this cell verbatim — the final plt.show() renders exactly ONE figure.
+      # Do NOT append `fig`, `plt.show()` or `display(...)` (double-renders).
       # raw: 2D (eV, theta_par); processed: 2D (eV, k_par) in binding energy
+      # Read coordinates via da.coords[name].values (or da.<name>.values);
+      # NEVER assign an attribute to a DataArray (da.foo = ... raises AttributeError).
       fig, axes = plt.subplots(1, 2, figsize=(9.0, 4.5), dpi=180, sharey=True)
       for ax, da, title in zip(axes, [raw, processed], ["raw (θ)", "k-space (E−E$_F$)"]):
-          k = da.kx if "kx" in da.dims else da.theta_par
+          xdim = list(set(da.dims) - {"eV"})[0]
+          eV = da.coords["eV"].values
+          k = da.coords[xdim].values
           v = np.nanpercentile(da.values, 99)
-          im = ax.pcolormesh(k.values, da.eV.values, da.values, vmin=0, vmax=v,
+          im = ax.pcolormesh(k, eV, da.values, vmin=0, vmax=v,
                              cmap="viridis", shading="auto")
           ax.set_title(title)
-          ax.set_xlabel(str(k.name)); ax.set_ylabel("eV")
+          ax.set_xlabel(xdim); ax.set_ylabel("eV")
       fig.colorbar(im, ax=axes, label="counts")
+      plt.show()
 
   kz_map:
     title: kz dispersion (hv-scan)
@@ -198,12 +253,15 @@ resources:
     example: 'ax.pcolormesh(kp.values, kzd.kz.values, kzd.values, vmin=0, vmax=v, cmap="magma", shading="auto")'
     template: |
       import matplotlib.pyplot as plt, numpy as np
+      # Run this cell verbatim — the final plt.show() renders exactly ONE figure.
+      # Do NOT append `fig`, `plt.show()` or `display(...)` (double-renders).
       # kzd: 2D (kz, k_par) DataArray in binding energy (E_F = 0)
       kp = kzd.kx if "kx" in kzd.dims else kzd[list(set(kzd.dims) - {"kz"})[0]]
       v = np.nanpercentile(kzd.values, 99)
       fig, ax = plt.subplots(figsize=(4.5, 5.0), dpi=200)
-      ax.pcolormesh(kp.values, kzd.kz.values, kzd.values, vmin=0, vmax=v,
-                    cmap="magma", shading="auto")
+      im = ax.pcolormesh(kp.values, kzd.kz.values, kzd.values, vmin=0, vmax=v,
+                         cmap="magma", shading="auto")
       ax.set_xlabel("k$_{∥}$ (Å$^{-1}$)")
       ax.set_ylabel("k$_z$ (Å$^{-1}$)")
-      fig.colorbar(ax.images[-1], ax=ax, label="intensity")
+      fig.colorbar(im, ax=ax, label="intensity")
+      plt.show()

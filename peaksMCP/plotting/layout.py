@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import warnings
 from collections.abc import Iterable, Sequence
 from typing import Any, Literal
 
@@ -47,6 +48,47 @@ def _compatible_for_shared_colorbar(items: Sequence[xr.DataArray]) -> bool:
     if not items or any(item.ndim != 2 for item in items):
         return False
     return len({_data_unit(item) for item in items}) == 1
+
+
+def _ranges_comparable(items: Sequence[xr.DataArray], *, max_ratio: float = 5.0) -> bool:
+    """Whether 2D panels share a comparable intensity range.
+
+    A single colorbar is only meaningful when the panels' dynamic ranges are
+    within ``max_ratio`` of each other; otherwise forcing one vmin/vmax washes
+    out the low-intensity panels.  Uses a robust percentile span so one hot
+    pixel does not decide compatibility.
+    """
+    scales: list[float] = []
+    for item in items:
+        values = np.asarray(item.values, dtype=float)
+        if not np.isfinite(values).any():
+            return False
+        span = float(np.nanpercentile(values, 99) - np.nanpercentile(values, 1))
+        if not np.isfinite(span) or span <= 0:
+            span = float(np.nanmax(values) - np.nanmin(values))
+        if not np.isfinite(span) or span <= 0:
+            return False
+        scales.append(span)
+    if not scales:
+        return False
+    return max(scales) / min(scales) <= max_ratio
+
+
+def _display_figures(figures: list[Figure]) -> None:
+    """Render figures inline when running inside IPython/Jupyter.
+
+    Non-interactive callers (scripts, tests) receive the returned list and keep
+    control of ``plt.show`` / saving, exactly as before.
+    """
+    try:
+        from IPython import get_ipython
+
+        if get_ipython() is not None:
+            from IPython.display import display
+
+            display(*figures)
+    except Exception:
+        pass
 
 
 def _global_limits(items: Sequence[xr.DataArray]) -> tuple[float, float] | None:
@@ -111,8 +153,11 @@ def plot_batch(
     shared_units : bool, default True
         Suppress repeated axis labels only when dimensions and units match.
     shared_colorbar : {"auto", True, False}, default "auto"
-        Use one colorbar when every panel is two-dimensional and has the same data unit. ``True``
-        raises when the panels are incompatible.
+        Use one colorbar when every panel is two-dimensional, has the same data
+        unit AND a comparable intensity range (robust 99th-percentile spans
+        within 5x).  ``True`` raises only when the data units are incompatible;
+        when only the ranges differ it falls back to per-panel colorbars with a
+        warning instead of washing out low-intensity panels.
     figsize_per_panel : tuple of float, default (4.0, 3.5)
         Width and height in inches allocated to each panel.
     dpi : int, default 180
@@ -125,7 +170,9 @@ def plot_batch(
     Returns
     -------
     list of matplotlib.figure.Figure
-        One figure per page. The caller controls ``plt.show`` and saving.
+        One figure per page. Figures are rendered inline automatically (Jupyter
+        ``display``, falling back to ``plt.show``); the returned list remains
+        available for saving.
 
     Raises
     ------
@@ -136,9 +183,7 @@ def plot_batch(
 
     Examples
     --------
-    >>> figures = plot_batch(scans, titles=temperatures, max_cols=5)
-    >>> for figure in figures:
-    ...     display(figure)
+    >>> figures = plot_batch(scans, titles=temperatures, max_cols=5)  # renders inline
     """
     arrays = _as_dataarrays(data)
     if not arrays:
@@ -166,11 +211,19 @@ def plot_batch(
             dpi=dpi,
         )
         flat_axes = list(axes.flat)
-        compatible_colorbar = _compatible_for_shared_colorbar(page)
-        if shared_colorbar is True and not compatible_colorbar:
+        unit_compatible = _compatible_for_shared_colorbar(page)
+        if shared_colorbar is True and not unit_compatible:
             plt.close(figure)
             raise ValueError("a shared colorbar requires compatible two-dimensional data units")
-        use_shared_colorbar = compatible_colorbar and shared_colorbar in {True, "auto"}
+        ranges_compatible = _ranges_comparable(page) if unit_compatible else False
+        use_shared_colorbar = unit_compatible and ranges_compatible and shared_colorbar in {True, "auto"}
+        if shared_colorbar is True and unit_compatible and not ranges_compatible:
+            warnings.warn(
+                "plot_batch: intensity ranges differ too much across panels for one "
+                "shared colorbar; falling back to per-panel colorbars.",
+                UserWarning,
+                stacklevel=2,
+            )
         limits = _global_limits(page) if use_shared_colorbar else None
         mappable = None
 
@@ -228,5 +281,6 @@ def plot_batch(
             if label:
                 colorbar.set_label(label)
         figures.append(figure)
+    _display_figures(figures)
     return figures
 

@@ -211,11 +211,17 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
     def mcp_list_resources() -> dict[str, Any]:
         """Discover the canonical publication plotting formats.
 
-        Returns every resource (uri, when-to-use, example) plus guidance on when
-        to fetch a template via ``resources/read`` (``peaksmcp://plot/<id>``)
-        versus using tools.  Call this FIRST whenever a figure is needed.
+        Returns every resource (uri, when-to-use, example, figure contract and the
+        full ``template`` inline) plus guidance.  Templates are embedded directly
+        because some clients (Claude Desktop) reject custom-scheme resource URIs
+        like ``peaksmcp://plot/<id>``, so the model can run the template from the
+        tool output without a client-side resource fetch.  Call this FIRST
+        whenever a figure is needed — ``notebook_write_with_api_check`` requires
+        it to have been read before any plotting code is executed.
         """
         from peaksMCP.config.metadata import list_resources, resource_metadata
+
+        state.read_plot_resources = True
 
         resources = [
             {
@@ -223,6 +229,8 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
                 "name": resource_id,
                 "use_when": str(meta.get("when_to_use") or ""),
                 "example": str(meta.get("example") or ""),
+                "figure": str(meta.get("figure") or {}),
+                "template": str(meta.get("template") or ""),
             }
             for resource_id in list_resources()
             for meta in [resource_metadata(resource_id)]
@@ -233,8 +241,8 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
             "guidance": {
                 "resources_vs_tools": {
                     "resources": (
-                        "Read-only reference data, templates and documentation — fetch "
-                        "the template via resources/read (peaksmcp://plot/<id>) and run it verbatim."
+                        "Read-only reference data, templates and documentation — each "
+                        "resource below includes its template inline; run it verbatim."
                     ),
                     "tools": (
                         "Active operations: peaks_search_api / peaks_get_api to look up "
@@ -242,7 +250,7 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
                     ),
                 },
                 "when_to_use_resources": [
-                    "Before drawing any figure, pick a plotting format here and fetch its template.",
+                    "Before drawing any figure, pick a plotting format here and run its inline template verbatim.",
                     "For a publication-style figure, run the selected template verbatim (adjust variable names only).",
                     "Comparing many cuts -> dispersion_grid; one cut -> dispersion_single; EF slice -> fermi_surface.",
                 ],

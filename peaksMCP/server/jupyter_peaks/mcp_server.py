@@ -56,8 +56,8 @@ class JupyterPeaksMCPServer:
                 "which verifies every Peaks API reference against the live API index before "
                 "appending and executing a new cell. "
                 "Inspect xarray variables before analysis and preserve units in every figure. "
-                "Never save figures to disk (plt.savefig / fig.savefig) unless the user "
-                "explicitly asks for a saved file — figures are shown inline in the notebook. "
+                "Figures are rendered inline only — saving figures to disk (plt.savefig / "
+                "fig.savefig) is disabled and blocked. "
                 "Executing or adding notebook cells appends at the end of the notebook and never "
                 "overwrites existing cells."
             ),
@@ -81,6 +81,9 @@ class JupyterPeaksMCPServer:
         The agent selects a format by id (``fermi_surface``, ``dispersion_grid``,
         ...) and fetches it through ``resources/read``, then runs its ``template``
         verbatim — so every figure follows a tested, publication-style contract.
+        Claude Desktop cannot fetch custom-scheme URIs, so ``mcp_list_resources``
+        also embeds each template inline; this registration serves MCP-native
+        clients that do support ``resources/read``.
         """
         from fastmcp.resources import TextResource
 

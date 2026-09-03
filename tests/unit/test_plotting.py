@@ -40,6 +40,24 @@ def test_incompatible_explicit_colorbar_fails_and_empty_is_safe():
     assert plot_batch([]) == []
 
 
+def test_shared_colorbar_falls_back_when_ranges_differ():
+    low = image(0)
+    high = image(0) * 1000  # same unit, ~1000x the dynamic range
+    with pytest.warns(UserWarning):
+        figures = plot_batch([low, high], shared_colorbar=True)
+    assert len(figures[0].axes) == 4  # per-panel colorbars, not one shared
+    plt.close("all")
+
+
+def test_auto_colorbar_shares_only_when_ranges_comparable():
+    shared = plot_batch([image(0), image(1)], shared_colorbar="auto")[0]
+    assert len(shared.axes) == 3  # comparable ranges -> one shared colorbar
+    plt.close("all")
+    separate = plot_batch([image(0), image(0) * 1000], shared_colorbar="auto")[0]
+    assert len(separate.axes) == 4  # ranges differ -> per-panel colorbars
+    plt.close("all")
+
+
 def test_titles_validation_and_hidden_blank_axes():
     with pytest.raises(ValueError):
         plot_batch([curve()], titles=[])
