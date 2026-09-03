@@ -479,3 +479,24 @@ def test_auto_datasheet_malformed_is_ignored(tmp_path):
     data.mkdir()
     (data / "datasheet.csv").write_text("not a valid datasheet\n", encoding="utf-8-sig")
     assert _auto_metadata(None, data, data) is None
+
+
+def test_theta_offset_in_note_header_is_backfilled_to_records(tmp_path):
+    """The experiment-wide offset embedded in an agent note-column HEADER
+    (``AI请看的Note：Cut theta_offset=1.5``) is parsed and backfilled onto every
+    record that has no per-row offset of its own, so process_cut finds it."""
+    source = tmp_path / "datasheet.csv"
+    source.write_text(
+        "Experiment title,,,\n"
+        "Index,Theta,Temperature,AI请看的Note：Cut theta_offset=1.5\n"
+        "1,30,9.4,\n"
+        "2,31,9.4,theta_offset=-0.5 高对称点\n"
+        "3,32,9.4,\n",
+        encoding="utf-8",
+    )
+    document = translate_datasheet(source)
+    # Header offset is the experiment-wide default for records without their own.
+    assert document.records["1"].theta_offset_deg == 1.5
+    assert document.records["3"].theta_offset_deg == 1.5
+    # A per-row offset takes precedence over the header default.
+    assert document.records["2"].theta_offset_deg == -0.5

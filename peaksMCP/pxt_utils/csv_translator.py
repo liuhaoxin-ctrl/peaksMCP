@@ -280,16 +280,24 @@ def translate_datasheet(
                 records[key].theta_offset_deg = _theta_offset_deg(value)
 
     # AI-visible notes embedded in note-column headers come first (agent reads
-    # them before the per-Index notes).
-    agent_notes = [
-        f"{header.split('：', 1)[0]}：{content}"
-        if "：" in header
-        else f"{header.split(':', 1)[0]}：{content}"
-        for header, kind in note_headers.items()
-        if kind == "agent"
-        for content in [_agent_note_from_header(header)]
-        if content
-    ]
+    # them before the per-Index notes).  The header may also carry the
+    # experiment-wide high-symmetry offset (``AI请看的Note：Cut theta_offset=1.5``);
+    # parse it and backfill any record that has no per-row offset of its own, so
+    # ``process_cut`` finds ``theta_offset_deg`` on every record.
+    agent_notes = []
+    for header, kind in note_headers.items():
+        if kind != "agent":
+            continue
+        content = _agent_note_from_header(header)
+        if not content:
+            continue
+        label = header.split("：", 1)[0] if "：" in header else header.split(":", 1)[0]
+        agent_notes.append(f"{label}：{content}")
+        header_offset = _theta_offset_deg(content)
+        if header_offset is not None:
+            for record in records.values():
+                if record.theta_offset_deg is None:
+                    record.theta_offset_deg = header_offset
     metadata = ExperimentMetadata(
         title=title,
         notes=[*agent_notes, *notes],
