@@ -137,15 +137,18 @@ def test_gold_reference_marked_from_data_format(tmp_path):
         "3,32,9.4,2.2,5,gold\n"
         "4,33,9.4,2.2,5,金\n"
         "5,34,9.4,2.2,5,sweep\n"
-        "6,35,9.4,2.2,5,\n",
+        "6,35,9.4,2.2,5,\n"
+        "7,36,9.4,2.2,5,\"sweep,Au\"\n"
+        "8,37,9.4,2.2,5,\"sweep;gold\"\n"
+        "9,38,9.4,2.2,5,sweep mapping\n",
         encoding="utf-8",
     )
     document = translate_datasheet(source)
-    for key in ("1", "2", "3", "4"):
+    for key in ("1", "2", "3", "4", "7", "8"):
         record = document.records[key]
         assert record.is_gold_reference is True, key
         assert record.experiment.get("data_format"), key
-    for key in ("5", "6"):
+    for key in ("5", "6", "9"):
         assert document.records[key].is_gold_reference is False, key
 
 

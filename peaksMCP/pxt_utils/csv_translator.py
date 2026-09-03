@@ -94,11 +94,20 @@ def _is_gold_format(data_format: str) -> bool:
     """True when ``Data format`` marks this index as a gold (Au) reference.
 
     The datasheet tags gold data (used for Fermi-edge fitting) with ``Au`` /
-    ``gold`` / ``金`` in the ``Data format`` column, e.g. ``Au`` or ``Au sweep``.
+    ``gold`` / ``金`` in the ``Data format`` column, either alone or combined
+    with the scan type in a comma/space separated list, e.g. ``Au``,
+    ``Au sweep`` or ``sweep,Au`` (the real L112 datasheet uses the last form).
     """
-    lowered = (data_format or "").strip().lower().replace("_", " ").replace("-", " ")
-    tokens = lowered.split()
-    return "au" in tokens or "gold" in tokens or "金" in (data_format or "")
+    raw = (data_format or "").strip()
+    lowered = (
+        raw.lower()
+        .replace("_", " ")
+        .replace("-", " ")
+        .replace(",", " ")
+        .replace(";", " ")
+        .split()
+    )
+    return "au" in lowered or "gold" in lowered or "金" in raw
 
 
 def _agent_note_from_header(header: str) -> str | None:
