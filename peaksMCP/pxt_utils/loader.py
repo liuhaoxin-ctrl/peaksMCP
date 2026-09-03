@@ -215,8 +215,8 @@ def register_l112_loader() -> type | None:
 
             _loc_name = "L112"
             _loc_description = "L112 DA30L (PXT-converted NetCDF)"
+            _manipulator_axes = ["polar", "tilt", "azi"]
 
         return L112DataLoader
     except Exception:
         return None
-    _manipulator_axes = ["polar", "tilt", "azi"]
