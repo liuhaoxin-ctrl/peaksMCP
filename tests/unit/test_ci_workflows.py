@@ -69,4 +69,4 @@ def test_plugin_release_preserves_required_hidden_configuration():
     plugin = ROOT / settings["path"]
     assert json.loads((plugin / ".claude-plugin/plugin.json").read_text())["name"] == "peaksMCP"
     assert "peaksMCP" in json.loads((plugin / ".mcp.json").read_text())["mcpServers"]
-    assert (plugin / "skills/peaks-analysis/SKILL.md").is_file()
+    assert (plugin / "skills/cut-preprocessing.md").is_file()
