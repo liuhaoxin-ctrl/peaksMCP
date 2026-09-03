@@ -17,7 +17,7 @@ def names(server):
 def test_exact_tool_surface_all_exposed():
     server = JupyterPeaksMCPServer(SharedState(FakeIPython()))
     assert names(server) == sorted([
-        "peaks_search_api", "peaks_get_api", "askuserquestion", "notebook_list_variables",
+        "peaks_search_api", "peaks_get_api", "askuserquestion", "mcp_list_resources", "notebook_list_variables",
         "notebook_read_variable", "notebook_read_active_cell", "notebook_read_active_cell_output",
         "notebook_read_content", "notebook_move_cursor", "notebook_server_status",
         "notebook_kernel_status", "notebook_wait_for_kernel",
@@ -27,10 +27,10 @@ def test_exact_tool_surface_all_exposed():
 
 def test_mode_changes_consent_policy_not_tool_surface():
     server = JupyterPeaksMCPServer(SharedState(FakeIPython()))
-    assert len(names(server)) == 14
+    assert len(names(server)) == 15
     for mode in ("unsafe", "dangerous", "safe"):
         server.set_mode(mode)
-        assert len(names(server)) == 14
+        assert len(names(server)) == 15
         assert {"notebook_write_with_api_check",
                 "notebook_add_cell"} <= set(names(server))
         # The old model-generated code entry points are no longer exposed.

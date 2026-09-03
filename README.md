@@ -74,7 +74,7 @@ plain HTTP on `127.0.0.1`.
 ```bash
 peaksMCP launch          # single entry: JupyterLab + kernel + in-kernel MCP (127.0.0.1:8123/mcp) + operator dashboard (127.0.0.1:8765)
 peaksMCP status          # expect RUNNING + kernel_id
-peaksMCP mcp-ping        # expect ok: true, 14 tools (12 read-only/guidance + 2 append-only mutation)
+peaksMCP mcp-ping        # expect ok: true, 15 tools (13 read-only/guidance + 2 append-only mutation)
 peaksMCP dash            # open the operator-console dashboard in the browser (alias: open)
 ```
 

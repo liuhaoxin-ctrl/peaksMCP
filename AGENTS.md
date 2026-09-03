@@ -145,14 +145,14 @@ When adding, removing or renaming an MCP tool, update **all** of these:
 - [ ] Run `ruff check peaksMCP tests tools` and the unit tests
 
 Tool metadata lives in YAML, not hardcoded in Python. `config/metadata.py` loads
-`metadata_baseline.yaml` (14 tools) as the single source of truth for titles and
+`metadata_baseline.yaml` (15 tools) as the single source of truth for titles and
 descriptions.
 
 ---
 
 ## 6. Security modes and consent
 
-All 14 tools (12 read-only/guidance + 2 mutation) are **always exposed** in every
+All 15 tools (13 read-only/guidance + 2 mutation) are **always exposed** in every
 mode; the mode only changes how strictly the 2 mutation tools
 (`notebook_write_with_api_check`, `notebook_add_cell`) ask for frontend consent
 **when consent is enabled**.

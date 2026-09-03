@@ -13,6 +13,13 @@ tools:
       Get the exact signature, parameters, return-value conventions and source-backed
       documentation for one canonical API ID returned by peaks_search_api. Call this
       after searching and before writing code, to confirm the correct usage.
+  mcp_list_resources:
+    title: List Plot Resources
+    description: >
+      Discover the canonical publication plotting formats before drawing a figure.
+      Returns every resource with its uri, when-to-use and a usage example, plus
+      guidance on when to fetch a template (resources/read, peaksmcp://plot/<id>)
+      versus using tools. Call this FIRST when a figure is needed.
   askuserquestion:
     title: Ask User Question
     description: >
@@ -80,6 +87,7 @@ resources:
       dpi: 200
       cmap: magma
       colorbar: single shared
+    example: 'plot_batch([fs], figsize_per_panel=(5.0, 5.0), dpi=200, cmap="magma", shared_colorbar=True)'
     template: |
       from peaksMCP.plotting import plot_batch
       # fs: 2D (kx, ky) DataArray taken at E = E_F (binding energy 0)
@@ -97,6 +105,7 @@ resources:
       ylabel: E − E_F (eV)
       xlabel: k_∥ (Å^-1)
       guide: dashed horizontal line at E = 0
+    example: 'fig, ax = plt.subplots(figsize=(4.5, 5.0), dpi=200); ax.pcolormesh(k.values, cut.eV.values, cut.values, vmin=0, vmax=v, shading="auto")'
     template: |
       import matplotlib.pyplot as plt, numpy as np
       # cut: 2D (eV, k_par) DataArray in binding energy (E_F = 0)
@@ -121,6 +130,7 @@ resources:
       cmap: magma
       colorbar: shared
       panel_title: Index + polarization
+    example: 'plot_batch(cuts, titles=titles, max_cols=4, figsize_per_panel=(3.5, 3.2), dpi=160, cmap="magma", shared_colorbar=True)'
     template: |
       from peaksMCP.plotting import plot_batch
       # cuts: list of 2D (eV, k_par) DataArrays; titles: same length, e.g.
@@ -138,6 +148,7 @@ resources:
       dpi: 180
       cmap: viridis
       offset: 10% of each curve max
+    example: 'for i, c in enumerate(curves): ax.plot(c.coords[axis].values, c.values + off, color=plt.cm.viridis(i / max(len(curves) - 1, 1)))'
     template: |
       import matplotlib.pyplot as plt, numpy as np
       # curves: list of 1D DataArray; axis = curves[0]'s sole dimension name
@@ -160,6 +171,7 @@ resources:
       dpi: 180
       cmap: viridis
       panels: raw (θ) | k-space (E − E_F)
+    example: 'fig, axes = plt.subplots(1, 2, figsize=(9.0, 4.5), dpi=180, sharey=True)'
     template: |
       import matplotlib.pyplot as plt, numpy as np
       # raw: 2D (eV, theta_par); processed: 2D (eV, k_par) in binding energy
@@ -183,6 +195,7 @@ resources:
       cmap: magma
       ylabel: kz (Å^-1)
       colorbar: single
+    example: 'ax.pcolormesh(kp.values, kzd.kz.values, kzd.values, vmin=0, vmax=v, cmap="magma", shading="auto")'
     template: |
       import matplotlib.pyplot as plt, numpy as np
       # kzd: 2D (kz, k_par) DataArray in binding energy (E_F = 0)

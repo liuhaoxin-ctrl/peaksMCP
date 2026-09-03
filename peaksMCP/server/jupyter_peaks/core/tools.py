@@ -208,10 +208,53 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
     def askuserquestion(prompt: str, hint: str | None = None, options: list[str] | None = None) -> dict[str, Any]:
         return {"status": "needs_input", "prompt": prompt, "hint": hint, "options": options or []}
 
+    def mcp_list_resources() -> dict[str, Any]:
+        """Discover the canonical publication plotting formats.
+
+        Returns every resource (uri, when-to-use, example) plus guidance on when
+        to fetch a template via ``resources/read`` (``peaksmcp://plot/<id>``)
+        versus using tools.  Call this FIRST whenever a figure is needed.
+        """
+        from peaksMCP.config.metadata import list_resources, resource_metadata
+
+        resources = [
+            {
+                "uri": f"peaksmcp://plot/{resource_id}",
+                "name": resource_id,
+                "use_when": str(meta.get("when_to_use") or ""),
+                "example": str(meta.get("example") or ""),
+            }
+            for resource_id in list_resources()
+            for meta in [resource_metadata(resource_id)]
+        ]
+        return {
+            "total_resources": len(resources),
+            "resources": resources,
+            "guidance": {
+                "resources_vs_tools": {
+                    "resources": (
+                        "Read-only reference data, templates and documentation — fetch "
+                        "the template via resources/read (peaksmcp://plot/<id>) and run it verbatim."
+                    ),
+                    "tools": (
+                        "Active operations: peaks_search_api / peaks_get_api to look up "
+                        "APIs, notebook_write_with_api_check to write and run analysis cells."
+                    ),
+                },
+                "when_to_use_resources": [
+                    "Before drawing any figure, pick a plotting format here and fetch its template.",
+                    "For a publication-style figure, run the selected template verbatim (adjust variable names only).",
+                    "Comparing many cuts -> dispersion_grid; one cut -> dispersion_single; EF slice -> fermi_surface.",
+                ],
+                "first_use": "Call mcp_list_resources() BEFORE plotting to select the canonical format.",
+            },
+        }
+
     functions = {
         "peaks_search_api": peaks_search_api,
         "peaks_get_api": peaks_get_api,
         "askuserquestion": askuserquestion,
+        "mcp_list_resources": mcp_list_resources,
         "notebook_list_variables": notebook.list_variables,
         "notebook_read_variable": notebook.read_variable,
         "notebook_read_active_cell": notebook.active_cell,
