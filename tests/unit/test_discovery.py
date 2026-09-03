@@ -54,9 +54,14 @@ def test_interactive_widget_apis_are_discoverable_by_intent():
     # _CachedAccessor boilerplate ("Custom property-like object ...").
     assert "Custom property-like object" not in iplot.get("summary", "")
     assert iplot.get("docstring", "").strip()
-    for query in ("interactive widget", "holoviews", "bokeh"):
+    # iplot has no curated synonyms anymore ("interactive ..." intent resolves
+    # to the native Qt viewer `disp`); it stays findable by its own identity.
+    for query in ("iplot", "hvplot", "interactive"):
         names = [match["name"] for match in index.search(query, limit=5)]
         assert "iplot" in names, (query, names)
+    for query in ("interactive panel", "interactive widget", "widget"):
+        names = [match["name"] for match in index.search(query, limit=5)]
+        assert "disp" in names, (query, names)
 
 
 def test_get_resolves_canonical_id_name_and_alias():

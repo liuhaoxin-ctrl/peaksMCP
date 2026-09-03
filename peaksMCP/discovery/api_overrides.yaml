@@ -31,8 +31,7 @@ aliases:
   process_cut: [preprocess cut, preprocess_cut, cut preprocessing workflow, 切割预处理, cut预处理]
   drift_correction: [drift correction, align maps, 漂移校正, 图像配准]
   disp_from_hv: [dispersion from hv, photon energy dispersion, 光子能色散]
-  disp: [interactive viewer, interactive plot, GUI viewer, data viewer widget, 3D viewer, 交互式查看器, 交互式绘图, 三维查看器]
-  iplot: [interactive plot, interactive widget, widget plot, interactive visualization, holoviews plot, bokeh plot, 交互式绘图, 交互式可视化]
+  disp: [interactive viewer, interactive plot, GUI viewer, data viewer widget, 3D viewer, 交互式查看器, 交互式绘图, 三维查看器, interactive, interactive panel, panel viewer, 交互面板, 原生交互查看器]
   correct_isolated_bad_pixels: [bad pixel removal, clean bad pixels, 坏点修复, 去坏点]
   History: [processing history, provenance, 处理历史]
 overrides:
@@ -42,3 +41,34 @@ overrides:
       photon energy (hv). The `return_kz_scan_in_hv` option is only used when
       converting photon-energy (hv) scans to out-of-plane momentum (kz); regular
       spectrum conversion needs no hv.
+  iplot:
+    docstring_note: |
+      da.iplot(...) renders an INTERACTIVE panel in the live notebook — it
+      returns an hvplot/HoloViews object, NOT a static matplotlib figure.
+      - Show it by making it the last expression of the cell.
+      - Compose several panels with `+` and style with .opts():
+        (data_6.iplot() + data_12.iplot()).opts(title="data_6 | data_12")
+      - Dimensions beyond x/y become widgets or animation (choose them with
+        groupby=).  Requires hvplot (installed in the peaks env).
+      - The data must already be loaded in the kernel — define the DataArray
+        first; a kernel restart clears variables, so reload before plotting.
+      - Separate from the static publication templates in mcp_list_resources.
+      - To open the NATIVE peaks Qt GUI viewer (interactive windows, not
+        hvplot), use ``disp`` instead: ``data.disp()`` / ``disp([data_6, ...])``.
+  disp:
+    docstring_note: |
+      disp is peaks' NATIVE interactive data viewer (Qt GUI windows).  It is
+      the intended tool when the user asks for an "interactive panel" / GUI
+      viewing of the data — distinct from ``iplot`` (inline hvplot panels) and
+      from the static matplotlib templates.
+      - Call it on loaded data: ``data.disp()``, or as a function accepting
+        one DataArray, a list of 2D DataArrays or a DataTree:
+        ``disp([data_6, data_12])`` shows them together (multiple viewers are
+        configured via ``peaks.opts.gui.max_viewers``).
+      - Works for 2D/3D/4D data; ``primary_dim`` picks which dimension is on
+        the y axis (default uses the conventional peaks axes, eV excluded from
+        centering).
+      - In Jupyter the Qt6 event loop is enabled automatically; in a plain
+        script it blocks until the window closes.
+      - The data must already be loaded in the kernel (kernel restarts clear
+        variables — reload before opening).
