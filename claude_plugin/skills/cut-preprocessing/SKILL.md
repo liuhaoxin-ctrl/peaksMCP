@@ -1,4 +1,7 @@
-Use `peaksMCP` to call the `peaks` package and perform preprocessing on cut (sweep/fix) data in a notebook (Fermi surface leveling & zeroing $\rightarrow$ high-symmetry point zeroing $\rightarrow$ k-space conversion). Trigger this workflow when the user requests cut data processing, preprocessing, leveling, or k-space conversion.
+---
+name: cut-preprocessing
+description: Use `peaksMCP` to call the `peaks` package and perform preprocessing on cut (sweep/fix) data in a notebook (Fermi surface leveling & zeroing $\rightarrow$ high-symmetry point zeroing $\rightarrow$ k-space conversion). Trigger this workflow when the user requests cut data processing, preprocessing, leveling, or k-space conversion.
+---
 
 # Cut Data Preprocessing
 
@@ -23,4 +26,7 @@ Use `peaksMCP` to call the `peaks` package and perform preprocessing on cut (swe
 
 ## Deliverables & Output Protocol
 
-Use`plot` to convey **key** information to the user.
+Use `plot` to convey **key** information to the user.
+Save processed cuts with `peaks.save(da, path)` (or `save_processed`), not raw `da.to_netcdf` — it fails on unsanitized metadata attrs.
+
+**Carefully review the template code returned by mcp_list_resources and follow its intent.**

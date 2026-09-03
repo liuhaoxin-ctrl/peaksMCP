@@ -55,7 +55,7 @@ def test_claude_plugin_and_skill_are_self_contained():
     assert "${CLAUDE_PLUGIN_ROOT}/bin/peaksmcp-proxy" in mcp
     wrapper = root / "claude_plugin/bin/peaksmcp-proxy"
     assert wrapper.stat().st_mode & 0o111
-    assert "fit_gold" in root.joinpath("claude_plugin/skills/cut-preprocessing.md").read_text()
+    assert "fit_gold" in root.joinpath("claude_plugin/skills/cut-preprocessing/SKILL.md").read_text()
 
 
 def test_dashboard_does_not_interpolate_server_strings_with_inner_html():
