@@ -12,6 +12,7 @@ aliases:
   load: [open data, read data, 加载, 读取]
   save: [export, write data, 保存, 导出]
   plot_grid: [figure grid, visualize batch, panel plot, 绘图, 画图, 批量谱图]
+  plot_batch: [batch plotting, plot batch, batch figures, batch grid, 批量画图, 批量画谱图, 批量绘图, 批量图]
   estimate_EF: [Fermi level, Fermi energy, 费米能级]
   fit_gold: [gold reference fit, fit Fermi edge, gold fit, Fermi level fit, 金参考拟合, 金边拟合, 金拟合, 费米边拟合, 费米能级拟合]
   bin_data: [bin pixels, coarsen data, 数据分箱, 像素合并]
