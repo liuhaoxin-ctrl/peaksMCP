@@ -190,3 +190,15 @@ def test_server_status_exposes_index_stale():
     status = notebook.server_status()
     assert status["index_stale"] is False
     assert status["api_count"] == 1
+
+
+def test_plot_resources_exposed_and_templates_compile():
+    from peaksMCP.config.metadata import list_resources, resource_metadata
+
+    resources = list_resources()
+    assert resources
+    for resource_id in resources:
+        meta = resource_metadata(resource_id)
+        assert meta["title"] and meta["template"]
+        compile(meta["template"], f"<{resource_id}>", "exec")
+    assert {"fermi_surface", "dispersion_grid"} <= set(resources)

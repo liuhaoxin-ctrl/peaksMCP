@@ -34,3 +34,39 @@ def tool_metadata(name: str) -> dict[str, str]:
     """
     item = (_document().get("tools") or {}).get(name, {})
     return {"title": str(item.get("title") or name), "description": str(item.get("description") or "")}
+
+
+def list_resources() -> list[str]:
+    """Return the canonical plotting-format resource ids.
+
+    Examples
+    --------
+    >>> "dispersion_grid" in list_resources()
+    True
+    """
+    return sorted((_document().get("resources") or {}).keys())
+
+
+def resource_metadata(resource_id: str) -> dict[str, Any]:
+    """Return one canonical plotting-format template.
+
+    Parameters
+    ----------
+    resource_id : str
+        Resource id from :func:`list_resources`.
+
+    Returns
+    -------
+    dict
+        ``title``, ``when_to_use``, ``figure`` styling contract and the
+        ``template`` code snippet to run verbatim.
+
+    Raises
+    ------
+    KeyError
+        If the resource id is unknown.
+    """
+    item = (_document().get("resources") or {}).get(resource_id)
+    if item is None:
+        raise KeyError(f"unknown resource {resource_id!r}; known: {list_resources()}")
+    return item

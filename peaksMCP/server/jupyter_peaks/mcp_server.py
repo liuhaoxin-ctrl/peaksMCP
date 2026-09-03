@@ -72,7 +72,40 @@ class JupyterPeaksMCPServer:
         # boundary for arbitrary Python. Dangerous only relaxes non-executing,
         # append-only mutations.
         register_unsafe_tools(mcp, self.unsafe, self.audit)
+        self._register_plot_resources(mcp)
         return mcp
+
+    def _register_plot_resources(self, mcp: FastMCP) -> None:
+        """Expose the canonical plotting-format templates as MCP resources.
+
+        The agent selects a format by id (``fermi_surface``, ``dispersion_grid``,
+        ...) and fetches it through ``resources/read``, then runs its ``template``
+        verbatim — so every figure follows a tested, publication-style contract.
+        """
+        from fastmcp.resources import TextResource
+
+        from peaksMCP.config.metadata import list_resources, resource_metadata
+
+        for resource_id in list_resources():
+            meta = resource_metadata(resource_id)
+            template = str(meta.get("template") or "")
+            if not template:
+                continue
+            text = (
+                f"# {meta.get('title') or resource_id}\n"
+                f"# When to use: {meta.get('when_to_use') or ''}\n"
+                f"# Styling contract: {meta.get('figure') or {}}\n\n"
+                f"{template}"
+            )
+            mcp.add_resource(
+                TextResource(
+                    uri=f"peaksmcp://plot/{resource_id}",
+                    name=resource_id,
+                    title=str(meta.get("title") or resource_id),
+                    description=str(meta.get("when_to_use") or ""),
+                    text=text,
+                )
+            )
 
     def set_mode(self, mode: str | ExecutionMode) -> None:
         """Switch the consent policy without changing the exposed tool set."""
