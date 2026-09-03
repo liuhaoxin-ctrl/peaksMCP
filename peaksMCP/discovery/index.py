@@ -110,11 +110,6 @@ def source_fingerprint(pkg_dir: str | os.PathLike[str] | None = None) -> str:
     return hashlib.sha256(repr(source_signature(pkg_dir)).encode()).hexdigest()
 
 
-def _summary(node: ast.AST) -> str:
-    doc = ast.get_docstring(node, clean=True) or ""
-    return doc.splitlines()[0][:240] if doc else ""
-
-
 def _signature(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     try:
         rendered = ast.unparse(node.args)
@@ -134,6 +129,7 @@ def _entry(scope: str, module: str, name: str, **extra: Any) -> dict[str, Any]:
         "module": module,
         "name": name,
         "summary": "",
+        "docstring": "",
         **extra,
     }
 
@@ -163,7 +159,7 @@ def _scan_accessor_class(
             # Inherited from elsewhere (e.g. object utilities): skip.
             if not getattr(obj, "__module__", "").startswith("peaks."):
                 continue
-        doc = getattr(obj, "__doc__", "") or ""
+        doc = (getattr(obj, "__doc__", "") or "").strip()
         entries.append(
             _entry(
                 accessor_name,
@@ -172,7 +168,8 @@ def _scan_accessor_class(
                 kind="property" if isinstance(obj, property) else "method",
                 func_name=member,
                 accessor_class=accessor_cls.__name__,
-                summary=doc.strip().splitlines()[0][:240] if doc.strip() else "",
+                summary=doc.splitlines()[0][:240] if doc else "",
+                docstring=doc,
             )
         )
 
@@ -222,6 +219,15 @@ def scan_runtime() -> list[dict[str, Any]]:
                 continue
             func_name = getattr(descriptor, "func_name", None) or name
             doc = getattr(descriptor, "__doc__", "") or ""
+            if dtype == "_CachedAccessor" and isinstance(accessor, type):
+                # xarray's _CachedAccessor.__doc__ is the descriptor class's own
+                # docstring (e.g. da.iplot -> "Custom property-like object ...");
+                # the real one lives on the wrapped accessor's __call__ (e.g.
+                # da.iplot -> HVPlotAccessor.__call__).  Use that instead so the
+                # interactive widget APIs are discoverable by intent.
+                call_doc = getattr(accessor.__call__, "__doc__", "")
+                doc = call_doc or (getattr(accessor, "__doc__", "") or "")
+            doc = doc.strip()
             entries.append(
                 _entry(
                     scope,
@@ -230,7 +236,8 @@ def scan_runtime() -> list[dict[str, Any]]:
                     kind="accessor" if is_cached else "method",
                     func_name=func_name,
                     accessor_type=dtype,
-                    summary=doc.strip().splitlines()[0][:240] if doc.strip() else "",
+                    summary=doc.splitlines()[0][:240] if doc else "",
+                    docstring=doc,
                 )
             )
             # Peaks custom accessor classes (e.g. ``da.metadata``) expose their
@@ -247,7 +254,7 @@ def scan_runtime() -> list[dict[str, Any]]:
         module = getattr(obj, "__module__", "") or "peaks"
         if not module.startswith("peaks"):
             module = "peaks"
-        doc = getattr(obj, "__doc__", "") or ""
+        doc = (getattr(obj, "__doc__", "") or "").strip()
         entries.append(
             _entry(
                 "top_level",
@@ -255,7 +262,8 @@ def scan_runtime() -> list[dict[str, Any]]:
                 name,
                 kind="callable" if callable(obj) else "symbol",
                 func_name=name,
-                summary=doc.strip().splitlines()[0][:240] if doc.strip() else "",
+                summary=doc.splitlines()[0][:240] if doc else "",
+                docstring=doc,
             )
         )
     return entries
@@ -306,6 +314,7 @@ def scan_modules(
                 continue
             for node in tree.body:
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_"):
+                    doc = ast.get_docstring(node, clean=True) or ""
                     entries.append(
                         _entry(
                             "module",
@@ -313,7 +322,8 @@ def scan_modules(
                             node.name,
                             kind="function",
                             func_name=node.name,
-                            summary=_summary(node),
+                            summary=doc.splitlines()[0][:240] if doc else "",
+                            docstring=doc.strip(),
                             signature=_signature(node),
                             source_path=path,
                         )
@@ -439,6 +449,7 @@ def search_index(
         name = str(item.get("name", "")).lower()
         module = str(item.get("module", "")).lower()
         summary = str(item.get("summary", "")).lower()
+        docstring = str(item.get("docstring", "")).lower()
         aliases = [str(alias).lower() for alias in item.get("aliases", [])]
         if name == query:
             score = 1000
@@ -467,8 +478,9 @@ def search_index(
                     name_overlap = len(qtokens & name_tokens)
                     alias_overlap = len(qtokens & set().union(*(_tokens(a) for a in aliases))) if aliases else 0
                     summary_overlap = len(qtokens & _tokens(summary))
+                    docstring_overlap = len(qtokens & _tokens(docstring))
                     module_overlap = len(qtokens & _tokens(module))
-                    score = name_overlap * 100 + alias_overlap * 80 + summary_overlap * 30 + module_overlap * 15
+                    score = name_overlap * 100 + alias_overlap * 80 + summary_overlap * 30 + docstring_overlap * 20 + module_overlap * 15
         if score:
             scored.append((score, str(item["id"]), item))
     scored.sort(key=lambda row: (-row[0], row[1]))

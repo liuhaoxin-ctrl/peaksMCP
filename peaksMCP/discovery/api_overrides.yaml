@@ -31,6 +31,8 @@ aliases:
   process_cut: [preprocess cut, preprocess_cut, cut preprocessing workflow, 切割预处理, cut预处理]
   drift_correction: [drift correction, align maps, 漂移校正, 图像配准]
   disp_from_hv: [dispersion from hv, photon energy dispersion, 光子能色散]
+  disp: [interactive viewer, interactive plot, GUI viewer, data viewer widget, 3D viewer, 交互式查看器, 交互式绘图, 三维查看器]
+  iplot: [interactive plot, interactive widget, widget plot, interactive visualization, holoviews plot, bokeh plot, 交互式绘图, 交互式可视化]
   correct_isolated_bad_pixels: [bad pixel removal, clean bad pixels, 坏点修复, 去坏点]
   History: [processing history, provenance, 处理历史]
 overrides:

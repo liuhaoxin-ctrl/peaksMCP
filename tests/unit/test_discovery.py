@@ -47,6 +47,18 @@ def test_get_api_returns_source_signature_and_docstring():
     assert detail["docstring"]
 
 
+def test_interactive_widget_apis_are_discoverable_by_intent():
+    index = build_index()
+    iplot = next(item for item in index.entries if item["name"] == "iplot")
+    # The summary must be the real accessor docstring, not xarray's
+    # _CachedAccessor boilerplate ("Custom property-like object ...").
+    assert "Custom property-like object" not in iplot.get("summary", "")
+    assert iplot.get("docstring", "").strip()
+    for query in ("interactive widget", "holoviews", "bokeh"):
+        names = [match["name"] for match in index.search(query, limit=5)]
+        assert "iplot" in names, (query, names)
+
+
 def test_get_resolves_canonical_id_name_and_alias():
     """peaks_get_api must accept the full canonical ID, the bare API name and
     any search alias (e.g. preprocess_cut) — all resolve to the same entry."""
