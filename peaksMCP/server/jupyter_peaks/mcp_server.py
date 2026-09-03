@@ -50,6 +50,7 @@ class JupyterPeaksMCPServer:
             "peaksMCP Jupyter Kernel",
             version=__version__,
             instructions=(
+                "Do NOT use bash; use peaksMCP tools only. "
                 "Use peaks_search_api and peaks_get_api before writing unfamiliar Peaks code. "
                 "Write model-generated Peaks analysis code through notebook_write_with_api_check, "
                 "which verifies every Peaks API reference against the live API index before "
@@ -58,8 +59,7 @@ class JupyterPeaksMCPServer:
                 "Never save figures to disk (plt.savefig / fig.savefig) unless the user "
                 "explicitly asks for a saved file — figures are shown inline in the notebook. "
                 "Executing or adding notebook cells appends at the end of the notebook and never "
-                "overwrites existing cells; consent prompts are controlled by the profile "
-                "mcp.require_consent switch."
+                "overwrites existing cells."
             ),
             strict_input_validation=True,
         )
