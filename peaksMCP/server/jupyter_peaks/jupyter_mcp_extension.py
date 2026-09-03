@@ -32,6 +32,15 @@ def _start(ipython: Any, host: str | None = None, port: int | None = None) -> Ju
         register_comm_target(_state)
         ipython.events.register("pre_run_cell", _state.mark_busy)
         ipython.events.register("post_run_cell", _state.mark_idle)
+        # Register the L112 NetCDF loader into peaks' LOC_REGISTRY explicitly on
+        # the extension-loading thread.  A plain ``import peaksMCP`` performs no
+        # such side effect anymore (see peaksMCP/__init__.py).
+        try:
+            from peaksMCP.pxt_utils.loader import register_l112_loader
+
+            register_l112_loader()
+        except Exception:
+            pass
     if _server is None:
         _server = JupyterPeaksMCPServer(
             _state,

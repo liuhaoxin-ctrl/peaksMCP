@@ -103,7 +103,7 @@ def plot_batch(
     titles : sequence of str, optional
         Panel titles matching the number of arrays.
     max_cols : int, default 5
-        Maximum number of panels in a row.
+        Maximum number of panels in a row (values above 5 are capped to 5).
     max_panels_per_figure : int, default 20
         Page size for large batches.
     sharex, sharey : bool, default False

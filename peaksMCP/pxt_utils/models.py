@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -18,6 +20,14 @@ class ExperimentRecord(BaseModel):
     temperature: dict[str, Any] = Field(default_factory=dict)
     analyser: dict[str, Any] = Field(default_factory=dict)
     experiment: dict[str, Any] = Field(default_factory=dict)
+    #: True when the datasheet marks this index as a gold (Au) reference in the
+    #: ``Data format`` column — the record an agent fits a Fermi edge on to get
+    #: ``EF_correction`` for the ordinary sweep data.
+    is_gold_reference: bool = False
+    #: High-symmetry angle offset (degrees) parsed from this index's AI-visible
+    #: notes (``theta_offset...<number>``), when present.  None when the
+    #: datasheet did not state it — callers then ask the user rather than invent.
+    theta_offset_deg: float | None = None
     unmapped: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -37,10 +47,21 @@ class ExperimentMetadata(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
     def write(self, path: str | Path) -> Path:
-        """Atomically write the metadata document as UTF-8 JSON."""
+        """Atomically write the metadata document as UTF-8 JSON.
+
+        A unique temporary sibling (mkstemp) is used so concurrent writers to
+        the same target cannot truncate each other's staging file; the rename
+        then publishes exactly one complete document.
+        """
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_suffix(target.suffix + ".part")
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{target.name}.",
+            suffix=".part",
+            dir=target.parent,
+        )
+        os.close(descriptor)
+        temporary = Path(temporary_name)
         temporary.write_text(self.model_dump_json(indent=2), encoding="utf-8")
         temporary.replace(target)
         return target

@@ -73,6 +73,10 @@ class _Aliases(ast.NodeVisitor):
     def __init__(self, names: dict[str, str] | None = None) -> None:
         self.names = dict(names or {})
         self._snapshots: dict[int, dict[str, str]] = {}
+        # Roots imported anywhere in the snippet (not scoped: module objects are
+        # process-global, so assigning an attribute onto them is smuggling no
+        # matter where the import happened).
+        self.imported_roots: set[str] = set()
 
     def visit(self, node: ast.AST) -> None:
         self._snapshots[id(node)] = self.names.copy()
@@ -87,11 +91,14 @@ class _Aliases(ast.NodeVisitor):
             self.names[item.asname or item.name.split(".")[0]] = (
                 item.name if item.asname else item.name.split(".")[0]
             )
+            self.imported_roots.add(item.asname or item.name.split(".")[0])
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         module = node.module or ""
         for item in node.names:
             self.names[item.asname or item.name] = f"{module}.{item.name}"
+            if module and not module.startswith("."):
+                self.imported_roots.add(module.split(".")[0])
 
     def resolve(self, name: str) -> str:
         return self.names.get(name, name)
@@ -289,6 +296,15 @@ _BLOCK_MODULES = frozenset({"subprocess", "ctypes", "importlib", "pickle", "jobl
 # ``locals()``, ``vars()``, ``__builtins__`` can reach any callable).
 _REFLECTION_BASES = frozenset({"globals", "locals", "vars", "__builtins__"})
 
+# Dunder/reflection attributes: reading them is how a source-only scanner is
+# defeated (``os.__dict__['system']``, ``''.__class__.__mro__[-1]``).  Any
+# callable whose chain crosses one of these cannot be tracked statically.
+_REFLECTION_ATTRS = frozenset({
+    "__dict__", "__globals__", "__builtins__", "__class__", "__mro__",
+    "__bases__", "__subclasses__", "__getattribute__", "__getattr__",
+    "__setattr__", "__delattr__", "__init_subclass__",
+})
+
 
 # --------------------------------------------------------------------------- #
 # Method-level rules for mixed modules                                         #
@@ -299,16 +315,25 @@ _SYSTEM_CALLS = {
     "os.replace", "os.rename", "os.fork", "os.kill", "os.putenv", "os.unsetenv",
     "os.execv", "os.execve", "os.execvp", "os.execvpe", "os.spawnl", "os.spawnle",
     "os.spawnlp", "os.spawnlpe", "os.spawnv", "os.spawnve", "os.spawnvp", "os.spawnvpe",
-    "os.posix_spawn", "shutil.rmtree", "shutil.rmdir", "shutil.move",
+    "os.posix_spawn", "os.chmod", "os.chown", "os.truncate", "os.ftruncate",
+    "os.symlink", "os.mkfifo", "os.mknod", "shutil.rmtree", "shutil.rmdir",
+    "shutil.move",
 }
+# Raw-descriptor file writers: the ``open('w')`` equivalent that does not route
+# through ``open`` (``os.open`` + ``os.write``/``os.fdopen``) and would
+# otherwise bypass FILE001.
+_RAW_FILE_WRITERS = {"os.open", "os.write", "os.fdopen"}
 _DYNAMIC_IMPORTS = {"__import__", "builtins.__import__"}
 _PATH_METHODS = {"unlink", "write_text", "write_bytes", "rmdir", "rename", "replace", "symlink_to", "hardlink_to"}
 _PATH_CONSTRUCTORS = {
     "Path", "PosixPath", "WindowsPath", "pathlib.Path", "pathlib.PosixPath", "pathlib.WindowsPath",
 }
-_ENV_MUTATORS = {"update", "setdefault", "pop", "clear", "__setitem__", "__delitem__"}
+_ENV_MUTATORS = {"update", "setdefault", "pop", "popitem", "clear", "__setitem__", "__delitem__"}
 _DYN_BASES = {"globals", "locals", "vars", "__builtins__", "builtins"}
 _INDIRECT_TARGETS = {"exec", "eval", "compile", "__import__"}
+# Pickle-family deserialization hidden inside an otherwise-allowed module:
+# ``pd.read_pickle`` is a code-execution sink just like ``pickle.loads``.
+_DESERIALIZE_SINKS = {"pd.read_pickle", "pandas.read_pickle"}
 
 # Dangerous callables fetched indirectly (getattr / globals()['x'] / .get()).
 _SYSTEM_METHOD_NAMES = {name.rsplit(".", 1)[-1] for name in _SYSTEM_CALLS} | {"system", "popen", "run"}
@@ -318,7 +343,7 @@ _FILE_WRITERS = {
     "pd.to_csv", "pandas.DataFrame.to_csv", "xr.to_netcdf", "xarray.DataArray.to_netcdf",
     "xarray.Dataset.to_netcdf", "json.dump",
 }
-_FILE_WRITE_METHOD_NAMES = {"save", "savetxt", "savez", "savez_compressed", "imsave", "to_csv", "to_netcdf", "dump"}
+_FILE_WRITE_METHOD_NAMES = {"save", "savetxt", "savez", "savez_compressed", "imsave", "to_csv", "to_netcdf", "dump", "to_pickle"}
 # Constructors that propagate a network origin through aliases
 # (``s = requests.Session(); client = s; client.get(...)``).
 _NETWORK_CLIENTS = {"requests.Session", "requests.sessions.Session", "httpx.Client", "httpx.AsyncClient"}
@@ -407,6 +432,42 @@ def _is_savefig(node: ast.Call, aliases: _Aliases) -> bool:
     return any(any(keyword in part for keyword in keywords) for part in chain)
 
 
+def _dangerous_reference(name: str) -> bool:
+    """True when a stored alias/attribute target resolves to a dangerous sink."""
+    if not name:
+        return False
+    if name in _SYSTEM_CALLS or name in _CRITICAL_CALLS or name in _DYNAMIC_IMPORTS:
+        return True
+    if name in _RAW_FILE_WRITERS or name in _DESERIALIZE_SINKS or name in _FILE_WRITERS:
+        return True
+    return name.rsplit(".", 1)[-1] in (
+        _SYSTEM_METHOD_NAMES | _PATH_METHODS | _FILE_WRITE_METHOD_NAMES | {"read_pickle"}
+    )
+
+
+def _smuggling_rule_id(
+    target: ast.AST,
+    value_chain: str | None,
+    aliases: _Aliases,
+) -> str | None:
+    """Return ``"SMUG001"`` when an attribute target smuggles a dangerous callable.
+
+    Module attribute assignment (``os.run_id = os.system``), assignment through
+    reflection chains and assignments whose value resolves to a dangerous sink
+    all defeat alias/name tracking and are never legitimate analysis code.
+    """
+    chain = _chain(target, aliases)
+    if len(chain) < 2:
+        return None
+    if chain[0] in aliases.imported_roots:
+        return "SMUG001"
+    if any(part in _REFLECTION_ATTRS for part in chain[:-1]):
+        return "SMUG001"
+    if value_chain and _dangerous_reference(value_chain):
+        return "SMUG001"
+    return None
+
+
 # --------------------------------------------------------------------------- #
 # Public API                                                                   #
 # --------------------------------------------------------------------------- #
@@ -423,6 +484,57 @@ def _classify_call(
     capability-module layer, so it only sees allowed/mixed modules (``os``,
     ``pathlib``, ``builtins``, numpy, ...).
     """
+    if name in {"getattr", "builtins.getattr"} and (
+        len(node.args) < 2
+        or not (
+            isinstance(node.args[1], ast.Constant)
+            and isinstance(node.args[1].value, str)
+        )
+    ):
+        # A computed attribute name (``getattr(os, 'sy' + 'stem')``) makes the
+        # fetched member unknowable: hard block rather than guess.
+        issues.append(SecurityIssue(
+            "REF003", "getattr with a dynamic attribute name cannot be verified statically",
+            RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node),
+        ))
+    if name in {"setattr", "delattr", "builtins.setattr", "builtins.delattr"}:
+        attribute = node.args[1] if len(node.args) >= 2 else None
+        receiver_chain = _chain(node.args[0], aliases) if node.args else []
+        if not (
+            isinstance(attribute, ast.Constant) and isinstance(attribute.value, str)
+        ):
+            issues.append(SecurityIssue(
+                "REF003", f"dynamic attribute name passed to {name} cannot be verified statically",
+                RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node),
+            ))
+        elif any(part in _REFLECTION_ATTRS for part in receiver_chain) or (
+            receiver_chain
+            and (
+                receiver_chain[0] in aliases.imported_roots
+                or receiver_chain[0] in {"builtins", "__builtins__"}
+            )
+        ):
+            issues.append(SecurityIssue(
+                "SMUG002", f"attribute mutation on an imported module or reflection object via {name}",
+                RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node),
+            ))
+        elif name.rsplit(".", 1)[-1] == "setattr" and len(node.args) >= 3:
+            value_name = ".".join(_chain(node.args[2], aliases))
+            if _dangerous_reference(value_name):
+                issues.append(SecurityIssue(
+                    "SMUG002", f"setattr storing a dangerous callable ({value_name})",
+                    RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node),
+                ))
+    if name in _RAW_FILE_WRITERS:
+        issues.append(SecurityIssue(
+            "FILE003", f"raw-descriptor file write via {name}",
+            RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node),
+        ))
+    elif name in _DESERIALIZE_SINKS or name.rsplit(".", 1)[-1] == "read_pickle":
+        issues.append(SecurityIssue(
+            "DES001", f"unsafe deserialization via {name}",
+            RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node),
+        ))
     if name in _CRITICAL_CALLS or (name.split(".")[-1] in _CRITICAL_CALLS and name.startswith("builtins.")):
         issues.append(SecurityIssue("EXEC001", f"dynamic code execution via {name}", RiskLevel.CRITICAL, getattr(node, "lineno", 0), ast.unparse(node)))
     elif name in _SYSTEM_CALLS:
@@ -504,6 +616,21 @@ def scan_code(code: str) -> ScanResult:
                     RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node),
                 ))
         if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Subscript):
+                # d['p'](...) / os.__dict__['system'](...) / cls[idx](...): the
+                # callee is unknowable from source, which is exactly how exec /
+                # subprocess are smuggled through containers.
+                issues.append(SecurityIssue(
+                    "IND002", "calling a value fetched through a subscript/container index cannot be tracked statically",
+                    RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node),
+                ))
+            elif any(part in _REFLECTION_ATTRS for part in _chain(node.func, aliases)):
+                # __dict__ / __class__.__mro__ / __subclasses__ chains can reach
+                # any object in the interpreter; a call through them is unbounded.
+                issues.append(SecurityIssue(
+                    "REF001", "reflection attribute chain in a call cannot be bounded statically",
+                    RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node),
+                ))
             name = _call_name(node, aliases)
             root = name.split(".")[0]
             if root in _BLOCK_MODULES:
@@ -528,12 +655,40 @@ def scan_code(code: str) -> ScanResult:
                 _classify_call(node, name, aliases, issues, consent_issues)
         if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            value_chain = (
+                ".".join(_chain(node.value, aliases))
+                if isinstance(node, ast.Assign)
+                and isinstance(node.value, (ast.Name, ast.Attribute))
+                else None
+            )
             for target in targets:
                 if _is_env_assignment(target, aliases):
                     issues.append(SecurityIssue("ENV001", "process environment modification", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+                elif (
+                    isinstance(node, ast.AugAssign)
+                    and isinstance(target, ast.Name)
+                    and ".".join(_chain(target, aliases)) == "os.environ"
+                ):
+                    # ``env = os.environ; env |= {...}`` mutates the process
+                    # environment through an aliased Name target.
+                    issues.append(SecurityIssue("ENV001", "process environment modification through an aliased os.environ", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+                if isinstance(target, ast.Attribute):
+                    rule = _smuggling_rule_id(target, value_chain, aliases)
+                    if rule:
+                        issues.append(SecurityIssue(
+                            rule,
+                            "attribute smuggling: storing a dangerous callable where name tracking cannot follow it",
+                            RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node),
+                        ))
         if isinstance(node, ast.Delete):
             for target in node.targets:
                 if _is_env_assignment(target, aliases):
                     issues.append(SecurityIssue("ENV001", "process environment modification", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+                if isinstance(target, ast.Attribute) and _smuggling_rule_id(target, None, aliases):
+                    issues.append(SecurityIssue(
+                        "SMUG001",
+                        "attribute deletion on an imported module or reflection object",
+                        RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node),
+                    ))
     reason = "; ".join(issue.description for issue in issues[:3]) if issues else None
     return ScanResult(bool(issues), issues, reason, requires_explicit_consent=consent_issues)

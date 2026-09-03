@@ -183,3 +183,40 @@ def load_pxt(path: str | os.PathLike[str]) -> xr.DataArray:
             "loaded_at": datetime.now().astimezone().isoformat(),
         },
     )
+
+
+# --------------------------------------------------------------------------- #
+# L112 beamline registration (explicit, kernel-side only)
+# --------------------------------------------------------------------------- #
+def register_l112_loader() -> type | None:
+    """Register the L112 DA30L NetCDF loader into peaks' LOC_REGISTRY.
+
+    This is called explicitly by the in-kernel extension when the MCP server
+    starts, so a plain ``import peaksMCP`` never pulls in the ``peaks``
+    dependency.  NetCDF files converted from PXT carry ``loc='L112'`` (slit
+    axis = tilt, mapping axis = polar, zero installation angles) and resolve to
+    the base ARPES geometry through the normal ``metadata.scan.loc`` path.
+
+    Returns
+    -------
+    type or None
+        The registered loader class, or None when peaks cannot be imported
+        (converted NetCDF then falls back to peaks' default loader handling).
+    """
+    try:
+        from peaks.core.fileIO.base_arpes_data_classes.base_arpes_data_class import (
+            BaseARPESDataLoader,
+        )
+        from peaks.core.fileIO.loc_registry import register_loader
+
+        @register_loader
+        class L112DataLoader(BaseARPESDataLoader):
+            """DA30L geometry for NetCDF files converted from L112 PXT."""
+
+            _loc_name = "L112"
+            _loc_description = "L112 DA30L (PXT-converted NetCDF)"
+
+        return L112DataLoader
+    except Exception:
+        return None
+    _manipulator_axes = ["polar", "tilt", "azi"]

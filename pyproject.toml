@@ -88,6 +88,7 @@ select = ["E", "F", "I", "B", "UP"]
 ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
+# Ruff lints .ipynb cells; the e2e fixture notebook is not a module.
 "tests/e2e/*.ipynb" = ["I001"]
 
 [tool.coverage.run]

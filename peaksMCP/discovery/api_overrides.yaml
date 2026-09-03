@@ -27,6 +27,7 @@ aliases:
   subtract_data: [subtract scans, difference spectrum, 数据相减, 差谱]
   merge_data: [merge scans, combine spectra, concatenate, 数据合并, 拼接]
   estimate_sym_point: [symmetry point, mirror centre, 对称中心, 对称点]
+  process_cut: [preprocess cut, preprocess_cut, cut preprocessing workflow, 切割预处理, cut预处理]
   drift_correction: [drift correction, align maps, 漂移校正, 图像配准]
   disp_from_hv: [dispersion from hv, photon energy dispersion, 光子能色散]
   correct_isolated_bad_pixels: [bad pixel removal, clean bad pixels, 坏点修复, 去坏点]

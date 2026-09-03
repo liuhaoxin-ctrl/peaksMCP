@@ -498,8 +498,25 @@ class ApiIndex:
         return search_index(self.entries, query, scope, limit)
 
     def get(self, canonical_id: str) -> dict[str, Any] | None:
-        """Return one exact canonical entry."""
-        return next((entry for entry in self.entries if entry["id"] == canonical_id), None)
+        """Return one canonical entry.
+
+        Accepts the full canonical ID returned by :meth:`search` (e.g.
+        ``module:peaksMCP.workflows.cut_preprocessing:process_cut``), a bare
+        API name (``process_cut``), or one of its search aliases
+        (``preprocess_cut``) — aliases resolve to the canonical entry so a
+        typo'd ``peaks_get_api`` still returns the real API instead of an
+        unknown-ID error.
+        """
+        wanted = canonical_id.strip()
+        for entry in self.entries:
+            if entry["id"] == wanted or entry["name"] == wanted:
+                return entry
+        lowered = wanted.lower()
+        if lowered:
+            for entry in self.entries:
+                if lowered in {str(alias).lower() for alias in entry.get("aliases", [])}:
+                    return entry
+        return None
 
     def is_stale(self) -> bool:
         """Return True when Peaks or adapter source changed after this index was built.

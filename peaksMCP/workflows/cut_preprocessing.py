@@ -49,8 +49,9 @@ def process_cut(
         amount so that the high-symmetry point maps to kx = 0 after conversion.
         MUST come from experiment metadata (e.g. ``notes``), never invented.
         When ``None``, the function looks it up in ``da.attrs``
-        ``experiment_metadata_json`` notes; if not found the offset is treated
-        as 0 and a warning is attached.
+        ``experiment_metadata_json`` (per-record ``theta_offset_deg``); if not
+        found the offset is treated as 0 — callers should ask the user when the
+        datasheet is silent.
     ef_correction : float, int, dict, optional
         Fermi-level correction to APPLY. When provided (e.g. from a gold
         reference fitted once with ``fit_gold``), no re-fitting is performed on
@@ -113,11 +114,14 @@ def process_cut(
 
 
 def _theta_offset_from_metadata(da: xr.DataArray) -> float | None:
-    """Try to extract the high-symmetry offset from the experiment notes.
+    """Try to extract the high-symmetry offset from the experiment metadata.
 
-    Looks for the note pattern ``差了差不多0.5度`` / ``0.5度`` (or an explicit
-    ``theta_par_offset`` field) inside ``attrs["experiment_metadata_json"]``.
-    Returns None when nothing usable is found.
+    Prefers the structured per-record ``theta_offset_deg`` field embedded by the
+    converter (parsed from ``theta_offset<number>`` in the AI-visible datasheet
+    notes), then falls back to the legacy ``theta_par_offset_deg`` key and to
+    searching any embedded notes for a ``theta_offset``-prefixed number or a
+    ``<number>度`` phrase.  Returns None when nothing usable is found — callers
+    must then ask the user rather than assume a value.
     """
     import json
     import re
@@ -130,20 +134,32 @@ def _theta_offset_from_metadata(da: xr.DataArray) -> float | None:
     except (json.JSONDecodeError, TypeError):
         return None
 
-    if isinstance(meta, dict) and meta.get("theta_par_offset_deg") is not None:
-        try:
-            return float(meta["theta_par_offset_deg"])
-        except (TypeError, ValueError):
-            pass
+    if isinstance(meta, dict):
+        for key in ("theta_par_offset_deg", "theta_offset_deg"):
+            value = meta.get(key)
+            if value is not None:
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    pass
 
     notes = meta.get("notes", []) if isinstance(meta, dict) else []
-    if isinstance(meta, dict) and "notes" not in meta and "title" in meta:
-        # The top-level metadata JSON (per record) has no notes; fall back to
-        # searching every string field for the offset pattern.
-        notes = []
+    token = re.compile(
+        r"theta[_ ]?offset\s*[:：=]?\s*([+-]?\d+(?:\.\d+)?)", re.IGNORECASE
+    )
     for note in notes:
-        if isinstance(note, str):
-            m = re.search(r"([0-9]*\.?[0-9]+)\s*度", note)
-            if m:
-                return float(m.group(1))
+        if not isinstance(note, str):
+            continue
+        match = token.search(note) or re.search(r"([0-9]*\.?[0-9]+)\s*度", note)
+        if match:
+            try:
+                return float(match.group(1))
+            except (TypeError, ValueError):
+                pass
     return None
+
+
+#: Runtime alias so the name used in older notes/docs (``preprocess_cut``) also
+#: resolves.  The discovery index and search aliases stay canonical on
+#: ``process_cut`` (see peaksMCP/discovery/api_overrides.yaml).
+preprocess_cut = process_cut

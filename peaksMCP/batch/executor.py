@@ -91,18 +91,42 @@ class BatchExecutor:
                         ):
                             if self.cancel_event.is_set():
                                 break
-                            result = BatchItemResult(
-                                next_index,
-                                item,
-                                "skipped",
-                                error="CPU budget wait timed out",
-                            )
-                            results[next_index] = result
-                            if progress:
-                                progress(result)
-                            next_index += 1
-                            continue
-                        future = pool.submit(_run_one, function, item)
+                            # Capacity did not free within one full wait; letting
+                            # every remaining item block for another 60 s each
+                            # would stall the batch for N x 60 s.  Fail them fast
+                            # with the same report semantics (skipped, no output)
+                            # and drain the already-running work.
+                            while next_index < len(values):
+                                result = BatchItemResult(
+                                    next_index,
+                                    values[next_index],
+                                    "skipped",
+                                    error="CPU budget wait timed out",
+                                )
+                                results[next_index] = result
+                                if progress:
+                                    progress(result)
+                                next_index += 1
+                            break
+                        try:
+                            future = pool.submit(_run_one, function, item)
+                        except concurrent.futures.BrokenProcessPool as exc:
+                            # Workers died (e.g. OOM-killed): submitting would
+                            # keep raising, so fail this and every remaining item
+                            # instead of aborting the whole batch mid-way.
+                            while next_index < len(values):
+                                result = BatchItemResult(
+                                    next_index,
+                                    values[next_index],
+                                    "failed",
+                                    error_type="BrokenProcessPool",
+                                    error=str(exc),
+                                )
+                                results[next_index] = result
+                                if progress:
+                                    progress(result)
+                                next_index += 1
+                            break
                         self._pending_futures[future] = (next_index, item)
                         next_index += 1
 

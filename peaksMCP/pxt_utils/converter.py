@@ -9,6 +9,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import xarray as xr
+
 from peaksMCP.batch import BatchExecutor, ResourceBudget
 
 from .csv_translator import translate_datasheet
@@ -145,6 +147,110 @@ def _auto_metadata(
         return None
 
 
+
+
+
+def _record_comment(data: xr.DataArray) -> str:
+    """Return the datasheet Comment text for this record, if any."""
+    raw = data.attrs.get("experiment_metadata_json")
+    if not raw:
+        return ""
+    try:
+        record = json.loads(raw) if isinstance(raw, str) else raw
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    comment = record.get("experiment", {}).get("comment")
+    return str(comment) if comment else ""
+
+
+def _manipulator_json(angles: dict[str, float]) -> str:
+    """Serialise the L112 manipulator model (polar/tilt/azi, deg) to JSON.
+
+    Matches what peaks' NetCDF loader rebuilds for loc='L112'
+    (``_manipulator_axes`` = polar/tilt/azi).
+    """
+    import pint
+    from peaks.core.metadata.base_metadata_models import (
+        AxisMetadataModelWithReference,
+    )
+    from pydantic import create_model
+
+    ureg = pint.get_application_registry()
+    fields = {
+        axis: (AxisMetadataModelWithReference | None, None)
+        for axis in ("polar", "tilt", "azi")
+    }
+    ManipulatorModel = create_model("ManipulatorMetadataModel", **fields)
+    manip = ManipulatorModel(
+        **{
+            axis: AxisMetadataModelWithReference(
+                value=0.0 * ureg.deg,
+                reference_value=angles[axis] * ureg.deg,
+            )
+            for axis in ("polar", "tilt", "azi")
+        }
+    )
+    return manip.model_dump_json(by_alias=True)
+
+def _attach_peaks_metadata(data: xr.DataArray, source: Path) -> None:
+    """Write the minimal peaks metadata models onto a converted DataArray.
+
+    L112 PXT data are always analysed as NetCDF, so every converted file carries
+    ``loc='L112'`` (registered DA30L geometry: slit axis = tilt, mapping axis =
+    polar) and an analyser block with zero installation angles.  Loading through
+    peaks then has full ``metadata.scan.loc`` / ``metadata.analyser`` and the
+    normal loader path applies — no fallbacks needed.
+    """
+    from datetime import datetime
+
+    from peaks.core.metadata.base_metadata_models import (
+        ARPESMetadataModel,
+        BaseScanMetadataModel,
+    )
+
+    # Avoid re-attaching on repeated runs of the same source path.
+    if data.attrs.get("_scan") or data.attrs.get("metadata_models"):
+        return
+
+    scan_model = BaseScanMetadataModel(
+        name=Path(source).stem,
+        filepath=str(source),
+        loc="L112",
+        timestamp=datetime.now().astimezone().isoformat(),
+    )
+    data.attrs["_scan"] = scan_model.model_dump_json(by_alias=True)
+
+    # _manipulator: three rotation angles default to 0, unless the record
+    # comment carries explicit angles ("polar=12 tilt=-3 ..."); other comment
+    # text is ignored.
+    comment = _record_comment(data)
+    angles = {}
+    for axis in ("polar", "tilt", "azi"):
+        match = re.search(rf"\b{axis}\s*=\s*(-?\d+(?:\.\d+)?)", comment)
+        angles[axis] = float(match.group(1)) if match else 0.0
+    data.attrs["_manipulator"] = _manipulator_json(angles)
+
+    analyser = ARPESMetadataModel()
+    # Zero installation angles (numeric: the Quantity validator rejects strings).
+    # azi = 0 keeps slit along tilt -> theta_par in the tilt group.
+    analyser.angles.polar = 0
+    analyser.angles.tilt = 0
+    analyser.angles.azi = 0
+    data.attrs["_analyser"] = analyser.model_dump_json(by_alias=True)
+
+    data.attrs["metadata_models"] = json.dumps(
+        {
+            "_scan": (
+                "peaks.core.metadata.base_metadata_models.BaseScanMetadataModel"
+            ),
+            "_analyser": "peaks.core.metadata.base_metadata_models.ARPESMetadataModel",
+            "_manipulator": (
+                "peaks.core.fileIO.base_data_classes.base_manipulator_class."
+                "ManipulatorMetadataModel"
+            ),
+        }
+    )
+
 def _safe_attrs(attributes: dict[str, Any]) -> dict[str, Any]:
     safe: dict[str, Any] = {}
     for key, value in attributes.items():
@@ -265,6 +371,7 @@ def convert_pxt(
                 data.attrs["experiment_index"] = record.index
                 data.attrs["experiment_title"] = document.title
                 data.attrs["experiment_source_sha256"] = document.source_sha256
+        _attach_peaks_metadata(data, source)
         data.attrs = _safe_attrs(dict(data.attrs))
         for coordinate in data.coords.values():
             coordinate.attrs = _safe_attrs(dict(coordinate.attrs))

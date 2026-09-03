@@ -68,6 +68,87 @@ def test_datasheet_reports_all_invalid_numeric_fields_and_actual_agent_notes(tmp
         assert any(field in warning and "not numeric" in warning for warning in document.warnings)
 
 
+def test_only_agent_visible_notes_enter_metadata_and_theta_offset_is_extracted(tmp_path):
+    """AI-visible note columns are translated; human-only columns are not; a
+    ``theta_offset<number>`` inside an agent note becomes the record's
+    structured ``theta_offset_deg`` (missing -> None, never an error)."""
+    source = tmp_path / "datasheet.csv"
+    source.write_text(
+        "Experiment title,,,,\n"
+        "Index,Theta,Temperature,Ei,Pass E.,AI请看的Note,AI不要看的Note\n"
+        "1,30,9.4,2.2,5,theta_offset：1.5 高对称点大致在这里,beamline log only\n"
+        "2,31,9.4,2.2,5,theta_offset=-0.5度,secret\n"
+        "3,32,9.4,2.2,5,clean cut,\n",
+        encoding="utf-8",
+    )
+    document = translate_datasheet(source)
+    assert document.records["1"].theta_offset_deg == 1.5
+    assert document.records["2"].theta_offset_deg == -0.5
+    assert document.records["3"].theta_offset_deg is None
+    notes = document.notes
+    assert any("Index 1: theta_offset：1.5" in note for note in notes)
+    assert any("Index 2: theta_offset=-0.5度" in note for note in notes)
+    assert not any("beamline log only" in note for note in notes)
+    assert not any("secret" in note for note in notes)
+    assert not any("AI不要看的Note" in note for note in notes)
+
+
+def test_misleading_agent_note_header_is_human_not_leaked(tmp_path):
+    """``AI请不要看的Note`` must be classified human: its values never reach the
+    metadata notes that are shown to the agent."""
+    source = tmp_path / "datasheet.csv"
+    source.write_text(
+        "Experiment title,,,\n"
+        "Index,Theta,Temperature,AI请不要看的Note\n"
+        "7,30,9.4,请不要把这条给AI看\n",
+        encoding="utf-8",
+    )
+    document = translate_datasheet(source)
+    assert not any("请不要把这条给AI看" in note for note in document.notes)
+    assert document.records["7"].theta_offset_deg is None
+
+
+def test_theta_offset_auto_find_reads_structured_record_field():
+    """The cut-preprocessing lookup prefers the per-record ``theta_offset_deg``
+    embedded by the converter; a missing value returns None (no error)."""
+    from peaksMCP.workflows.cut_preprocessing import _theta_offset_from_metadata
+
+    data = xr.DataArray([[1.0, 2.0]], dims=("eV", "theta_par"))
+    data.attrs["experiment_metadata_json"] = json.dumps(
+        {"theta_offset_deg": 1.5, "experiment": {"data_format": "sweep"}}
+    )
+    assert _theta_offset_from_metadata(data) == 1.5
+    data.attrs["experiment_metadata_json"] = json.dumps({"theta_offset_deg": None})
+    assert _theta_offset_from_metadata(data) is None
+    data.attrs.pop("experiment_metadata_json")
+    assert _theta_offset_from_metadata(data) is None
+
+
+def test_gold_reference_marked_from_data_format(tmp_path):
+    """``Au`` / ``gold`` / ``金`` in ``Data format`` is flagged as
+    ``is_gold_reference`` so the agent can pick the gold record to fit the
+    Fermi edge on; the raw ``data_format`` text is preserved either way."""
+    source = tmp_path / "datasheet.csv"
+    source.write_text(
+        "Experiment title,,,,\n"
+        "Index,Theta,Temperature,Ei,Pass E.,Data format\n"
+        "1,30,9.4,2.2,5,Au\n"
+        "2,31,9.4,2.2,5,Au sweep\n"
+        "3,32,9.4,2.2,5,gold\n"
+        "4,33,9.4,2.2,5,金\n"
+        "5,34,9.4,2.2,5,sweep\n"
+        "6,35,9.4,2.2,5,\n",
+        encoding="utf-8",
+    )
+    document = translate_datasheet(source)
+    for key in ("1", "2", "3", "4"):
+        record = document.records[key]
+        assert record.is_gold_reference is True, key
+        assert record.experiment.get("data_format"), key
+    for key in ("5", "6"):
+        assert document.records[key].is_gold_reference is False, key
+
+
 def test_loader_preserves_axes_units_and_float32(monkeypatch, tmp_path):
     source = tmp_path / "BP_0005.pxt"
     source.touch()

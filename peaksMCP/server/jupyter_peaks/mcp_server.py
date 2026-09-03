@@ -16,7 +16,6 @@ from .core import register_safe_tools, register_unsafe_tools
 from .security import AuditLogger, ConsentManager
 
 
-# Canonical parameter schema for the askuserquestion tool, exposed as an MCP
 class JupyterPeaksMCPServer:
     """Own FastMCP, notebook backends and its in-kernel HTTP listener."""
 

@@ -91,15 +91,28 @@ def command_launch(args: argparse.Namespace) -> None:
     root = Path(os.environ.get("PEAKSMCP_HOME", Path.home() / ".peaksMCP"))
     log = root / "logs" / "supervisor.log"
     process: subprocess.Popen[Any] | None = None
+    if current and current.get("stale"):
+        # A crashed supervisor may have left its JupyterLab tree holding the
+        # ports; reap it before the fresh launch tries to bind them.
+        _cleanup_stale_jupyter_tree(current)
     if not current or current.get("stale"):
         log.parent.mkdir(parents=True, exist_ok=True)
-        stream = log.open("a", encoding="utf-8")
+        # Supervisor logs carry redacted-but-sensitive lines and dashboard URLs
+        # with tokens; create owner-only, like the runfile and audit log.
+        descriptor = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        stream = os.fdopen(descriptor, "a", encoding="utf-8")
         notebook_arg = ["--notebook", args.notebook] if getattr(args, "notebook", None) else []
         try:
+            # Launch from the package root, NOT the caller's cwd: if the user
+            # runs from a directory that contains a sibling ``peaksMCP`` folder
+            # (e.g. the project checkout parent), Python treats that folder as a
+            # namespace package and shadows the installed package, breaking
+            # ``import peaksMCP`` ("unknown location", no __version__).
             process = subprocess.Popen(
                 [sys.executable, "-m", "peaksMCP", "_serve", "--profile", args.profile, *notebook_arg],
                 stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.STDOUT,
                 start_new_session=True, close_fds=True,
+                cwd=str(Path(__file__).resolve().parent.parent),
             )
         finally:
             stream.close()
@@ -163,18 +176,54 @@ def command_status(_args: argparse.Namespace) -> None:
     _json(status)
 
 
-def command_stop(_args: argparse.Namespace) -> None:
-    data = _runfile()
-    os.kill(int(data["pid"]), signal.SIGTERM)
-    deadline = time.monotonic() + 20
+def _terminate_supervisor(pid: int) -> None:
+    """Stop a supervisor: SIGTERM first, escalate to SIGKILL, wait until gone.
+
+    The supervisor's own ``stop()`` tears down JupyterLab (8s ceiling) and the
+    dashboard (3s) before exiting, so a plain 20s SIGTERM wait is enough in the
+    normal case; the SIGKILL path only fires for a wedged process.
+    """
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return  # already gone
+    deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         try:
-            os.kill(int(data["pid"]), 0)
+            os.kill(pid, 0)
         except OSError:
-            _json({"stopped": True, "pid": data["pid"]})
             return
         time.sleep(0.2)
-    raise SystemExit("supervisor did not stop within 20 seconds")
+    os.kill(pid, signal.SIGKILL)
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return
+        time.sleep(0.2)
+    raise SystemExit("supervisor did not exit even after SIGKILL; inspect the process tree")
+
+
+def _cleanup_stale_jupyter_tree(data: dict[str, Any]) -> None:
+    """Best-effort reap of an orphaned JupyterLab tree left by a crashed
+    supervisor (its pid is recorded in the stale runfile as ``jupyter_pid``)."""
+    raw = data.get("jupyter_pid")
+    if not raw:
+        return
+    try:
+        jupyter_pid = int(raw)
+        os.killpg(jupyter_pid, signal.SIGTERM)
+        time.sleep(0.5)
+        os.killpg(jupyter_pid, signal.SIGKILL)
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+def command_stop(_args: argparse.Namespace) -> None:
+    data = _runfile()
+    _terminate_supervisor(int(data["pid"]))
+    _json({"stopped": True, "pid": data["pid"]})
 
 
 def command_restart(args: argparse.Namespace) -> None:
@@ -211,20 +260,13 @@ def _restart_stack(args: argparse.Namespace) -> None:
     from .observability import read_runfile
 
     data = read_runfile()
-    if data and not data.get("stale"):
-        try:
-            os.kill(int(data["pid"]), signal.SIGTERM)
-        except ProcessLookupError:
-            pass  # already gone
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline:
-            try:
-                os.kill(int(data["pid"]), 0)
-            except OSError:
-                break
-            time.sleep(0.2)
+    if data:
+        if data.get("stale"):
+            # Previous supervisor crashed: its JupyterLab tree may still own the
+            # ports.  Reap it so the fresh launch can bind them.
+            _cleanup_stale_jupyter_tree(data)
         else:
-            raise SystemExit("supervisor did not stop within 20 seconds")
+            _terminate_supervisor(int(data["pid"]))
     # No supervisor running (or just stopped): launch a fresh stack, exactly
     # like `peaksMCP launch`.
     command_launch(args)

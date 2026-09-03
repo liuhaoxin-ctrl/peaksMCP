@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import re
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,80 @@ def _numeric_field(
     return value
 
 
+def _note_kind(header: str) -> str:
+    """Classify a datasheet note column as 'agent' (AI 请看) or 'human' (AI 别看).
+
+    Headers that state the note must NOT be shown (``不要`` / ``别看`` / ``请勿``
+    / ``hidden``) are AI-hidden; the rest that invite the AI (``请`` / ``agent``)
+    are AI-visible; anything else (plain ``note``) is AI-hidden.
+    """
+    lowered = header.lower()
+    if any(token in lowered for token in ("不要", "别看", "请勿", "勿看", "hidden")):
+        return "human"
+    if "请" in header or "agent" in lowered:
+        return "agent"
+    return "human"
+
+
+#: Number following the ``theta_offset`` token in a note, e.g.
+#: ``theta_offset：1.5`` / ``theta_offset= -0.5度``.
+_THETA_OFFSET_RE = re.compile(
+    r"theta[_ ]?offset\s*[:：=]?\s*([+-]?\d+(?:\.\d+)?)", re.IGNORECASE
+)
+
+
+def _theta_offset_deg(value: str) -> float | None:
+    """Return the first ``theta_offset``-prefixed number in a note, or None."""
+    match = _THETA_OFFSET_RE.search(value or "")
+    if match is None:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
+def _is_gold_format(data_format: str) -> bool:
+    """True when ``Data format`` marks this index as a gold (Au) reference.
+
+    The datasheet tags gold data (used for Fermi-edge fitting) with ``Au`` /
+    ``gold`` / ``金`` in the ``Data format`` column, e.g. ``Au`` or ``Au sweep``.
+    """
+    lowered = (data_format or "").strip().lower().replace("_", " ").replace("-", " ")
+    tokens = lowered.split()
+    return "au" in tokens or "gold" in tokens or "金" in (data_format or "")
+
+
+def _agent_note_from_header(header: str) -> str | None:
+    """Extract the AI-visible note text embedded in a note-column HEADER.
+
+    The L112 datasheet stores the AI-facing note in the column header itself,
+    e.g. ``AI请看的Note：Cut高对称点差不多在+1.5度``.  The part after the first
+    full-width/half-width colon is the note content; nothing after the colon
+    means the header carries no AI-visible note.
+    """
+    for sep in ("：", ":"):
+        if sep in header:
+            content = header.split(sep, 1)[1].strip()
+            return content if content else None
+    return None
+
+
+def _is_note_marker(value: str) -> bool:
+    """True when a cell is only a column-type marker with no real content.
+
+    e.g. ``AI不要看的Note：`` (colon followed by nothing) is a label, not a note.
+    """
+    text = (value or "").strip()
+    for sep in ("：", ":"):
+        if sep in text:
+            head, tail = text.split(sep, 1)
+            if not tail.strip() and "note" in head.lower():
+                return True
+    return False
+
+
+
 def _record(
     index: int,
     row: dict[str, str],
@@ -91,8 +166,9 @@ def _record(
         experiment["energy_start_eV"] = start
     if stop is not None:
         experiment["energy_stop_eV"] = stop
-    if row.get("Data format", "").strip():
-        experiment["data_format"] = row["Data format"].strip()
+    data_format = row.get("Data format", "").strip()
+    if data_format:
+        experiment["data_format"] = data_format
     if row.get("Comment", "").strip():
         experiment["comment"] = row["Comment"].strip()
 
@@ -106,6 +182,7 @@ def _record(
         else {},
         analyser=analyser,
         experiment=experiment,
+        is_gold_reference=_is_gold_format(data_format),
         unmapped=unmapped,
     )
 
@@ -147,7 +224,7 @@ def translate_datasheet(
     title = next((cell.strip() for cell in rows[0] if cell.strip()), "")
     headers = _unique_headers(rows[1])
     note_headers = {
-        header
+        header: _note_kind(header)
         for header in headers
         if "note" in header.lower() or "给agent" in header.lower()
     }
@@ -177,15 +254,36 @@ def translate_datasheet(
         key = str(index)
         if key in records:
             raise ValueError(f"line {line_number}: duplicate Index {index}")
-        records[key] = _record(index, row, warnings, note_headers)
-        for header in note_headers:
+        records[key] = _record(index, row, warnings, set(note_headers))
+        # Only AI-visible ("agent") note-column values enter the metadata;
+        # human-only columns (``AI不要看的Note`` / plain ``note``) are never
+        # exposed to the agent.  The number following ``theta_offset`` in an
+        # agent note becomes this record's structured ``theta_offset_deg``;
+        # absent that token the field stays None (callers ask the user).
+        for header, kind in note_headers.items():
+            if kind != "agent":
+                continue
             value = row.get(header, "").strip()
-            if value:
-                notes.append(f"Index {index}: {value}")
+            if not value or _is_note_marker(value):
+                continue
+            notes.append(f"Index {index}: {value}")
+            if records[key].theta_offset_deg is None:
+                records[key].theta_offset_deg = _theta_offset_deg(value)
 
+    # AI-visible notes embedded in note-column headers come first (agent reads
+    # them before the per-Index notes).
+    agent_notes = [
+        f"{header.split('：', 1)[0]}：{content}"
+        if "：" in header
+        else f"{header.split(':', 1)[0]}：{content}"
+        for header, kind in note_headers.items()
+        if kind == "agent"
+        for content in [_agent_note_from_header(header)]
+        if content
+    ]
     metadata = ExperimentMetadata(
         title=title,
-        notes=notes,
+        notes=[*agent_notes, *notes],
         source_csv=str(source),
         source_sha256=hashlib.sha256(raw).hexdigest(),
         records=records,

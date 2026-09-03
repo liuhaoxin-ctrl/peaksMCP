@@ -110,6 +110,10 @@ class RuntimeSupervisor:
             text=True,
             bufsize=1,
             env=self._jupyter_environment(),
+            # Detached process group so ``stop()`` can reap the whole Jupyter
+            # tree (kernels are grandchildren) with killpg instead of leaving
+            # orphans after a hard kill.
+            start_new_session=True,
         )
         self._reader = threading.Thread(target=self._read_logs, name="peaksMCP-jupyter-log", daemon=True)
         self._reader.start()
@@ -128,6 +132,7 @@ class RuntimeSupervisor:
             "mcp_autostart": self.profile.mcp.autostart,
             "dashboard_token": self.dashboard_token, "started_at": time.time(),
             "process_create_time": psutil.Process(os.getpid()).create_time(),
+            "jupyter_pid": self.jupyter.pid,
         })
         return self.status()
 
@@ -144,6 +149,12 @@ class RuntimeSupervisor:
             encoding="utf-8",
         )
         environment["JUPYTER_CONFIG_DIR"] = str(config_dir)
+        # Kernels write their connection files under the runtime dir; pin it to
+        # the same PEAKSMCP_HOME so ``_kernel_client`` can find this session's
+        # kernel instead of a stale one from the default runtime dir.
+        runtime_dir = home / "jupyter" / "runtime"
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        environment.setdefault("JUPYTER_RUNTIME_DIR", str(runtime_dir))
         # Pass the profile's MCP endpoint into the kernel so the auto-loading
         # startup script keeps its baked defaults only when no supervisor env is
         # present (avoids port collisions between profiles/tests).
@@ -236,9 +247,13 @@ class RuntimeSupervisor:
                 f"dashboard host {host!r} is not loopback; set dashboard.allow_remote=true "
                 "explicitly to expose the authenticated operator console"
             )
-        if not loopback:
-            pass
-        config = uvicorn.Config(create_app(self), host=host, port=self.profile.dashboard.port, log_level="warning")
+        config = uvicorn.Config(
+            create_app(self),
+            host=host,
+            port=self.profile.dashboard.port,
+            log_level="warning",
+            access_log=False,
+        )
         self._dashboard = uvicorn.Server(config)
         self._dashboard_error = None
 
@@ -270,11 +285,13 @@ class RuntimeSupervisor:
     def _kernel_client(self, timeout: float = 20) -> BlockingKernelClient:
         if not self.kernel_id:
             raise RuntimeError("no managed kernel")
-        # The managed JupyterLab runs with JUPYTER_CONFIG_DIR under PEAKSMCP_HOME;
-        # find_connection_file must look there or it may resolve a stale kernel
-        # from the default runtime dir (wrong kernel, wrong extension state).
+        # find_connection_file searches jupyter_core's runtime dir, which follows
+        # JUPYTER_RUNTIME_DIR (not JUPYTER_CONFIG_DIR). The managed JupyterLab is
+        # launched with that variable set under PEAKSMCP_HOME, so mirror the same
+        # default here or a stale kernel from the default runtime dir may resolve
+        # (wrong kernel, wrong extension state).
         home = Path(os.environ.get("PEAKSMCP_HOME", Path.home() / ".peaksMCP"))
-        os.environ.setdefault("JUPYTER_CONFIG_DIR", str(home / "jupyter"))
+        os.environ.setdefault("JUPYTER_RUNTIME_DIR", str(home / "jupyter" / "runtime"))
         connection = find_connection_file(f"kernel-{self.kernel_id}.json")
         client = BlockingKernelClient(connection_file=connection)
         client.load_connection_file()
@@ -526,18 +543,33 @@ class RuntimeSupervisor:
         }
 
     def stop(self) -> None:
-        """Gracefully stop dashboard, kernel/Jupyter and remove the runfile."""
+        """Gracefully stop the dashboard and the Jupyter process tree, then remove
+        the runfile.
+
+        Bounded and deterministic: every stage has a short ceiling so a CLI
+        ``stop``/``restart`` never waits longer than its own poll window.
+        """
         self._stop.set()
-        if self._dashboard:
+        if self._dashboard is not None:
             self._dashboard.should_exit = True
-        if self._dashboard_thread and self._dashboard_thread.is_alive():
-            self._dashboard_thread.join(timeout=5)
-        if self.jupyter and self.jupyter.poll() is None:
+        if self._dashboard_thread is not None and self._dashboard_thread.is_alive():
+            self._dashboard_thread.join(timeout=3)
+        if self.jupyter is not None and self.jupyter.poll() is None:
             self.jupyter.terminate()
             try:
-                self.jupyter.wait(timeout=15)
+                self.jupyter.wait(timeout=8)
             except subprocess.TimeoutExpired:
+                # Jupyter was launched detached (own process group); hard-kill
+                # it AND its whole group so kernels do not survive as orphans.
                 self.jupyter.kill()
+                try:
+                    os.killpg(self.jupyter.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                try:
+                    self.jupyter.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pass
         remove_runfile()
 
     def serve_forever(self) -> None:

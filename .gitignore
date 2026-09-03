@@ -15,7 +15,7 @@ dist/
 .ipynb_checkpoints/
 .playwright-cli/
 peaksMCP-runtime.ipynb
-node_modules/
+peaksMCP-snapshot-*.ipynb
 *.log
 *.part
 聊天记录.md
