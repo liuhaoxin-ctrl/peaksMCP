@@ -19,6 +19,15 @@ from ..security import AuditLogger
 
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _OMITTED_IMAGE_MIME = "application/vnd.peaksmcp.image-omitted+json"
+#: MIME types that only a live browser frontend can render (ipywidgets,
+#: HoloViews/hvplot/Plotly/Bokeh).  The model cannot see interactive widgets
+#: through the text channel, so they are reported as a text marker instead.
+_INTERACTIVE_MIMES = (
+    "application/vnd.jupyter.widget-view+json",
+    "application/vnd.holoviews_load.v0+json",
+    "application/vnd.plotly.v1+json",
+    "application/vnd.bokehjs_exec.v0+json",
+)
 _MAX_IMAGE_BYTES = 8 * 1024 * 1024
 _MAX_RESPONSE_IMAGE_BYTES = 16 * 1024 * 1024
 
@@ -74,6 +83,30 @@ def _summarize_arguments(args: tuple, kwargs: dict[str, Any]) -> dict[str, Any]:
         text = str(value)
         summary[str(key)] = text[:200]
     return summary
+
+
+def _interactive_omitted_content(mime: str) -> TextContent:
+    """Report an interactive widget/panel that only the notebook can render.
+
+    The model cannot receive the live widget through the MCP text channel, so
+    the tool returns a short marker instead of an empty or misleading output —
+    the same pattern used for oversized images.
+    """
+    return TextContent(
+        type="text",
+        text=json.dumps(
+            {
+                "output_type": "interactive_omitted",
+                "mime_type": mime,
+                "note": (
+                    "Interactive panel/widget rendered in the notebook for the "
+                    "user; it cannot be embedded here. Consider it done and "
+                    "describe the figure to the user."
+                ),
+            },
+            ensure_ascii=False,
+        ),
+    )
 
 
 def _register(mcp: FastMCP, name: str, function: Any, audit: AuditLogger) -> None:
@@ -140,6 +173,12 @@ def _output_content(notebook: NotebookBackend) -> list[TextContent | ImageConten
                             reason=str(item.get("reason", "frontend_limit")),
                         )
                     )
+        interactive_mime = next(
+            (mime for mime in _INTERACTIVE_MIMES if data.get(mime)), None
+        )
+        interactive_output = interactive_mime is not None
+        if interactive_output:
+            blocks.append(_interactive_omitted_content(interactive_mime))
         text = output.get("text")
         if text:
             blocks.append(TextContent(type="text", text="".join(text) if isinstance(text, list) else str(text)))
@@ -172,7 +211,7 @@ def _output_content(notebook: NotebookBackend) -> list[TextContent | ImageConten
             included_image_bytes += image_bytes
             output_has_image = True
         plain = data.get("text/plain")
-        if plain and not output_has_image:
+        if plain and not output_has_image and not interactive_output:
             blocks.append(TextContent(type="text", text="".join(plain) if isinstance(plain, list) else str(plain)))
     return blocks or [TextContent(type="text", text="No active-cell output.")]
 

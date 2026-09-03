@@ -68,6 +68,45 @@ def test_output_content_keeps_plain_text_after_an_earlier_image():
     assert any(isinstance(block, TextContent) and block.text == "later text" for block in blocks)
 
 
+def test_output_content_reports_interactive_widget_as_text():
+    import json
+
+    from mcp.types import TextContent
+
+    from peaksMCP.server.jupyter_peaks.core.tools import _output_content
+
+    class Notebook:
+        def active_cell_output(self):
+            return {
+                "outputs": [
+                    {
+                        "data": {
+                            "application/vnd.jupyter.widget-view+json": {
+                                "model_id": "abc",
+                                "version_major": 2,
+                            },
+                            "text/plain": "HoloViews Layout",
+                        }
+                    }
+                ]
+            }
+
+    blocks = _output_content(Notebook())
+    markers = [
+        block.text
+        for block in blocks
+        if isinstance(block, TextContent) and "interactive_omitted" in block.text
+    ]
+    assert len(markers) == 1
+    payload = json.loads(markers[0])
+    assert payload["output_type"] == "interactive_omitted"
+    assert "model_id" not in payload  # no widget state leaks back
+    assert not any(
+        isinstance(block, TextContent) and "HoloViews Layout" in block.text
+        for block in blocks
+    )
+
+
 def test_output_content_preserves_structured_cell_errors():
     import json
 
