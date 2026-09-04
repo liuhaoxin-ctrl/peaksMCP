@@ -64,3 +64,44 @@ def test_titles_validation_and_hidden_blank_axes():
     figure = plot_batch([curve(i) for i in range(6)], max_cols=5)[0]
     assert len([axis for axis in figure.axes if not axis.get_visible()]) == 4
     plt.close(figure)
+
+
+def kspace(index=0):
+    return xr.DataArray(
+        np.arange(24).reshape(4, 6) + index,
+        dims=("eV", "kx"),
+        coords={
+            "eV": xr.DataArray(np.arange(4), dims="eV", attrs={"units": "eV"}),
+            "kx": xr.DataArray(
+                np.linspace(-0.3, 0.3, 6), dims="kx", attrs={"units": "1 / angstrom"}
+            ),
+        },
+        attrs={"units": "counts"},
+        name=f"k-cut {index}",
+    )
+
+
+def test_validation_pair_single_figure_with_ef_guide_and_shared_scale():
+    from matplotlib.figure import Figure
+
+    from peaksMCP.plotting import plot_validation_pair
+
+    fig = plot_validation_pair(image(0), kspace(0), shared_scale=True)
+    assert isinstance(fig, Figure)
+    assert len(fig.axes) == 3  # two panels + one shared colorbar
+    assert any(len(axis.lines) >= 1 for axis in fig.axes)  # dashed EF guide
+    plt.close(fig)
+    # per-panel scale path also renders
+    fig2 = plot_validation_pair(image(0), kspace(0), shared_scale=False, ef_line=False)
+    assert len(fig2.axes) == 3
+    plt.close(fig2)
+
+
+def test_validation_pair_rejects_3d_and_missing_eV():
+    from peaksMCP.plotting import plot_validation_pair
+
+    with pytest.raises(ValueError, match="2D"):
+        plot_validation_pair(image(0).expand_dims(polar=[1]), kspace(0))
+    no_eV = kspace(0).rename({"eV": "binding"})
+    with pytest.raises(ValueError, match="eV"):
+        plot_validation_pair(image(0), no_eV)

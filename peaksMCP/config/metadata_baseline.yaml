@@ -219,26 +219,18 @@ resources:
       dpi: 180
       cmap: viridis
       panels: raw (θ) | k-space (E − E_F)
-    example: 'fig, axes = plt.subplots(1, 2, figsize=(9.0, 4.5), dpi=180, sharey=True)'
+    example: 'fig = plot_validation_pair(raw, processed, shared_scale=True)'
     template: |
-      import matplotlib.pyplot as plt, numpy as np
-      # Run this cell verbatim — the final plt.show() renders exactly ONE figure.
-      # Do NOT append `fig`, `plt.show()` or `display(...)` (double-renders).
-      # raw: 2D (eV, theta_par); processed: 2D (eV, k_par) in binding energy
-      # Read coordinates via da.coords[name].values (or da.<name>.values);
-      # NEVER assign an attribute to a DataArray (da.foo = ... raises AttributeError).
-      fig, axes = plt.subplots(1, 2, figsize=(9.0, 4.5), dpi=180, sharey=True)
-      for ax, da, title in zip(axes, [raw, processed], ["raw (θ)", "k-space (E−E$_F$)"]):
-          xdim = list(set(da.dims) - {"eV"})[0]
-          eV = da.coords["eV"].values
-          k = da.coords[xdim].values
-          v = np.nanpercentile(da.values, 99)
-          im = ax.pcolormesh(k, eV, da.values, vmin=0, vmax=v,
-                             cmap="viridis", shading="auto")
-          ax.set_title(title)
-          ax.set_xlabel(xdim); ax.set_ylabel("eV")
-      fig.colorbar(im, ax=axes, label="counts")
-      plt.show()
+      from peaksMCP.plotting import plot_validation_pair
+
+      # Run this cell verbatim — plot_validation_pair renders inline exactly
+      # ONCE (no extra display()/plt.show()) and applies the figure conventions:
+      # mathtext axis labels, shared y axis, one colorbar and a dashed Fermi
+      # guide on the k-space panel.
+      # raw: 2D (eV, theta_par); processed: 2D (eV, kx) from process_cut.
+      # Options: shared_scale=True compares intensities on one colour scale;
+      # titles / ylabel / ef_line / colorbar_label are also exposed.
+      fig = plot_validation_pair(raw, processed, shared_scale=False)
 
   kz_map:
     title: kz dispersion (hv-scan)
