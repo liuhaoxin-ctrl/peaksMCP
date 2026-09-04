@@ -11,7 +11,9 @@ from .base import ExecutionMode, SharedState, ensure_fresh_index
 
 #: Callable leaves that draw or store a figure, matched against alias-resolved
 #: canonical call names (AST, so comments/strings never trip the guard).
-_PLOT_LEAVES = frozenset({"pcolormesh", "imshow", "subplots", "plot_batch", "savefig"})
+_PLOT_LEAVES = frozenset(
+    {"pcolormesh", "imshow", "subplots", "plot_batch", "plot_validation_pair", "savefig"}
+)
 
 
 def _plot_intent(names: list[str]) -> bool:
@@ -268,6 +270,18 @@ class UnsafeNotebookBackend:
             else:
                 unknown.append({"name": target.leaf, "suggested": [str(m.get("id")) for m in matches]})
 
+        # A name the model already proved with a successful peaks_get_api this
+        # session (canonical name or alias) counts as verified-by-probe: drop it
+        # from the unknown set so it no longer blocks.
+        verified_names = self.state.verified_peaks_names
+        unlocked = [u for u in unknown if u["name"] in verified_names]
+        if unlocked:
+            verified.extend(
+                {"name": u["name"], "matches": list(u.get("suggested") or [])}
+                for u in unlocked
+            )
+        unknown = [u for u in unknown if u["name"] not in verified_names]
+
         api_check: dict[str, Any] = {
             "verified_peaks_apis": verified,
             "generic_refs": generic,
@@ -279,13 +293,49 @@ class UnsafeNotebookBackend:
             "unrecognised method names block execution.",
         }
         if unknown:
+            # Escalation: an unverifiable name must be proven with a successful
+            # peaks_get_api.  First occurrence is advisory (with candidates); a
+            # repeated occurrence of the same unproven name is a hard refusal
+            # until the model actually gets the API.
+            attempts = self.state.unknown_api_attempts
+            for name in [u["name"] for u in unknown]:
+                attempts[name] = attempts.get(name, 0) + 1
+            hard_names = [u["name"] for u in unknown if attempts[u["name"]] >= 2]
+            if hard_names:
+                self.audit.write(
+                    "notebook_write_with_api_check",
+                    "blocked",
+                    {"unknown_refs": hard_names, "reason": "unverified_retry"},
+                )
+                return {
+                    "success": False,
+                    "executed": False,
+                    "blocked": True,
+                    "requires_search": True,
+                    "hard_refusal": True,
+                    "unknown_refs": hard_names,
+                    "message": (
+                        "Execution blocked: these names were already reported as "
+                        f"unverifiable this session ({hard_names}) and no successful "
+                        "peaks_get_api has followed. Call peaks_search_api, then "
+                        "peaks_get_api(<canonical id>) once for each name, then "
+                        "resubmit the cell."
+                    ),
+                    "api_check": api_check,
+                }
             self.audit.write(
-                "notebook_write_with_api_check", "blocked", {"unknown_refs": unknown}
+                "notebook_write_with_api_check",
+                "blocked",
+                {
+                    "unknown_refs": [u["name"] for u in unknown],
+                    "reason": "unknown_first",
+                },
             )
             return {
                 "success": False,
                 "executed": False,
                 "blocked": True,
+                "requires_search": True,
                 "unknown_refs": [u["name"] for u in unknown],
                 "message": (
                     "Execution blocked: unverifiable API reference(s) "
@@ -293,7 +343,8 @@ class UnsafeNotebookBackend:
                     "API by exact name. Use peaks_search_api to find the correct API "
                     f"(candidates: {api_check['suggestions']}) or fix the typo. If the "
                     "receiver is complex (e.g. a function return value), assign it to "
-                    "an intermediate variable first."
+                    "an intermediate variable first. This name must be fetched with "
+                    "peaks_get_api before it can be used."
                 ),
                 "api_check": api_check,
             }

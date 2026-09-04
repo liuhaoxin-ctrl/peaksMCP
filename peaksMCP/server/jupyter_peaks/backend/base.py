@@ -71,6 +71,13 @@ class SharedState:
     kernel_instance_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     mcp_instance_id: str | None = None
     read_plot_resources: bool = False
+    #: API names proven real by a successful ``peaks_get_api`` this session
+    #: (canonical name plus search aliases).  Unknown write references that hit
+    #: this set are unlocked instead of blocked.
+    verified_peaks_names: set[str] = field(default_factory=set)
+    #: Per-name count of unverifiable write attempts, driving the advisory ->
+    #: hard-refusal escalation until the name is proven with peaks_get_api.
+    unknown_api_attempts: dict[str, int] = field(default_factory=dict)
 
     @property
     def namespace(self) -> dict[str, Any]:

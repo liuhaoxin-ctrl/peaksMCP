@@ -73,6 +73,21 @@ def _require_index(state: SharedState):
     return ensure_fresh_index(state)
 
 
+def _record_verified_api(state: SharedState, entry: dict[str, Any]) -> None:
+    """Remember that a canonical API was fetched via peaks_get_api this session.
+
+    Unlocking covers the canonical name and every search alias, so a later
+    cell that writes the alias (e.g. ``preprocess_cut`` for ``process_cut``)
+    is not blocked as an unverifiable name.
+    """
+    names = {str(entry.get("name") or "")}
+    names.update(str(alias) for alias in entry.get("aliases", []) if alias)
+    names.discard("")
+    state.verified_peaks_names.update(names)
+    for name in names:
+        state.unknown_api_attempts.pop(name, None)
+
+
 def _summarize_arguments(args: tuple, kwargs: dict[str, Any]) -> dict[str, Any]:
     """Compact, JSON-safe argument summary for the audit trail."""
     summary: dict[str, Any] = {}
@@ -242,6 +257,7 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
         entry = index.get(canonical_id)
         if entry is None:
             raise KeyError(f"unknown canonical API ID: {canonical_id}")
+        _record_verified_api(state, entry)
         return describe_api(entry)
 
     def askuserquestion(prompt: str, hint: str | None = None, options: list[str] | None = None) -> dict[str, Any]:

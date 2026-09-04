@@ -488,6 +488,71 @@ def test_plot_guard_is_ast_based_not_substring(tmp_path):
     assert "mcp_list_resources" in blocked["message"]
 
 
+def test_unknown_api_first_advisory_then_same_name_hard(tmp_path):
+    """First unknown occurrence is advisory; repeating the same unproven name
+    is a hard refusal until the model proves it with peaks_get_api."""
+    from unittest.mock import Mock
+
+    from peaksMCP.discovery.index import build_index
+    from peaksMCP.server.jupyter_peaks.backend import (
+        SharedState,
+        UnsafeNotebookBackend,
+    )
+    from peaksMCP.server.jupyter_peaks.security import AuditLogger, ConsentManager
+
+    state = SharedState(Mock(user_ns={}))
+    state.require_consent = False
+    state.api_index = build_index()
+    state.bridge = Mock()
+    state.bridge.request.return_value = {"ok": True}
+    nb = UnsafeNotebookBackend(state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl"))
+
+    code = "correct_EF()"
+    first = nb.write_with_api_check(code, timeout=5)
+    assert first["blocked"] is True and first.get("requires_search") is True
+    assert state.unknown_api_attempts["correct_EF"] == 1
+    assert state.bridge.request.call_count == 0
+
+    second = nb.write_with_api_check(code, timeout=5)
+    assert second["blocked"] is True
+    assert second.get("hard_refusal") is True
+    assert state.unknown_api_attempts["correct_EF"] == 2
+    assert state.bridge.request.call_count == 0
+
+
+def test_get_api_proof_unlocks_unknown_name(tmp_path):
+    """A successful peaks_get_api for the canonical API unlocks its alias."""
+    from unittest.mock import Mock
+
+    from peaksMCP.discovery.index import build_index
+    from peaksMCP.server.jupyter_peaks.backend import (
+        SharedState,
+        UnsafeNotebookBackend,
+    )
+    from peaksMCP.server.jupyter_peaks.core.tools import _record_verified_api
+    from peaksMCP.server.jupyter_peaks.security import AuditLogger, ConsentManager
+
+    state = SharedState(Mock(user_ns={}))
+    state.require_consent = False
+    state.api_index = build_index()
+    state.bridge = Mock()
+    state.bridge.request.return_value = {"ok": True}
+    nb = UnsafeNotebookBackend(state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl"))
+
+    # `preprocess_cut` is only an alias of process_cut -> unverifiable by name.
+    first = nb.write_with_api_check("preprocess_cut(da)", timeout=5)
+    assert first["blocked"] is True
+
+    entry = next(e for e in state.api_index.entries if e["name"] == "process_cut")
+    _record_verified_api(state, entry)  # what a successful peaks_get_api records
+
+    again = nb.write_with_api_check("preprocess_cut(da)", timeout=5)
+    assert not again.get("blocked")
+    assert again.get("ok") is True
+    verified = again.get("api_check", {}).get("verified_peaks_apis", [])
+    assert any(item["name"] == "preprocess_cut" for item in verified)
+
+
 def test_call_names_resolve_aliases_and_skip_unparsable():
     from peaksMCP.server.jupyter_peaks.security import call_names
 
