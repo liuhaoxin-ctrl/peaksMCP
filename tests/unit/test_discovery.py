@@ -49,19 +49,19 @@ def test_get_api_returns_source_signature_and_docstring():
 
 def test_interactive_widget_apis_are_discoverable_by_intent():
     index = build_index()
-    iplot = next(item for item in index.entries if item["name"] == "iplot")
-    # The summary must be the real accessor docstring, not xarray's
-    # _CachedAccessor boilerplate ("Custom property-like object ...").
-    assert "Custom property-like object" not in iplot.get("summary", "")
-    assert iplot.get("docstring", "").strip()
-    # iplot has no curated synonyms anymore ("interactive ..." intent resolves
-    # to the native Qt viewer `disp`); it stays findable by its own identity.
-    for query in ("iplot", "hvplot", "interactive"):
-        names = [match["name"] for match in index.search(query, limit=5)]
-        assert "iplot" in names, (query, names)
-    for query in ("interactive panel", "interactive widget", "widget"):
+    # The hvplot-based `iplot` accessor is intentionally hidden from search/get
+    # entirely: "interactive ..." intent resolves to the native Qt viewer disp.
+    assert all(item.get("name") != "iplot" for item in index.entries)
+    assert not any(
+        "peaks.core.GUI.iplot.hvplot" in str(item.get("module", ""))
+        for item in index.entries
+    )
+    for query in ("interactive", "interactive panel", "interactive viewer", "widget"):
         names = [match["name"] for match in index.search(query, limit=5)]
         assert "disp" in names, (query, names)
+    for query in ("iplot", "hvplot"):
+        names = [match["name"] for match in index.search(query, limit=5)]
+        assert "iplot" not in names, (query, names)
 
 
 def test_get_resolves_canonical_id_name_and_alias():

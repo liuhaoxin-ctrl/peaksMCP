@@ -32,6 +32,11 @@ _ADAPTER_SOURCES = (
     "server/jupyter_peaks/core/tools.py",
 )
 
+#: peaks modules whose entries must never be surfaced by search/get.  The
+#: hvplot-based ``iplot`` accessor is intentionally hidden: "interactive"
+#: intent resolves to the native Qt viewer ``disp`` instead.
+_HIDDEN_MODULES = frozenset({"peaks.core.GUI.iplot.hvplot"})
+
 
 class IndexStaleError(RuntimeError):
     """Raised when the cached API index no longer matches the source tree.
@@ -406,6 +411,7 @@ def build_index() -> ApiIndex:
         item.update(override)
         item["aliases"] = sorted(set([*item.get("aliases", []), *item_aliases]))
     fingerprint = source_fingerprint()
+    entries = [item for item in entries if item.get("module") not in _HIDDEN_MODULES]
     return ApiIndex(entries=entries, peaks_version=getattr(peaks, "__version__", "?"), fingerprint=fingerprint)
 
 
