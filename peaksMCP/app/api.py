@@ -232,6 +232,20 @@ async def status_payload(supervisor: RuntimeSupervisor) -> dict[str, Any]:
         mcp, kernel_state = {}, "unknown"
     mcp_status = mcp.get("status") if isinstance(mcp.get("status"), dict) else {}
     jupyter_up = bool(supervisor.jupyter and supervisor.jupyter.poll() is None)
+    # Readiness comes from the declared group state, not process existence:
+    # jupyter_state only becomes "running" once JupyterLab answers HTTP *and*
+    # the managed kernel session exists.  "starting" is a real state (never an
+    # error), and a process that died after being declared running is an error
+    # rather than silently "ready".
+    declared = base.get("jupyter_state")
+    if declared is None:  # legacy supervisors without the group state
+        declared = "running" if jupyter_up else "stopped"
+    if declared == "running":
+        jupyter_ui = "ready" if jupyter_up else "error"
+    elif declared == "starting":
+        jupyter_ui = "starting"
+    else:
+        jupyter_ui = "stopped"
     # The in-kernel MCP only runs inside the notebook kernel, so ``mcp.ok`` is
     # the strongest proof the kernel is alive and usable (Jupyter's REST
     # execution_state can remain "starting" even while the kernel serves cells).
@@ -246,7 +260,7 @@ async def status_payload(supervisor: RuntimeSupervisor) -> dict[str, Any]:
         pass  # kernel is still coming up; report extension as unavailable
     components = {
         "supervisor": {"state": "ready", "detail": f"PID {base['pid']}"},
-        "jupyter": {"state": "ready" if jupyter_up else "error", "detail": supervisor.jupyter_url},
+        "jupyter": {"state": jupyter_ui, "detail": supervisor.jupyter_url},
         "kernel": {"state": "ready" if kernel_ready else "degraded", "detail": kernel_state},
         "extension": {
             "state": "ready" if extension["loaded"] else "degraded",
@@ -256,17 +270,32 @@ async def status_payload(supervisor: RuntimeSupervisor) -> dict[str, Any]:
         "mcp": {"state": "ready" if mcp.get("ok") else "error", "detail": f"{mcp.get('tool_count', 0)} tools · {base['mcp_url']}"},
     }
     states = {item["state"] for item in components.values()}
-    aggregate = "error" if "error" in states else "degraded" if "degraded" in states else "ready"
-    return {
+    aggregate = (
+        "error"
+        if "error" in states
+        else "ready"
+        if states <= {"ready"}
+        else "degraded"
+    )
+    payload = {
         **base,
-        "status": "RUNNING" if jupyter_up else "STOPPED",
+        "status": (
+            "RUNNING" if jupyter_ui == "ready"
+            else "STARTING" if declared == "starting"
+            else "STOPPED"
+        ),
         "supervisor_running": True,
         "kernel_state": kernel_state,
         "aggregate": aggregate,
         "components": components,
         "mcp": mcp,
-        "notebook_open_url": "/open-notebook",
     }
+    # The managed notebook can only be opened once Jupyter is truly usable;
+    # exposing the URL while stopped/starting is what made the dashboard's
+    # "Open Notebook" control look available too early.
+    if jupyter_ui == "ready":
+        payload["notebook_open_url"] = "/open-notebook"
+    return payload
 
 
 async def _create_notebook_snapshot(supervisor: RuntimeSupervisor) -> str:

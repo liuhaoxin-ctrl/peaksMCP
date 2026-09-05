@@ -400,6 +400,7 @@ main {
 
 .component.ready::before { background: var(--accent); }
 .component.degraded::before { background: var(--warning); }
+.component.starting::before { background: var(--warning); }
 .component.error::before { background: var(--danger); }
 
 .component:hover {
@@ -421,6 +422,7 @@ main {
 
 .component.ready .component-icon { color: var(--accent); }
 .component.degraded .component-icon { color: var(--warning); }
+.component.starting .component-icon { color: var(--warning); }
 .component.error .component-icon { color: var(--danger); }
 
 .component-state {
@@ -434,6 +436,7 @@ main {
 
 .component.ready .component-state { color: var(--accent); }
 .component.degraded .component-state { color: var(--warning); }
+.component.starting .component-state { color: var(--warning); }
 .component.error .component-state { color: var(--danger); }
 
 .component b {

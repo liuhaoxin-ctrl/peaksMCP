@@ -121,17 +121,29 @@ function setEnabled(btn, enabled) {
 
 function renderControls(s) {
   const mcpReady = (s.components?.mcp?.state) === 'ready';
-  const jupyterState = s.jupyter_state || (s.components?.jupyter?.state === 'ready' ? 'running' : 'stopped');
-  const jupyterOn = jupyterState !== 'stopped';
+  const commReady = (s.components?.comm?.state) === 'ready';
+  let jupyterState = s.jupyter_state;
+  if (!jupyterState) {
+    const cs = s.components?.jupyter?.state;
+    jupyterState = cs === 'ready' ? 'running' : cs === 'starting' ? 'starting' : 'stopped';
+  }
+  // The stop/start buttons follow the *declared* group state: after clicking
+  // Start Jupyter the group is "starting" and neither button is live until the
+  // host reports "running" (HTTP up + managed kernel session exists).
+  const jupyterReady = jupyterState === 'running';
   const hostUp = s.supervisor_running !== false;
-  setEnabled($('#start-jupyter'), hostUp && !jupyterOn);
-  setEnabled($('#stop-jupyter'), hostUp && jupyterOn);
-  setEnabled($('#start-mcp'), hostUp && jupyterOn && !mcpReady);
+  setEnabled($('#start-jupyter'), hostUp && jupyterState === 'stopped');
+  setEnabled($('#stop-jupyter'), hostUp && jupyterReady);
+  setEnabled($('#start-mcp'), hostUp && jupyterReady && !mcpReady);
   setEnabled($('#stop-mcp'), hostUp && mcpReady);
   const lab = $('#open-lab');
   if (lab) {
-    lab.href = s.notebook_open_url || s.notebook_url || '';
-    const on = !!lab.href;
+    lab.href = s.notebook_open_url || '';
+    // Open-once semantics: usable only while Jupyter is ready AND no frontend
+    // session is attached yet; once the Comm bridge connects, the managed
+    // notebook is already open, so the button grays out (same pattern as
+    // Start MCP after the MCP is started).
+    const on = hostUp && jupyterReady && !commReady && !!lab.href;
     lab.style.pointerEvents = on ? 'auto' : 'none';
     lab.style.opacity = on ? '1' : '0.3';
   }
@@ -171,7 +183,7 @@ function renderComponents(s) {
       </div>`;
   } else {
     container.replaceChildren();
-    const allowedStates = new Set(['ready', 'degraded', 'error', 'loading', 'unknown']);
+    const allowedStates = new Set(['ready', 'degraded', 'error', 'loading', 'starting', 'stopped', 'unknown']);
     entries.forEach(([name, c]) => {
       const stateClass = allowedStates.has(c.state) ? c.state : 'unknown';
       const stateIcon = {
@@ -179,6 +191,8 @@ function renderComponents(s) {
         degraded: '◐',
         error: '●',
         loading: '◐',
+        starting: '◐',
+        stopped: '○',
         unknown: '○'
       }[stateClass] || '○';
       const article = document.createElement('article');
@@ -418,13 +432,19 @@ bind('#pick-folder', 'click', async () => {
 
 initResultToggles();
 refresh();
-const refreshInterval = setInterval(refresh, 5000);
+let refreshTimer = setInterval(refresh, 5000);
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
-    clearInterval(refreshInterval);
+    clearInterval(refreshTimer);
+    refreshTimer = null;
   } else {
     refresh();
-    setInterval(refresh, 5000);
+    // Re-create the poller only when none is running: recreating on every
+    // return to the tab would accumulate untracked intervals that a later
+    // hide could never clear (only the original id was remembered).
+    if (refreshTimer === null) {
+      refreshTimer = setInterval(refresh, 5000);
+    }
   }
 });

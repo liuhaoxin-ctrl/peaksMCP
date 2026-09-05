@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from starlette.testclient import TestClient
 
 from peaksMCP.app.api import create_app
@@ -167,8 +168,9 @@ class _FakeProfile:
 
 
 class _FakeSupervisor:
-    def __init__(self) -> None:
-        self.jupyter = _FakeJupyter()
+    def __init__(self, jupyter_state: str = "running", jupyter_alive: bool = True) -> None:
+        self.jupyter = _FakeJupyter() if jupyter_alive else None
+        self.jupyter_state = jupyter_state
         self.jupyter_url = "http://127.0.0.1:8888"
         self.dashboard_url = "http://127.0.0.1:8765"
         self.kernel_id = "k1"
@@ -185,6 +187,7 @@ class _FakeSupervisor:
             "jupyter_url": self.jupyter_url, "dashboard_url": self.dashboard_url,
             "notebook_url": f"{self.jupyter_url}/lab/tree/peaksMCP-runtime.ipynb",
             "mcp_url": "http://127.0.0.1:8123/mcp",
+            "jupyter_state": self.jupyter_state,
         }
 
     def restart_mcp(self, timeout: float = 45) -> dict:
@@ -336,6 +339,40 @@ def test_status_reports_mcp_offline(monkeypatch):
     assert status["components"]["mcp"]["state"] == "error"
     assert status["aggregate"] == "error"
     assert status["components"]["extension"]["state"] == "ready"
+
+
+@pytest.mark.parametrize(
+    "jupyter_state,jupyter_alive,expected_ui,expected_top,open_url",
+    [
+        ("starting", True, "starting", "STARTING", False),
+        ("starting", False, "starting", "STARTING", False),
+        ("stopped", False, "stopped", "STOPPED", False),
+        ("stopped", True, "stopped", "STOPPED", False),
+        # A process that died after being declared running is an error, never
+        # a silent "ready".
+        ("running", False, "error", "STOPPED", False),
+    ],
+)
+def test_status_jupyter_readiness_from_declared_state(
+    monkeypatch, jupyter_state, jupyter_alive, expected_ui, expected_top, open_url
+):
+    """Readiness reflects the declared group state, not just process existence:
+    "starting" is a real state (never an error) and the managed-notebook open
+    URL is only exposed once Jupyter is truly ready."""
+    monkeypatch.setattr("peaksMCP.app.api._mcp_probe", _online_mcp)
+    monkeypatch.setattr("peaksMCP.app.api._jupyter_kernel_state", _idle_kernel)
+    supervisor = _FakeSupervisor(jupyter_state=jupyter_state, jupyter_alive=jupyter_alive)
+    client, _supervisor = _authenticated_client(supervisor)
+    status = client.get("/api/status").json()
+    assert status["components"]["jupyter"]["state"] == expected_ui
+    assert status["status"] == expected_top
+    assert ("notebook_open_url" in status) is open_url
+    if expected_ui == "ready":
+        assert status["aggregate"] == "ready"
+    elif expected_ui == "error":
+        assert status["aggregate"] == "error"
+    else:
+        assert status["aggregate"] == "degraded"
 
 
 def test_start_mcp_and_restart_delegate(monkeypatch):
