@@ -216,24 +216,34 @@ async def _mcp_probe(supervisor: RuntimeSupervisor) -> dict[str, Any]:
 
 
 async def status_payload(supervisor: RuntimeSupervisor) -> dict[str, Any]:
-    """Compose the live operator-console status snapshot."""
+    """Compose the live operator-console status snapshot.
+
+    Tolerates a still-starting stack: while Jupyter/kernel/MCP come up the
+    individual probes may fail, but the status endpoint must always answer 200
+    so the dashboard (and ``peaksMCP dash`` readiness) can show "starting".
+    """
     base = supervisor.status()
-    mcp, kernel_state = await asyncio.gather(
-        _mcp_probe(supervisor),
-        _jupyter_kernel_state(supervisor),
-    )
+    try:
+        mcp, kernel_state = await asyncio.gather(
+            _mcp_probe(supervisor),
+            _jupyter_kernel_state(supervisor),
+        )
+    except Exception:
+        mcp, kernel_state = {}, "unknown"
     mcp_status = mcp.get("status") if isinstance(mcp.get("status"), dict) else {}
     jupyter_up = bool(supervisor.jupyter and supervisor.jupyter.poll() is None)
     # The in-kernel MCP only runs inside the notebook kernel, so ``mcp.ok`` is
     # the strongest proof the kernel is alive and usable (Jupyter's REST
     # execution_state can remain "starting" even while the kernel serves cells).
     kernel_ready = bool(mcp.get("ok")) or kernel_state in {"idle", "busy"}
-    if mcp.get("ok"):
-        extension = {"loaded": True, "detail": "IPython extension loaded"}
-    elif kernel_ready:
-        extension = await asyncio.to_thread(supervisor.extension_status)
-    else:
-        extension = {"loaded": False, "detail": "kernel unavailable"}
+    extension: dict[str, Any] = {"loaded": False, "detail": "kernel unavailable"}
+    try:
+        if mcp.get("ok"):
+            extension = {"loaded": True, "detail": "IPython extension loaded"}
+        elif kernel_ready:
+            extension = await asyncio.to_thread(supervisor.extension_status)
+    except Exception:
+        pass  # kernel is still coming up; report extension as unavailable
     components = {
         "supervisor": {"state": "ready", "detail": f"PID {base['pid']}"},
         "jupyter": {"state": "ready" if jupyter_up else "error", "detail": supervisor.jupyter_url},
@@ -371,6 +381,28 @@ def create_app(supervisor: RuntimeSupervisor) -> Starlette:
         require_auth(_request, mutation=True)
         try:
             return JSONResponse(await asyncio.to_thread(supervisor.start_mcp))
+        except Exception as exc:
+            return JSONResponse({"error_type": type(exc).__name__, "error": str(exc)}, status_code=409)
+
+    async def jupyter_control(request: Request) -> JSONResponse:
+        require_auth(request, mutation=True)
+        action = request.path_params["action"]
+        method = {
+            "start": supervisor.start_jupyter,
+            "stop": supervisor.stop_jupyter,
+            "restart": supervisor.restart_jupyter,
+        }.get(action)
+        if method is None:
+            return JSONResponse({"error": "action must be start, stop or restart"}, status_code=400)
+        try:
+            return JSONResponse(await asyncio.to_thread(method))
+        except Exception as exc:
+            return JSONResponse({"error_type": type(exc).__name__, "error": str(exc)}, status_code=409)
+
+    async def stop_mcp(_request: Request) -> JSONResponse:
+        require_auth(_request, mutation=True)
+        try:
+            return JSONResponse(await asyncio.to_thread(supervisor.stop_mcp))
         except Exception as exc:
             return JSONResponse({"error_type": type(exc).__name__, "error": str(exc)}, status_code=409)
 
@@ -532,6 +564,8 @@ def create_app(supervisor: RuntimeSupervisor) -> Starlette:
         Route("/", index), Route("/open-notebook", open_notebook),
         Route("/assets/{name}", asset), Route("/api/status", status),
         Route("/api/start-mcp", start_mcp, methods=["POST"]),
+        Route("/api/mcp/stop", stop_mcp, methods=["POST"]),
+        Route("/api/jupyter/{action}", jupyter_control, methods=["POST"]),
         Route("/api/restart/{component}", restart, methods=["POST"]),
         Route("/api/mcp/tool", tool_call, methods=["POST"]),
         Route("/api/metadata/translate", translate, methods=["POST"]),

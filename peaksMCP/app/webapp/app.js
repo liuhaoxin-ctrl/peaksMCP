@@ -14,9 +14,16 @@ function bind(selector, event, handler) {
 
 function toast(message, type = 'info', duration = 4000) {
   const container = $('#toast-container');
+  const existing = [...container.children].find(t => t.dataset.msg === message && t.dataset.type === type);
+  if (existing) {
+    existing.remove();
+  }
+
   const el = document.createElement('div');
   el.className = `toast ${type}`;
-  const icons = { success: '◉', error: '◉', warning: '◉', info: '◉' };
+  el.dataset.msg = message;
+  el.dataset.type = type;
+  const icons = { success: '●', error: '●', warning: '●', info: '●' };
   const colors = {
     success: 'var(--accent)',
     error: 'var(--danger)',
@@ -25,22 +32,22 @@ function toast(message, type = 'info', duration = 4000) {
   };
   const icon = document.createElement('span');
   icon.style.color = colors[type] || colors.info;
-  icon.style.fontSize = '10px';
-  icon.textContent = icons[type] || '◉';
+  icon.style.fontSize = '9px';
+  icon.textContent = icons[type] || '●';
   const text = document.createElement('span');
   text.textContent = String(message);
   el.append(icon, text);
   container.appendChild(el);
 
   el.addEventListener('click', () => {
-    el.style.animation = 'toastOut 0.25s ease forwards';
-    setTimeout(() => el.remove(), 250);
+    el.style.animation = 'toastOut 0.2s ease forwards';
+    setTimeout(() => el.remove(), 200);
   });
 
   setTimeout(() => {
     if (el.parentNode) {
-      el.style.animation = 'toastOut 0.25s ease forwards';
-      setTimeout(() => el.remove(), 250);
+      el.style.animation = 'toastOut 0.2s ease forwards';
+      setTimeout(() => el.remove(), 200);
     }
   }, duration);
 }
@@ -70,43 +77,90 @@ bind('#confirm-modal', 'click', (e) => {
 });
 
 // =====================
+// Collapsible result panels
+// =====================
+
+function initResultToggles() {
+  document.querySelectorAll('.result-toggle').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const targetId = btn.dataset.target;
+      const panel = document.getElementById(targetId);
+      if (!panel) return;
+      const isCollapsed = panel.classList.toggle('collapsed');
+      btn.textContent = isCollapsed ? '+' : '−';
+    });
+  });
+}
+
+function showResultPanel(id) {
+  const panel = document.getElementById(id);
+  if (!panel) return;
+  panel.style.display = 'flex';
+  panel.classList.remove('collapsed');
+  const btn = panel.querySelector('.result-toggle');
+  if (btn) btn.textContent = '−';
+}
+
+function hideResultPanel(id) {
+  const panel = document.getElementById(id);
+  if (!panel) return;
+  panel.style.display = 'none';
+}
+
+// =====================
 // Controls
 // =====================
 
 function setEnabled(btn, enabled) {
   if (!btn) return;
   btn.disabled = !enabled;
-  btn.style.opacity = enabled ? '1' : '0.4';
+  btn.style.opacity = enabled ? '1' : '0.3';
   btn.style.cursor = enabled ? 'pointer' : 'not-allowed';
   btn.style.pointerEvents = enabled ? 'auto' : 'none';
 }
 
 function renderControls(s) {
   const mcpReady = (s.components?.mcp?.state) === 'ready';
+  const jupyterState = s.jupyter_state || (s.components?.jupyter?.state === 'ready' ? 'running' : 'stopped');
+  const jupyterOn = jupyterState !== 'stopped';
+  const hostUp = s.supervisor_running !== false;
+  setEnabled($('#start-jupyter'), hostUp && !jupyterOn);
+  setEnabled($('#stop-jupyter'), hostUp && jupyterOn);
+  setEnabled($('#start-mcp'), hostUp && jupyterOn && !mcpReady);
+  setEnabled($('#stop-mcp'), hostUp && mcpReady);
   const lab = $('#open-lab');
   if (lab) {
     lab.href = s.notebook_open_url || s.notebook_url || '';
     const on = !!lab.href;
     lab.style.pointerEvents = on ? 'auto' : 'none';
-    lab.style.opacity = on ? '1' : '0.35';
+    lab.style.opacity = on ? '1' : '0.3';
   }
-  setEnabled($('#start-mcp'), !mcpReady);
-  setEnabled($('#restart-mcp'), mcpReady);
-  setEnabled($('#restart-kernel'), true);
-  setEnabled($('#restart-all'), true);
 }
 
 // =====================
-// Components
+// Components & Stats
 // =====================
 
 function renderComponents(s) {
   $('#profile').textContent = `profile: ${s.profile}`;
+  $('#profile-display').textContent = `profile: ${s.profile}`;
   $('#state').textContent = (s.aggregate || s.status || '?').toUpperCase();
+
+  const stateLarge = $('#state-large');
+  const agg = s.aggregate || s.status || 'unknown';
+  stateLarge.textContent = agg.toUpperCase();
+  stateLarge.className = `state-large ${agg}`;
 
   const container = $('#components');
   const comps = s.components || {};
   const entries = Object.entries(comps);
+
+  const total = entries.length;
+  const ready = entries.filter(([, c]) => c.state === 'ready').length;
+  const errors = entries.filter(([, c]) => c.state === 'error').length;
+  $('#stat-total').textContent = total;
+  $('#stat-ready').textContent = ready;
+  $('#stat-error').textContent = errors;
 
   if (entries.length === 0) {
     container.innerHTML = `
@@ -147,7 +201,6 @@ function renderComponents(s) {
     });
   }
 
-  const agg = s.aggregate || s.status || 'unknown';
   const badge = $('#components-status');
   if (badge) {
     badge.className = `status-badge ${agg}`;
@@ -157,15 +210,29 @@ function renderComponents(s) {
   renderControls(s);
 }
 
+// =====================
+// Refresh with lock & visibility awareness
+// =====================
+
+let refreshLock = false;
+
 async function refresh() {
+  if (refreshLock) return;
+  refreshLock = true;
   try {
     const s = await fetch('/api/status').then(r => r.json());
     $('#connection').classList.add('up');
+    $('#connection-display').classList.add('up');
     renderComponents(s);
   } catch (e) {
     $('#state').textContent = 'OFFLINE';
+    $('#state-large').textContent = 'OFFLINE';
+    $('#state-large').className = 'state-large error';
     $('#connection').classList.remove('up');
+    $('#connection-display').classList.remove('up');
     toast('Connection lost — retrying…', 'error');
+  } finally {
+    refreshLock = false;
   }
 }
 
@@ -177,30 +244,24 @@ async function postAction(path, label, options = {}) {
   const { confirm: needConfirm, confirmMsg } = options;
 
   const run = async () => {
-    $('#action-result').style.display = 'block';
-    $('#action-result').textContent = `${label}…`;
+    const fail = (msg, detail) => {
+      toast(detail ? `${msg}: ${detail}` : msg, 'error');
+      refresh();
+    };
     try {
       const resp = await fetch(path, { method: 'POST' });
       const r = await resp.json();
       if (!resp.ok) {
-        $('#action-result').textContent = pretty(r);
-        toast(`${label} failed`, 'error');
-        refresh();
+        fail(`${label} failed`, (r && (r.error || r.detail)) || `HTTP ${resp.status}`);
         return;
       }
-      // Some endpoints answer 200 but carry an explicit failure (restart
-      // ready:false, load loaded:false, snapshot errors).
       if (r && (r.ready === false || r.ok === false || r.loaded === false || r.error)) {
-        $('#action-result').textContent = pretty(r);
-        toast(`${label} failed (partial or unsuccessful)`, 'error');
-        refresh();
+        fail(`${label} failed (partial or unsuccessful)`, r.error || r.detail);
         return;
       }
-      $('#action-result').textContent = pretty(r);
       toast(`${label} completed`, 'success');
     } catch (e) {
-      $('#action-result').textContent = String(e);
-      toast(`${label} failed`, 'error');
+      toast(`${label} failed: ${e}`, 'error');
     }
     refresh();
   };
@@ -213,11 +274,11 @@ async function postAction(path, label, options = {}) {
 }
 
 bind('#start-mcp', 'click', () => postAction('/api/start-mcp', 'Start MCP'));
-bind('#restart-mcp', 'click', () => postAction('/api/restart/mcp', 'Restart MCP'));
-bind('#restart-kernel', 'click', () => postAction('/api/restart/kernel', 'Restart Kernel'));
-bind('#restart-all', 'click', () => postAction('/api/restart/all', 'Restart Kernel + MCP', {
+bind('#stop-mcp', 'click', () => postAction('/api/mcp/stop', 'Stop MCP'));
+bind('#start-jupyter', 'click', () => postAction('/api/jupyter/start', 'Start Jupyter'));
+bind('#stop-jupyter', 'click', () => postAction('/api/jupyter/stop', 'Stop Jupyter', {
   confirm: true,
-  confirmMsg: 'Restart the managed kernel and in-kernel MCP? This will interrupt active operations.'
+  confirmMsg: 'Stop JupyterLab and its managed kernel? The dashboard stays up and can restart it.'
 }));
 
 bind('#snapshot-button', 'click', () => postAction('/api/notebook/snapshot', 'Save snapshot'));
@@ -233,13 +294,11 @@ bind('#convert', 'submit', async e => {
   btn.innerHTML = '<span class="spinner"></span> Converting…';
   btn.disabled = true;
 
-  $('#convert-result').style.display = 'block';
+  showResultPanel('convert-result-panel');
   $('#convert-result').textContent = 'Converting…';
 
   try {
-    const body = {
-      input: $('#pxt-input').value
-    };
+    const body = { input: $('#pxt-input').value };
     const resp = await fetch('/api/convert', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -249,10 +308,7 @@ bind('#convert', 'submit', async e => {
 
     $('#convert-result').textContent = pretty(r);
     if (!resp.ok) throw new Error(r.error || r.error_type || 'Conversion failed');
-    // Unified Load control: only files whose output actually exists on disk are
-    // loadable.  "skipped" may mean "already on disk" OR "CPU budget wait timed
-    // out" (no output); cancelled items have no output either — the backend
-    // reports output_exists precisely for each item.
+
     const loadable = Array.isArray(r.items) ? r.items.filter(x => x.output_exists) : [];
     renderLoadControl(loadable);
     const failures = Array.isArray(r.items) ? r.items.filter(x => x.status === 'failed').length : 0;
@@ -286,7 +342,8 @@ function renderLoadControl(items) {
     const option = document.createElement('option');
     option.value = String(item.output);
     const label = String(item.output).split('/').pop();
-    option.textContent = item.status === 'skipped' ? `${label} (already on disk)` : label;    select.appendChild(option);
+    option.textContent = item.status === 'skipped' ? `${label} (already on disk)` : label;
+    select.appendChild(option);
   });
   const buttons = document.createElement('div');
   buttons.className = 'load-buttons';
@@ -306,7 +363,6 @@ function renderLoadControl(items) {
 
   const run = async (paths) => {
     if (paths.length === 0) { toast('No files selected', 'warning'); return; }
-    $('#convert-result').style.display = 'block';
     $('#convert-result').textContent = 'Loading into notebook…';
     try {
       const resp = await fetch('/api/notebook/load', {
@@ -342,12 +398,12 @@ bind('#pick-folder', 'click', async () => {
       $('#pxt-input').value = r.path;
       toast('Folder selected', 'success');
     } else {
-      $('#convert-result').style.display = 'block';
+      showResultPanel('convert-result-panel');
       $('#convert-result').textContent = pretty(r);
       toast('Folder selection failed', 'error');
     }
   } catch (e) {
-    $('#convert-result').style.display = 'block';
+    showResultPanel('convert-result-panel');
     $('#convert-result').textContent = String(e);
     toast('Folder selection failed', 'error');
   } finally {
@@ -360,5 +416,15 @@ bind('#pick-folder', 'click', async () => {
 // Init
 // =====================
 
+initResultToggles();
 refresh();
-setInterval(refresh, 5000);
+const refreshInterval = setInterval(refresh, 5000);
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    clearInterval(refreshInterval);
+  } else {
+    refresh();
+    setInterval(refresh, 5000);
+  }
+});

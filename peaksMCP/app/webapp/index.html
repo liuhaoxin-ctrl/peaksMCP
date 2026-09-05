@@ -9,52 +9,84 @@
 <body>
   <header>
     <div class="brand">
-      <span class="eyebrow">ARPES Control Plane</span>
       <h1>peaksMCP</h1>
     </div>
     <div class="header-state">
       <span id="profile" class="pill">profile: …</span>
-      <span id="state" class="pill">LOADING</span>
+      <span id="state" class="pill state-pill">LOADING</span>
       <span id="connection" class="connection">●</span>
     </div>
   </header>
 
   <main>
-    <!-- Control Panel: Components + Actions -->
-    <section class="card wide control-panel">
+    <!-- Status Overview -->
+    <section class="card status-card">
+      <div class="status-main">
+        <div class="state-large" id="state-large">LOADING</div>
+        <div class="status-row">
+          <span id="profile-display" class="pill">profile: …</span>
+          <span id="connection-display" class="connection">●</span>
+        </div>
+      </div>
+      <div class="status-stats">
+        <div class="stat">
+          <span class="stat-value" id="stat-total">-</span>
+          <span class="stat-label">Components</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value ready" id="stat-ready">-</span>
+          <span class="stat-label">Ready</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value error" id="stat-error">-</span>
+          <span class="stat-label">Errors</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Quick Actions -->
+    <section class="card actions-card">
+      <h3>Actions</h3>
+      <div class="actions-group">
+        <a id="open-lab" class="button primary" target="_blank" rel="noopener" style="opacity:.35;pointer-events:none">
+          <span class="btn-icon">↗</span> Open Notebook
+        </a>
+        <button id="snapshot-button" class="button">
+          <span class="btn-icon">↓</span> Snapshot
+        </button>
+      </div>
+      <div class="actions-divider"></div>
+      <div class="actions-group">
+        <button id="start-jupyter" class="button">
+          <span class="btn-icon">▶</span> Start Jupyter
+        </button>
+        <button id="stop-jupyter" class="button danger" disabled style="opacity:.4">
+          <span class="btn-icon">■</span> Stop Jupyter
+        </button>
+      </div>
+      <div class="actions-divider"></div>
+      <div class="actions-group">
+        <button id="start-mcp" class="button">
+          <span class="btn-icon">▶</span> Start MCP
+        </button>
+        <button id="stop-mcp" class="button" disabled style="opacity:.4">
+          <span class="btn-icon">■</span> Stop MCP
+        </button>
+      </div>
+    </section>
+
+    <!-- Components -->
+    <section class="card wide components-section">
       <div class="panel-header">
         <h2>Active Components</h2>
         <span id="components-status" class="status-badge unknown">Unknown</span>
       </div>
       <div id="components" class="components-grid"></div>
-
-      <div class="toolbar">
-        <a id="open-lab" class="button primary" target="_blank" rel="noopener" style="opacity:.4;pointer-events:none">
-          <span class="btn-icon">◈</span> Open Notebook
-        </a>
-        <button id="snapshot-button" class="button">
-          <span class="btn-icon">💾</span> Save snapshot
-        </button>
-        <div class="toolbar-divider"></div>
-        <button id="start-mcp" class="button">
-          <span class="btn-icon">▶</span> Start MCP
-        </button>
-        <button id="restart-mcp" class="button" disabled style="opacity:.4">
-          <span class="btn-icon">↻</span> Restart MCP
-        </button>
-        <button id="restart-kernel" class="button">
-          <span class="btn-icon">↻</span> Restart Kernel
-        </button>
-        <button id="restart-all" class="button danger">
-          <span class="btn-icon">⚠</span> Restart Kernel + MCP
-        </button>
-      </div>
-      <pre id="action-result" style="display:none;"></pre>
     </section>
 
-    <!-- CSV + PXT Conversion -->
-    <section class="card pxt-card">
-      <h2>CSV &amp; PXT Conversion</h2>
+    <!-- Conversion Input -->
+    <section class="card conversion-input">
+      <h2>PXT Conversion</h2>
       <p class="subtitle">Translate the sibling datasheet.csv to metadata, then convert PXT to NetCDF.</p>
       <form id="convert">
         <div class="form-row">
@@ -67,10 +99,22 @@
           <span class="btn-icon">▶</span> Start Conversion
         </button>
       </form>
-      <pre id="convert-result" style="display:none;"></pre>
-      <div id="load-actions"></div>
     </section>
 
+    <!-- Conversion Output -->
+    <section class="card conversion-output">
+      <h2>Output</h2>
+      <div class="result-panel" id="convert-result-panel" style="display:none;">
+        <div class="result-bar">
+          <span class="result-label">Result</span>
+          <button type="button" class="result-toggle" data-target="convert-result-panel" aria-label="Toggle">−</button>
+        </div>
+        <div class="result-body">
+          <pre id="convert-result"></pre>
+        </div>
+      </div>
+      <div id="load-actions"></div>
+    </section>
   </main>
 
   <div id="toast-container"></div>
