@@ -53,6 +53,7 @@ class RuntimeSupervisor:
         self.token = secrets.token_urlsafe(24)
         self.dashboard_token = secrets.token_urlsafe(24)
         self.jupyter: subprocess.Popen[str] | None = None
+        self.jupyter_process_create_time: float | None = None
         self.kernel_id: str | None = None
         self.session_id: str | None = None
         self.notebook_path = "peaksMCP-runtime.ipynb"
@@ -61,6 +62,12 @@ class RuntimeSupervisor:
         self._dashboard_thread: threading.Thread | None = None
         self._dashboard_error: BaseException | None = None
         self._stop = threading.Event()
+        self._lifecycle_lock = threading.RLock()
+        self._host_stopping = False
+        #: stopped | starting | running — dashboard/CLI report this while Jupyter
+        #: comes up in the background after the dashboard is already served.
+        self.jupyter_state: str = "stopped"
+        self.last_error: str | None = None
 
     @property
     def jupyter_url(self) -> str:
@@ -74,20 +81,74 @@ class RuntimeSupervisor:
         return {"Authorization": f"token {self.token}"}
 
     def start(self, timeout: float = 60) -> dict[str, Any]:
-        """Start JupyterLab, create the managed kernel and serve the dashboard."""
+        """Bring the dashboard up first, then start JupyterLab + its kernel.
+
+        The co-hosted dashboard is served immediately so ``peaksMCP dash``
+        returns within a second and shows a "starting" state; JupyterLab and
+        the managed kernel come up next.  Jupyter startup failures are recorded
+        in the runfile but do not stop the dashboard host, allowing the operator
+        to inspect the error and retry from the dashboard.
+        """
+        with self._lifecycle_lock:
+            self.jupyter_state = "starting"
+            self.last_error = None
+            self._start_dashboard()
+            self._write_runfile()  # dashboard already reachable: record the host now
+            try:
+                self._spawn_jupyter(timeout)
+                self.session_id, self.kernel_id = self._create_session()
+            except Exception as exc:
+                self._record_jupyter_failure(exc)
+            else:
+                self.jupyter_state = "running"
+                self._write_runfile()
+            return self.status()
+
+    def _record_jupyter_failure(self, exc: BaseException) -> None:
+        """Record a failed Jupyter group while keeping the dashboard alive."""
+        with self._lifecycle_lock:
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            print(f"JupyterLab unavailable: {self.last_error}", file=sys.stderr, flush=True)
+            # A timeout or session-creation failure can leave the child alive.
+            # Reap it before exposing Start Jupyter again so a retry can bind.
+            self._stop_jupyter_unlocked(publish=True)
+
+    def _require_host_active(self) -> None:
+        """Reject lifecycle requests once host shutdown has begun."""
+        if self._host_stopping or self._stop.is_set():
+            raise RuntimeError("dashboard host is stopping")
+
+    def _write_runfile(self) -> None:
+        """Persist host state; kernel fields may be None while Jupyter starts."""
+        with self._lifecycle_lock:
+            write_runfile({
+                "pid": os.getpid(), "profile": self.profile.name,
+                "kernel_id": self.kernel_id, "session_id": self.session_id,
+                "notebook_path": self.notebook_path,
+                "jupyter_url": self.jupyter_url, "dashboard_url": self.dashboard_url,
+                "jupyter_port": self.profile.jupyter.port,
+                "dashboard_port": self.profile.dashboard.port,
+                "mcp_port": self.profile.mcp.port, "token": self.token,
+                "mcp_autostart": self.profile.mcp.autostart,
+                "dashboard_token": self.dashboard_token, "started_at": time.time(),
+                "process_create_time": psutil.Process(os.getpid()).create_time(),
+                "jupyter_pid": self.jupyter.pid if self.jupyter else None,
+                "jupyter_process_create_time": self.jupyter_process_create_time,
+            })
+
+    def _spawn_jupyter(self, timeout: float) -> None:
+        """(Re)install the kernelspec if needed and launch JupyterLab."""
         if not kernel_installed(self.profile.jupyter.kernel_name):
             install_kernel(self.profile)
         else:
             # Reinstall when any baked endpoint or security setting is stale.
-            # The environment below is also authoritative, so even a kernelspec
-            # changed concurrently cannot retain an old remote-binding opt-in.
             installed = kernel_spec_state(self.profile.jupyter.kernel_name)
             expected = kernel_profile_state(self.profile)
             if installed != expected:
                 install_kernel(self.profile, replace=True)
-        # Fail fast when the Jupyter port is already taken instead of waiting for
-        # a timeout: JupyterLab would otherwise auto-bind the next free port and
-        # the supervisor would keep polling the configured one.
+        # Fail fast when the Jupyter port is already taken instead of waiting
+        # for a timeout: JupyterLab would otherwise auto-bind the next free
+        # port and the supervisor would keep polling the configured one.
         occupied = _port_owner(self.profile.jupyter.host, self.profile.jupyter.port)
         if occupied is not None:
             raise RuntimeError(
@@ -95,6 +156,8 @@ class RuntimeSupervisor:
                 "a previous instance may not have stopped cleanly — run `peaksMCP stop` "
                 "or free the port first"
             )
+        if self.jupyter is not None and self.jupyter.poll() is None:
+            raise RuntimeError("JupyterLab is already running")
         command = [
             sys.executable, "-m", "jupyterlab", "--no-browser",
             f"--ServerApp.ip={self.profile.jupyter.host}",
@@ -103,6 +166,7 @@ class RuntimeSupervisor:
             f"--ServerApp.token={self.token}",
             "--ServerApp.open_browser=False",
         ]
+        self.jupyter_process_create_time = None
         self.jupyter = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
@@ -115,26 +179,88 @@ class RuntimeSupervisor:
             # orphans after a hard kill.
             start_new_session=True,
         )
+        try:
+            self.jupyter_process_create_time = psutil.Process(
+                self.jupyter.pid
+            ).create_time()
+        except (psutil.Error, OSError):
+            # Stale cleanup refuses to signal a child without this identity.
+            self.jupyter_process_create_time = None
+        # Publish the child identity immediately so a hard supervisor crash
+        # during Jupyter startup can still be recovered safely.
+        self._write_runfile()
         self._reader = threading.Thread(target=self._read_logs, name="peaksMCP-jupyter-log", daemon=True)
         self._reader.start()
         self._wait_jupyter(timeout)
-        self.session_id, self.kernel_id = self._create_session()
-        # The dashboard is the operator console and is co-hosted in this process,
-        # so ``launch`` is the single startup entry for everything (JupyterLab +
-        # managed kernel + in-kernel MCP + dashboard).
-        self._start_dashboard()
-        write_runfile({
-            "pid": os.getpid(), "profile": self.profile.name, "kernel_id": self.kernel_id,
-            "session_id": self.session_id, "notebook_path": self.notebook_path,
-            "jupyter_url": self.jupyter_url, "dashboard_url": self.dashboard_url,
-            "jupyter_port": self.profile.jupyter.port, "dashboard_port": self.profile.dashboard.port,
-            "mcp_port": self.profile.mcp.port, "token": self.token,
-            "mcp_autostart": self.profile.mcp.autostart,
-            "dashboard_token": self.dashboard_token, "started_at": time.time(),
-            "process_create_time": psutil.Process(os.getpid()).create_time(),
-            "jupyter_pid": self.jupyter.pid,
-        })
-        return self.status()
+
+    def start_jupyter(self, timeout: float = 90) -> dict[str, Any]:
+        """Start (or restart) the Jupyter group: service + managed kernel."""
+        with self._lifecycle_lock:
+            self._require_host_active()
+            if self.jupyter is not None and self.jupyter.poll() is None:
+                return {"ok": True, "already_running": True, **self.status()}
+            self.jupyter_state = "starting"
+            self.last_error = None
+            try:
+                self._spawn_jupyter(timeout)
+                self.session_id, self.kernel_id = self._create_session()
+                self.jupyter_state = "running"
+                self._write_runfile()
+                return {"ok": True, **self.status()}
+            except Exception as exc:
+                self.jupyter_state = "stopped"
+                self.last_error = f"{type(exc).__name__}: {exc}"
+                raise
+
+    def stop_jupyter(self, timeout: float = 20) -> dict[str, Any]:
+        """Stop the Jupyter group (service + managed kernel); dashboard stays up."""
+        with self._lifecycle_lock:
+            self._require_host_active()
+            return self._stop_jupyter_unlocked(timeout=timeout, publish=True)
+
+    def _stop_jupyter_unlocked(
+        self, timeout: float = 20, *, publish: bool
+    ) -> dict[str, Any]:
+        """Stop Jupyter while the caller holds ``_lifecycle_lock``."""
+        if self.jupyter is not None and self.jupyter.poll() is None:
+            self.jupyter.terminate()
+            try:
+                self.jupyter.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                self.jupyter.kill()
+                try:
+                    os.killpg(self.jupyter.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                try:
+                    self.jupyter.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pass
+        self.jupyter = None
+        self.jupyter_process_create_time = None
+        self._reader = None
+        self.kernel_id = None
+        self.session_id = None
+        self.jupyter_state = "stopped"
+        if publish:
+            self._write_runfile()
+        return {"ok": True, "jupyter_state": self.jupyter_state}
+
+    def restart_jupyter(self, timeout: float = 90) -> dict[str, Any]:
+        """Restart the Jupyter group: full teardown, then a fresh session."""
+        with self._lifecycle_lock:
+            self._require_host_active()
+            self._stop_jupyter_unlocked(publish=True)
+            return self.start_jupyter(timeout=timeout)
+
+    def stop_mcp(self, timeout: float = 45) -> dict[str, Any]:
+        """Stop the in-kernel MCP server via the control magic."""
+        with self._lifecycle_lock:
+            self._require_host_active()
+            self.execute_kernel(
+                "get_ipython().run_line_magic('peaksMCP_stop', '')", timeout=timeout
+            )
+            return self.status()
 
     def _jupyter_environment(self) -> dict[str, str]:
         """Build an isolated Jupyter config that disables competing notebook bridges."""
@@ -336,25 +462,36 @@ class RuntimeSupervisor:
 
     def restart_mcp(self, timeout: float = 45) -> dict[str, Any]:
         """Restart only FastMCP inside the existing kernel, preserving variables."""
-        previous_instance = self._mcp_instance()
-        self.execute_kernel("get_ipython().run_line_magic('peaksMCP_restart', '')", timeout=timeout)
-        return self.wait_ready(
-            timeout=timeout,
-            require_comm=False,
-            previous_mcp_instance=previous_instance,
-        )
+        with self._lifecycle_lock:
+            self._require_host_active()
+            previous_instance = self._mcp_instance()
+            self.execute_kernel(
+                "get_ipython().run_line_magic('peaksMCP_restart', '')",
+                timeout=timeout,
+            )
+            return self.wait_ready(
+                timeout=timeout,
+                require_comm=False,
+                previous_mcp_instance=previous_instance,
+            )
 
     def start_mcp(self, timeout: float = 45) -> dict[str, Any]:
         """Start the in-kernel MCP server if it is not already serving."""
-        self.execute_kernel("get_ipython().run_line_magic('peaksMCP_start', '')", timeout=timeout)
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if asyncio.run(
-                check_http_mcp_server(self.profile.mcp.host, self.profile.mcp.port)
-            ).get("ok"):
-                return {"ready": True}
-            time.sleep(0.5)
-        return {"ready": False, "error": "MCP did not come up in time"}
+        with self._lifecycle_lock:
+            self._require_host_active()
+            self.execute_kernel(
+                "get_ipython().run_line_magic('peaksMCP_start', '')", timeout=timeout
+            )
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if asyncio.run(
+                    check_http_mcp_server(
+                        self.profile.mcp.host, self.profile.mcp.port
+                    )
+                ).get("ok"):
+                    return {"ready": True}
+                time.sleep(0.5)
+            return {"ready": False, "error": "MCP did not come up in time"}
 
     def extension_status(self, timeout: float = 3) -> dict[str, Any]:
         """Probe the IPython extension directly when the MCP transport is offline."""
@@ -376,39 +513,40 @@ class RuntimeSupervisor:
         request automatically falls back to a plain REST restart instead of waiting
         for a coordination that can never happen.
         """
-        previous_generation = self._mcp_generation()
-        if require_comm and previous_generation is None:
-            # MCP is offline, so there is no generation to compare AND no Comm
-            # coordination possible.  Degrade to a plain REST restart instead of
-            # refusing to restart at all (a restart is exactly what can bring
-            # the MCP back).
-            require_comm = False
-        if require_comm and not self._comm_connected():
-            # The browser frontend is offline, so Comm-coordinated restart cannot
-            # proceed; fall back to a REST restart to avoid hanging for timeout.
-            require_comm = False
-        if require_comm:
-            code = (
-                "import threading as _t;"
-                "from peaksMCP.server.jupyter_peaks.jupyter_mcp_extension import get_server as _gs;"
-                "b = _gs().state.bridge;"
-                "_t.Thread(target=lambda: b.request('restart_kernel', timeout=15), daemon=True).start()"
+        with self._lifecycle_lock:
+            self._require_host_active()
+            previous_generation = self._mcp_generation()
+            if require_comm and previous_generation is None:
+                # MCP is offline, so there is no generation to compare AND no Comm
+                # coordination possible.  Degrade to a plain REST restart instead
+                # of refusing to restart at all (a restart can bring the MCP back).
+                require_comm = False
+            if require_comm and not self._comm_connected():
+                # The browser frontend is offline, so Comm-coordinated restart
+                # cannot proceed; use REST instead of waiting for a timeout.
+                require_comm = False
+            if require_comm:
+                code = (
+                    "import threading as _t;"
+                    "from peaksMCP.server.jupyter_peaks.jupyter_mcp_extension import get_server as _gs;"
+                    "b = _gs().state.bridge;"
+                    "_t.Thread(target=lambda: b.request('restart_kernel', timeout=15), daemon=True).start()"
+                )
+                self.execute_kernel(code, timeout=30)
+            else:
+                if not self.kernel_id:
+                    raise RuntimeError("no managed kernel")
+                response = httpx.post(
+                    f"{self.jupyter_url}/api/kernels/{self.kernel_id}/restart",
+                    headers=self._headers(),
+                    timeout=20,
+                )
+                response.raise_for_status()
+            return self.wait_ready(
+                timeout=timeout,
+                require_comm=require_comm,
+                previous_generation=previous_generation,
             )
-            self.execute_kernel(code, timeout=30)
-        else:
-            if not self.kernel_id:
-                raise RuntimeError("no managed kernel")
-            response = httpx.post(
-                f"{self.jupyter_url}/api/kernels/{self.kernel_id}/restart",
-                headers=self._headers(),
-                timeout=20,
-            )
-            response.raise_for_status()
-        return self.wait_ready(
-            timeout=timeout,
-            require_comm=require_comm,
-            previous_generation=previous_generation,
-        )
 
     def _comm_connected(self) -> bool:
         """Return whether the JupyterLab frontend Comm bridge is currently online."""
@@ -535,6 +673,8 @@ class RuntimeSupervisor:
     def status(self) -> dict[str, Any]:
         return {
             "status": "RUNNING" if self.jupyter and self.jupyter.poll() is None else "STOPPED",
+            "jupyter_state": self.jupyter_state,
+            "last_error": self.last_error,
             "pid": os.getpid(), "profile": self.profile.name, "kernel_id": self.kernel_id,
             "session_id": self.session_id, "notebook_path": self.notebook_path,
             "jupyter_url": self.jupyter_url, "dashboard_url": self.dashboard_url,
@@ -549,40 +689,42 @@ class RuntimeSupervisor:
         Bounded and deterministic: every stage has a short ceiling so a CLI
         ``stop``/``restart`` never waits longer than its own poll window.
         """
+        self._host_stopping = True
         self._stop.set()
         if self._dashboard is not None:
             self._dashboard.should_exit = True
+        with self._lifecycle_lock:
+            self._stop_jupyter_unlocked(publish=False)
+            remove_runfile()
         if self._dashboard_thread is not None and self._dashboard_thread.is_alive():
             self._dashboard_thread.join(timeout=3)
-        if self.jupyter is not None and self.jupyter.poll() is None:
-            self.jupyter.terminate()
-            try:
-                self.jupyter.wait(timeout=8)
-            except subprocess.TimeoutExpired:
-                # Jupyter was launched detached (own process group); hard-kill
-                # it AND its whole group so kernels do not survive as orphans.
-                self.jupyter.kill()
-                try:
-                    os.killpg(self.jupyter.pid, signal.SIGKILL)
-                except OSError:
-                    pass
-                try:
-                    self.jupyter.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    pass
-        remove_runfile()
 
     def serve_forever(self) -> None:
-        """Start and wait for SIGINT/SIGTERM as the background supervisor process."""
+        """Serve the dashboard until stopped, independently of Jupyter health."""
         # Register handlers BEFORE start(): during start() (JupyterLab bring-up
         # can take 30-60s) the default SIGTERM action would kill the process
         # without running the finally block, orphaning the JupyterLab child.
         for name in (signal.SIGINT, signal.SIGTERM):
             signal.signal(name, lambda _signum, _frame: self._stop.set())
+        # SIGWINCH republishes the runfile on demand: the CLI uses it to
+        # recover a live host whose runfile was removed/corrupted (the bearer
+        # token lives only here, so only the host can rewrite discovery).
+        # SIGWINCH is safe as a command channel because its default action is
+        # ``ignore`` — older hosts without this handler simply ignore it.
+        try:
+            signal.signal(signal.SIGWINCH, lambda _signum, _frame: self._write_runfile())
+        except (AttributeError, ValueError, OSError):
+            pass  # non-POSIX platform: recovery falls back to a fresh host
         try:
             self.start()
             while not self._stop.wait(0.5):
-                if self.jupyter and self.jupyter.poll() is not None:
-                    break
+                with self._lifecycle_lock:
+                    if self.jupyter and self.jupyter.poll() is not None:
+                        returncode = self.jupyter.returncode
+                        self._record_jupyter_failure(
+                            RuntimeError(
+                                f"JupyterLab exited unexpectedly with code {returncode}"
+                            )
+                        )
         finally:
             self.stop()
