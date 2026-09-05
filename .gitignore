@@ -18,4 +18,5 @@ peaksMCP-runtime.ipynb
 peaksMCP-snapshot-*.ipynb
 *.log
 *.part
+.smoke-*
 聊天记录.md

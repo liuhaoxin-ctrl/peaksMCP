@@ -70,8 +70,12 @@ Claude Desktop <-> STDIO proxy <-> HTTP MCP <-> Jupyter kernel <-> JupyterLab Co
                    (cli stdio-proxy)   (127.0.0.1:8123/mcp)   (in-kernel)   (frontend)
 ```
 
-- `peaksMCP launch` starts an external **supervisor** (`python -m peaksMCP _serve`) that
-  owns JupyterLab + one managed kernel + the local dashboard.
+- `peaksMCP dash` starts the external **dashboard host** (`python -m peaksMCP _serve`,
+  previously called the supervisor) if it is not already running and opens the
+  operator console.  The host owns JupyterLab + one managed kernel + the dashboard
+  and manages their start/stop/restart (the dashboard exposes Jupyter-group and
+  MCP-group controls).  `peaksMCP stop`/`restart` manage only the host; stopping it
+  also tears down the tree it manages.
 - The **in-kernel MCP server** (`FastMCP`, HTTP on `127.0.0.1:8123/mcp`) only exists
   while the kernel runs; the supervisor is *outside* the kernel and never executes
   analysis code.
@@ -229,22 +233,28 @@ Consent decisions and every tool call are written to the audit log
 ## 10. Lifecycle & troubleshooting
 
 ```bash
-peaksMCP launch          # start supervisor (idempotent)
-peaksMCP status          # supervisor + kernel state
+peaksMCP dash            # start the dashboard host if needed and open the console (single entry; idempotent)
+peaksMCP status          # host / jupyter / kernel state
 peaksMCP mcp-ping        # verify in-kernel MCP endpoint (expect ok: true, 15 tools)
-peaksMCP dash            # dashboard (127.0.0.1:8765)
-peaksMCP stop            # stop supervisor
-peaksMCP restart kernel  # reload running code (the API index now hot-rebuilds itself when the source changes, so no restart is needed for index freshness)
-peaksMCP logs -f         # follow supervisor logs
+peaksMCP stop            # stop the dashboard host (and the Jupyter/MCP tree it manages)
+peaksMCP restart         # stop the host and start a fresh one
+peaksMCP restart kernel  # kernel-side reload (the API index now hot-rebuilds itself when the source changes, so no restart is needed for index freshness)
+peaksMCP logs -f         # follow host logs
 ```
 
 Notes:
 
-- The in-kernel MCP only listens while the supervisor/kernel are running; the STDIO
-  proxy forwards to it, so `launch` must precede Claude Desktop usage.
+- The in-kernel MCP only listens while the dashboard host / kernel are running; the
+  STDIO proxy forwards to it, so a running host (`peaksMCP dash` / `status`) must
+  precede Claude Desktop usage.
 - Running instances load code at process start — after editing source, restart the
   kernel (`peaksMCP restart kernel` or `peaksMCP restart 'kernel&mcp'`) for changes
   to take effect.
+- A host whose `run.json` discovery file was removed/corrupted while it kept
+  running is re-adopted automatically: `status`/`dash`/`stop`/`restart` detect the
+  live `_serve` host on the dashboard port and signal it (SIGWINCH, default-ignored
+  on hosts that predate the handler) to republish its own runfile — never spawning
+  a duplicate that would crash on the already-bound port.
 - Do not configure peaksMCP as a *remote* MCP server in Claude Desktop: remote URLs
   must be `https://`, but the in-kernel MCP is plain HTTP on localhost. Use the STDIO
   proxy (`claude_plugin/.mcp.json`) instead.

@@ -11,7 +11,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: python -m pip install 'peaks-arpes @ git+https://github.com/phrgab/peaks.git'
+      - run: python -m pip install 'peaks-arpes @ git+https://github.com/phrgab/peaks.git@5574127f83b88db4fafe4d13d2e0283310f03534'
       - run: python -m pip install -e '.[dev]'
       - uses: actions/setup-node@v4
         with:

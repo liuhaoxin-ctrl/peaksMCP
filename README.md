@@ -72,51 +72,59 @@ plain HTTP on `127.0.0.1`.
 ### 7. Start and verify
 
 ```bash
-peaksMCP launch          # single entry: JupyterLab + kernel + in-kernel MCP (127.0.0.1:8123/mcp) + operator dashboard (127.0.0.1:8765)
-peaksMCP status          # expect RUNNING + kernel_id
+peaksMCP dash            # single entry: start the dashboard host if needed and open the operator console (alias: open)
+peaksMCP status          # expect host RUNNING + kernel_id once Jupyter is up
 peaksMCP mcp-ping        # expect ok: true, 15 tools (13 read-only/guidance + 2 append-only mutation)
-peaksMCP dash            # open the operator-console dashboard in the browser (alias: open)
 ```
 
-The supervisor must be running before Claude Desktop uses the tools (the STDIO proxy
-forwards to the kernel-hosted MCP endpoint).
+The dashboard host must be running before Claude Desktop uses the tools (the STDIO
+proxy forwards to the kernel-hosted MCP endpoint).
 
-### Operator dashboard (co-hosted)
+### Dashboard host (co-hosted operator console)
 
-`peaksMCP launch` also starts the operator-console dashboard in the same process, so
-there is exactly one startup command. The dashboard lets you **monitor** JupyterLab /
-kernel / in-kernel MCP / Comm and **control** the stack:
+`peaksMCP dash` starts the host (a detached background process) if it is not
+already running and opens the console. The dashboard is served within a second
+and shows JupyterLab starting up; it lets you **monitor** JupyterLab / kernel /
+in-kernel MCP / Comm and **control** the stack:
 
 ```bash
-peaksMCP dash            # open http://127.0.0.1:8765 in the browser (alias: open)
+peaksMCP dash            # ensure host + open http://127.0.0.1:8765 (alias: open)
 ```
+
+An explicitly requested notebook or profile is authoritative: if the active
+singleton host runs a different workspace, `dash` replaces it before returning
+(no silent reuse); an already matching host is reused. The managed notebook is
+then opened from the console's **Open Notebook** button, which only enables once
+JupyterLab is actually reachable.
 
 `peaksMCP open` supplies a tokenised login URL and stores the operator-console
 credential in an HttpOnly, SameSite cookie. Opening port 8765 directly is intentionally
 rejected. Control APIs require the same credential and reject cross-origin requests.
 
-In the console: **Start MCP** (when the in-kernel MCP is down), **Restart MCP** (kernel
-variables preserved), **Restart Kernel**, **Restart Kernel + MCP** and **Open managed Notebook**.
-Stopping the whole stack is done from the CLI with `peaksMCP stop`. PXT conversion and
-datasheet translation are pure file operations and always available.
+In the console you can start / stop **Jupyter** (service + kernel) and **MCP**
+(in-kernel) as groups, open the managed Notebook, and convert data. Stopping the
+dashboard host (`peaksMCP stop`) also gracefully tears down the Jupyter/MCP tree
+it manages. PXT conversion and datasheet translation are pure file operations and
+always available.
 
 ### CLI reference
 
 ```bash
-# Lifecycle
-peaksMCP launch [--profile NAME] [--timeout SECONDS]   # single entry: supervisor + operator dashboard
-peaksMCP status                                         # supervisor status
-peaksMCP stop                                           # stop the supervisor (and the dashboard)
-peaksMCP restart                                   # restart the whole stack (like launch)
+# Lifecycle (the host manages JupyterLab + kernel + in-kernel MCP internally)
+peaksMCP dash [notebook] [--profile NAME] [--timeout SECONDS]  # start the host if needed + open the console
+peaksMCP status                                         # host / jupyter state
+peaksMCP stop                                           # stop the dashboard host (and the tree it manages)
+peaksMCP restart                                   # stop the host and start a fresh one (like dash, no browser)
 peaksMCP restart {kernel|mcp|'kernel&mcp'}          # kernel-side only (kernel&mcp = kernel + MCP)
-peaksMCP logs [-n LINES] [-f]                           # show / follow supervisor logs
+peaksMCP logs [-n LINES] [-f]                           # show / follow host logs
 # Verification & diagnostics
 peaksMCP mcp-ping [--profile NAME]                      # verify the MCP endpoint + tool count
 peaksMCP version                                        # package version
 
 # Open in browser
-peaksMCP dash                                           # operator-console dashboard  (http://127.0.0.1:8765)
-peaksMCP dash --jupyter                                 # JupyterLab (tokenised URL)
+peaksMCP dash [notebook] [--profile NAME]    # operator-console dashboard (http://127.0.0.1:8765);
+                                             # open the managed notebook from the console's
+                                             # "Open Notebook" button (enabled once Jupyter is up)
 
 # Install
 peaksMCP install-extension [--develop]                  # install the JupyterLab extension
@@ -138,8 +146,8 @@ peaksMCP load path/to/converted.nc     # load a NetCDF into the notebook as a
                                         # the dashboard Load button after convert)
 ```
 
-`peaksMCP launch` runs the supervisor as a detached background process, so a terminal
-`Ctrl+C` does **not** stop it — use `peaksMCP stop`.
+`peaksMCP dash` runs the dashboard host as a detached background process, so a
+terminal `Ctrl+C` does **not** stop it — use `peaksMCP stop`.
 
 Examples:
 
