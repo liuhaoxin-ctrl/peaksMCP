@@ -25,6 +25,22 @@ def _json_value(value: Any, limit: int = 80) -> Any:
     return repr(value)[:500]
 
 
+def _storage_is_in_memory(value: xr.DataArray | xr.Dataset) -> bool:
+    """Report whether all backing storage is already resident in memory.
+
+    Inspects xarray's internal storage type only (``Variable._in_memory``).
+    It must never touch ``.data``/``.values``: on a lazy backend array those
+    properties call ``get_duck_array()`` and materialize the whole disk-backed
+    variable (extra reads, memory and CPU) just to answer the query.
+    """
+    variables = (
+        value.variables.values()
+        if isinstance(value, xr.Dataset)
+        else (value.variable,)
+    )
+    return all(bool(getattr(variable, "_in_memory", True)) for variable in variables)
+
+
 def _peaks_api_names(value: Any) -> list[str]:
     """Find Peaks-owned xarray descriptors without invoking their getters."""
     names: set[str] = set()
@@ -85,7 +101,9 @@ def summarize_xarray(value: xr.DataArray | xr.Dataset | xr.DataTree) -> dict[str
             "attrs": _json_value(dict(coordinate.attrs)),
         }
     peaks_apis = _peaks_api_names(value)
-    chunks = getattr(value, "chunks", None)
+    # Dataset.chunks returns an empty dict even when no variable is chunked;
+    # normalize it to None so "chunks is not None" means real chunking.
+    chunks = getattr(value, "chunks", None) or None
     return {
         "type": f"xarray.{type(value).__name__}",
         "name": getattr(value, "name", None),
@@ -101,7 +119,7 @@ def summarize_xarray(value: xr.DataArray | xr.Dataset | xr.DataTree) -> dict[str
         "attrs": _json_value(dict(value.attrs)),
         "chunks": _json_value(chunks),
         "peaks_apis": peaks_apis,
-        "lazy": chunks is not None or hasattr(getattr(value, "data", None), "dask"),
+        "lazy": chunks is not None or not _storage_is_in_memory(value),
     }
 
 
