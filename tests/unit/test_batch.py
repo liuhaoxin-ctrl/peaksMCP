@@ -53,11 +53,41 @@ def test_worker_submission_ramps_up_and_reduces_after_cpu_pressure(monkeypatch):
     budget._record_sample(20, timestamp=2)
     assert budget.submission_limit == 3
 
+    # At/over the hard limit the in-flight allowance collapses to one worker
+    # immediately (previously it stepped down by one per sample).
     budget._record_sample(80, timestamp=3)
-    assert budget.submission_limit == 2
+    assert budget.submission_limit == 1
     assert not budget._gate.is_set()
     budget._record_sample(80, timestamp=4)
     assert budget.submission_limit == 1
+
+
+def test_preemptive_band_caps_workers_before_reaching_limit(monkeypatch):
+    """Inside the pre-emptive band (between resume and ~85% of the limit) the
+    allowance is capped at one worker so the batch never ramps into the
+    ceiling; it only ramps again once the average drops to resume or below."""
+    budget = ResourceBudget(
+        cpu_limit_percent=50,
+        resume_percent=10,
+        sample_interval_s=1,
+        worker_fraction=0.5,
+        moving_window_s=10,
+    )
+    budget._allowed_workers = 3
+    budget._last_ramp_at = 0
+    budget._gate.set()
+
+    # 45 < 50 (not over the hard limit) but >= resume + 0.85*(limit-resume)=44:
+    # pre-emptive collapse to a single worker and stop new submissions.
+    budget._record_sample(45, timestamp=1)
+    assert budget.submission_limit == 1
+    assert not budget._gate.is_set()
+
+    # Once the hot sample slides out of the 10 s window the trailing average
+    # drops to <= resume: gate opens and the allowance ramps again.
+    budget._record_sample(5, timestamp=15)
+    assert budget._gate.is_set()
+    assert budget.submission_limit == 2
 
 
 def test_batch_report_states_best_effort_cpu_budget_semantics():

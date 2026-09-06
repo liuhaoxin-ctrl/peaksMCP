@@ -177,7 +177,18 @@ class ResourceBudget:
                 return True
 
     def _record_sample(self, sample: float, timestamp: float | None = None) -> None:
-        """Record one sample and update the hysteresis gate."""
+        """Record one sample and update the hysteresis gate.
+
+        Reaction policy (best effort, keeps sustained CPU at or below the limit):
+        - at/over the hard limit, in-flight allowance collapses to one worker
+          immediately (previously it stepped down by one per sample, letting a
+          hot machine overshoot while workers drained one at a time);
+        - inside the pre-emptive band above ``resume_percent`` (85% of the
+          limit) the allowance is also capped at one, so the batch never
+          ramps into the ceiling;
+        - only once the trailing average drops back to ``resume_percent`` or
+          below does the allowance ramp up again (one worker per sample).
+        """
         now = time.monotonic() if timestamp is None else timestamp
         with self._sample_lock:
             self._samples.append((now, sample))
@@ -187,13 +198,16 @@ class ResourceBudget:
                 self._samples.popleft()
             moving_average = statistics.fmean(value for _time, value in self._samples)
             self._moving_averages.append(moving_average)
+        preemptive_band = self.resume_percent + 0.85 * (
+            self.cpu_limit_percent - self.resume_percent
+        )
         over_limit = (
             sample >= self.cpu_limit_percent
             or moving_average >= self.cpu_limit_percent
         )
-        if over_limit:
+        if over_limit or moving_average >= preemptive_band:
             with self._sample_lock:
-                self._allowed_workers = max(1, self._allowed_workers - 1)
+                self._allowed_workers = 1
             self._gate.clear()
         elif moving_average <= self.resume_percent:
             with self._sample_lock:
