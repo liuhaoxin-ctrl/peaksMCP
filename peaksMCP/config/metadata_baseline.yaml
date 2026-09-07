@@ -4,8 +4,8 @@ tools:
     title: Search Peaks API
     description: >
       MUST be called before writing any Peaks analysis code. Search the live Peaks
-      API index for the user's intent. Do NOT write or guess Peaks code from memory
-      without first querying this tool. Returns canonical API ids, names and
+      API index for the user's intent, then write Peaks code from the returned
+      canonical entries. Returns canonical API ids, names and
       one-line summaries.
   peaks_get_api:
     title: Get Peaks API
@@ -85,7 +85,7 @@ resources:
     figure:
       layout: constrained_layout (no subplots_adjust; tight_layout only fallback)
       fonts: DejaVu Sans + mathtext dejavusans, unicode_minus off; CJK fallback PingFang SC (mac) / Microsoft YaHei (win)
-      text: English labels, symbols in mathtext (never raw Unicode)
+      text: English labels, symbols in mathtext (no raw Unicode)
       dpi: 150 screen, 300 save; papers use vector PDF
     example: 'fig, ax = plt.subplots(figsize=(6, 4), constrained_layout=True); ax.set_xlabel(r"$k_x$ ($\mathrm{\AA}^{-1}$)")'
     template: |
@@ -103,7 +103,7 @@ resources:
       # Layout: constrained_layout spaces labels/ticks/colorbars/subplots itself.
       fig, ax = plt.subplots(figsize=(6, 4), constrained_layout=True)
 
-      # Symbols in mathtext, never raw Unicode ($\theta$ $E_F$ $k_x$
+      # Symbols in mathtext, raw Unicode avoided ($\theta$ $E_F$ $k_x$
       # $\mathrm{\AA}^{-1}$ $\Delta E$); keep axis text English.
       ax.set_xlabel(r"$k_x$ ($\mathrm{\AA}^{-1}$)")
       ax.set_ylabel(r"$E - E_F$ (eV)")
@@ -125,8 +125,7 @@ resources:
     template: |
       from peaksMCP.plotting import plot_batch
       # Run this cell verbatim — plot_batch renders the map inline itself.
-      # Do NOT append `figs`, `plt.show()` or `display(...)` (double-renders).
-      # fs: 2D (kx, ky) DataArray taken at E = E_F (binding energy 0)
+            # fs: 2D (kx, ky) DataArray taken at E = E_F (binding energy 0)
       figs = plot_batch([fs], figsize_per_panel=(5.0, 5.0), dpi=200,
                         cmap="magma", shared_colorbar=True)
 
@@ -145,11 +144,8 @@ resources:
     template: |
       import matplotlib.pyplot as plt, numpy as np
       # Run this cell verbatim — the final plt.show() renders exactly ONE figure.
-      # Do NOT append `fig`, `plt.show()` or `display(...)` (double-renders).
-      # cut: 2D (eV, k_par) DataArray in binding energy (E_F = 0)
+            # cut: 2D (eV, k_par) DataArray in binding energy (E_F = 0)
       # Read coordinates via cut.coords[name].values (or cut.<name>.values).
-      # NEVER assign an attribute to a DataArray: `cut.coV = ...` raises
-      # AttributeError; set metadata with cut.attrs[...] instead.
       eV = cut.coords["eV"].values
       k = cut.coords["kx"].values if "kx" in cut.dims else cut.coords[list(set(cut.dims) - {"eV"})[0]].values
       v = np.nanpercentile(cut.values, 99)
@@ -177,8 +173,7 @@ resources:
     template: |
       from peaksMCP.plotting import plot_batch
       # Run this cell verbatim — plot_batch renders the grid inline itself.
-      # Do NOT append `figs`, `plt.show()` or `display(...)` (double-renders).
-      # cuts: list of 2D (eV, k_par) DataArrays; titles: same length, e.g.
+            # cuts: list of 2D (eV, k_par) DataArrays; titles: same length, e.g.
       # [f"Idx {i}  pol={pol}"] for the index i and its polarization
       figs = plot_batch(cuts, titles=titles, max_cols=4,
                         figsize_per_panel=(3.5, 3.2), dpi=160,
@@ -197,8 +192,7 @@ resources:
     template: |
       import matplotlib.pyplot as plt, numpy as np
       # Run this cell verbatim — the final plt.show() renders exactly ONE figure.
-      # Do NOT append `fig`, `plt.show()` or `display(...)` (double-renders).
-      # curves: list of 1D DataArray; axis = curves[0]'s sole dimension name
+            # curves: list of 1D DataArray; axis = curves[0]'s sole dimension name
       axis = list(curves[0].dims)[0]
       fig, ax = plt.subplots(figsize=(6.0, 4.5), dpi=180)
       off = 0.0
@@ -246,8 +240,7 @@ resources:
     template: |
       import matplotlib.pyplot as plt, numpy as np
       # Run this cell verbatim — the final plt.show() renders exactly ONE figure.
-      # Do NOT append `fig`, `plt.show()` or `display(...)` (double-renders).
-      # kzd: 2D (kz, k_par) DataArray in binding energy (E_F = 0)
+            # kzd: 2D (kz, k_par) DataArray in binding energy (E_F = 0)
       kp = kzd.kx if "kx" in kzd.dims else kzd[list(set(kzd.dims) - {"kz"})[0]]
       v = np.nanpercentile(kzd.values, 99)
       fig, ax = plt.subplots(figsize=(4.5, 5.0), dpi=200)

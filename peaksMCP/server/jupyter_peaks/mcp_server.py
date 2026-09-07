@@ -50,25 +50,18 @@ class JupyterPeaksMCPServer:
             "peaksMCP Jupyter Kernel",
             version=__version__,
             instructions=(
-                "Do NOT use bash; use peaksMCP tools only. "
-                "Use peaks_search_api and peaks_get_api before writing unfamiliar Peaks code. "
+                "Work through peaksMCP tools only. "
+                "Query peaks_search_api and peaks_get_api before writing unfamiliar Peaks code. "
                 "Write model-generated Peaks analysis code through notebook_write_with_api_check, "
                 "which verifies every Peaks API reference against the live API index before "
                 "appending and executing a new cell. "
                 "Inspect xarray variables before analysis and preserve units in every figure. "
-                "Figures are rendered inline only — saving figures to disk (plt.savefig / "
-                "fig.savefig) is disabled and blocked. "
-                "Image pixels are never sent to you: a cell that rendered a figure "
-                "returns an 'inline_image_rendered' marker (mime/size), while a lone "
-                "'<Figure size ...>' repr means the figure was NOT displayed — do not "
-                "analyze or cite numbers from it; rerun the cell with the sanctioned "
-                "inline-display pattern (plotting-format template, or end the cell by "
-                "showing the figure) and, if reprs persist after a kernel restart, "
-                "treat it as a rendering fault and say so. "
-                "Never describe a figure's type (matplotlib vs bokeh/holoviews) or "
-                "options from memory — state only what the output actually shows. "
-                "Executing or adding notebook cells appends at the end of the notebook and never "
-                "overwrites existing cells."
+                "Figures render inline in the notebook for the user; a rendered cell "
+                "returns an 'Inline figure rendered ...' line. "
+                "Describe a figure's type (matplotlib vs bokeh/holoviews) and options only from "
+                "what the output actually shows. "
+                "Executing or adding notebook cells appends at the end of the notebook; "
+                "existing cells remain unchanged."
             ),
             strict_input_validation=True,
         )
