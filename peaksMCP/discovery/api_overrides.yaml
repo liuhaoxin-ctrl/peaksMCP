@@ -1,4 +1,31 @@
 version: 1
+# Register of API entries this project adds on top of upstream peaks/peaksMCP.
+# Everything under a `peaksMCP.` module is project code (auto-discovered); the
+# list below is the authoritative review/provenance record. Their search
+# aliases and docstring notes live in `aliases` / `overrides` below. To remove
+# a project entry: delete the module function and its rows here.
+project_added:
+  - module:peaksMCP.batch.resource_budget:batch_execution_lock
+  - module:peaksMCP.plotting.layout:plot_batch
+  - module:peaksMCP.plotting.validation:plot_validation_pair
+  - module:peaksMCP.pxt_utils.converter:convert_path
+  - module:peaksMCP.pxt_utils.converter:convert_pxt
+  - module:peaksMCP.pxt_utils.converter:default_output_dir
+  - module:peaksMCP.pxt_utils.converter:index_from_path
+  - module:peaksMCP.pxt_utils.csv_translator:translate_datasheet
+  - module:peaksMCP.pxt_utils.loader:load_pxt
+  - module:peaksMCP.pxt_utils.loader:register_l112_loader
+  - module:peaksMCP.pxt_utils.metadata:classify_data_format
+  - module:peaksMCP.pxt_utils.metadata:is_gold_format
+  - module:peaksMCP.pxt_utils.metadata:load_metadata
+  - module:peaksMCP.pxt_utils.metadata:read_meta
+  - module:peaksMCP.pxt_utils.metadata:theta_offset_deg
+  - module:peaksMCP.workflows.publication:publication_grid
+  - module:peaksMCP.workflows.publication:validate_arpes_metadata
+  - module:peaksMCP.workflows.slice_view:show_mapping_slice
+# Note: additions made inside the peaks library itself (peaks_dev), e.g. the
+# two-pass gold-fit helpers, are private/underscore and live outside this
+# discovery file; they are tracked by peaks_dev git history instead.
 aliases:
   EDC: [energy distribution curve, 能量分布曲线, 能谱曲线]
   MDC: [momentum distribution curve, 动量分布曲线, 动量曲线]
