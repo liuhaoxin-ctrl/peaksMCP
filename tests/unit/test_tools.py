@@ -50,7 +50,9 @@ def test_tool_metadata_is_nonempty():
 
 
 def test_output_content_keeps_plain_text_after_an_earlier_image():
-    from mcp.types import ImageContent, TextContent
+    import json
+
+    from mcp.types import TextContent
 
     from peaksMCP.server.jupyter_peaks.core.tools import _output_content
 
@@ -64,7 +66,19 @@ def test_output_content_keeps_plain_text_after_an_earlier_image():
             }
 
     blocks = _output_content(Notebook())
-    assert any(isinstance(block, ImageContent) for block in blocks)
+    # The model receives only a marker that an inline image was rendered —
+    # never the pixel payload — and the duplicate "<Figure>" repr is suppressed.
+    markers = [
+        json.loads(block.text)
+        for block in blocks
+        if isinstance(block, TextContent) and "inline_image_rendered" in block.text
+    ]
+    assert len(markers) == 1
+    assert markers[0]["mime_type"] == "image/png"
+    assert not any(
+        isinstance(block, TextContent) and "<Figure>" in block.text
+        for block in blocks
+    )
     assert any(isinstance(block, TextContent) and block.text == "later text" for block in blocks)
 
 
@@ -140,15 +154,12 @@ def test_output_content_preserves_structured_cell_errors():
     assert error["traceback"][0] == "Traceback (most recent call last):"
 
 
-def test_output_content_omits_images_over_mcp_size_limits(monkeypatch):
+def test_output_content_reports_inline_images_as_markers_without_payloads():
     import json
 
-    from mcp.types import ImageContent, TextContent
+    from mcp.types import TextContent
 
     import peaksMCP.server.jupyter_peaks.core.tools as tools
-
-    monkeypatch.setattr(tools, "_MAX_IMAGE_BYTES", 4)
-    monkeypatch.setattr(tools, "_MAX_RESPONSE_IMAGE_BYTES", 8)
 
     class Notebook:
         def active_cell_output(self):
@@ -162,12 +173,11 @@ def test_output_content_omits_images_over_mcp_size_limits(monkeypatch):
             }
 
     blocks = tools._output_content(Notebook())
-    assert not any(isinstance(block, ImageContent) for block in blocks)
-    warning = next(block for block in blocks if isinstance(block, TextContent))
-    payload = json.loads(warning.text)
-    assert payload["output_type"] == "image_omitted"
+    marker = next(block for block in blocks if isinstance(block, TextContent))
+    payload = json.loads(marker.text)
+    assert payload["output_type"] == "inline_image_rendered"
     assert payload["decoded_bytes"] == 7
-    assert payload["reason"] == "per_image_limit"
+    assert "pixels are not sent to the model" in payload["note"]
 
 
 def test_output_content_preserves_frontend_omission_metadata():

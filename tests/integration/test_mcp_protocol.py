@@ -33,13 +33,18 @@ async def test_initialize_list_and_safe_tool_calls():
 
 
 @pytest.mark.asyncio
-async def test_inline_png_becomes_native_image_content():
+async def test_inline_png_reports_rendered_marker_without_pixels():
     state = SharedState(FakeIPython())
     state.active_cell_output = [{"output_type": "display_data", "data": {"image/png": base64.b64encode(b"png").decode(), "text/plain": "figure"}}]
     server = JupyterPeaksMCPServer(state)
     async with Client(server.mcp) as client:
         result = await client.call_tool("notebook_read_active_cell_output", {})
-    assert any(block.type == "image" and block.mimeType == "image/png" for block in result.content)
+    # Image pixels are never sent to the model; a marker confirms the figure
+    # rendered in the notebook, and the "<Figure>" text repr is suppressed.
+    assert not any(block.type == "image" for block in result.content)
+    text = "\n".join(getattr(block, "text", "") for block in result.content)
+    assert "inline_image_rendered" in text and "image/png" in text
+    assert "<Figure>" not in text
 
 
 @pytest.mark.asyncio

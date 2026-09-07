@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import base64
 import json
 import re
 from functools import wraps
 from typing import Any
 
 from fastmcp import FastMCP
-from mcp.types import ImageContent, TextContent
+from mcp.types import TextContent
 
 from peaksMCP.config import tool_metadata
 from peaksMCP.discovery.signatures import describe_api
@@ -62,6 +61,31 @@ def _image_omitted_content(
                 "per_image_limit_bytes": _MAX_IMAGE_BYTES,
                 "response_limit_bytes": _MAX_RESPONSE_IMAGE_BYTES,
                 "reason": reason,
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+
+def _inline_image_rendered_content(mime: str, size: int) -> TextContent:
+    """Report an image rendered inline in the notebook (never sent to the model).
+
+    The user inspects figures in the notebook; the model only needs to know
+    that an image was actually produced (and roughly how large) so it neither
+    receives pixel payloads nor mistakes a missing render for a success.
+    """
+    return TextContent(
+        type="text",
+        text=json.dumps(
+            {
+                "output_type": "inline_image_rendered",
+                "mime_type": mime,
+                "decoded_bytes": size,
+                "note": (
+                    "Rendered in the notebook for the user; image pixels are not "
+                    "sent to the model. A bare '<Figure ...>' repr instead of "
+                    "this marker means the figure was NOT displayed."
+                ),
             },
             ensure_ascii=False,
         ),
@@ -146,10 +170,9 @@ def _register(mcp: FastMCP, name: str, function: Any, audit: AuditLogger) -> Non
     mcp.tool(name=name, title=metadata["title"], description=metadata["description"])(audited)
 
 
-def _output_content(notebook: NotebookBackend) -> list[TextContent | ImageContent]:
-    """Convert Jupyter MIME bundles to native MCP text and image content."""
-    blocks: list[TextContent | ImageContent] = []
-    included_image_bytes = 0
+def _output_content(notebook: NotebookBackend) -> list[TextContent]:
+    """Convert Jupyter MIME bundles to native MCP text content."""
+    blocks: list[TextContent] = []
     for output in notebook.active_cell_output().get("outputs", []):
         if not isinstance(output, dict):
             continue
@@ -204,26 +227,10 @@ def _output_content(notebook: NotebookBackend) -> list[TextContent | ImageConten
                 continue
             payload = "".join(payload) if isinstance(payload, list) else str(payload)
             if mime == "image/svg+xml":
-                raw = payload.encode("utf-8")
-                image_bytes = len(raw)
-                encoded_payload = base64.b64encode(raw).decode("ascii")
+                image_bytes = len(payload.encode("utf-8"))
             else:
                 image_bytes = _base64_decoded_size(payload)
-                encoded_payload = payload
-            if image_bytes > _MAX_IMAGE_BYTES:
-                blocks.append(
-                    _image_omitted_content(mime, image_bytes, reason="per_image_limit")
-                )
-                continue
-            if included_image_bytes + image_bytes > _MAX_RESPONSE_IMAGE_BYTES:
-                blocks.append(
-                    _image_omitted_content(mime, image_bytes, reason="response_limit")
-                )
-                continue
-            blocks.append(
-                ImageContent(type="image", mimeType=mime, data=encoded_payload)
-            )
-            included_image_bytes += image_bytes
+            blocks.append(_inline_image_rendered_content(mime, image_bytes))
             output_has_image = True
         plain = data.get("text/plain")
         if plain and not output_has_image and not interactive_output:

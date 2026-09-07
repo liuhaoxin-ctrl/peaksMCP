@@ -118,6 +118,27 @@ class PeaksMCPMagics(Magics):
         return self._mode("dangerous")
 
 
+def _ensure_matplotlib_inline(ipython: Any) -> None:
+    """Force matplotlib's Jupyter inline backend.
+
+    Without it a cell whose last expression is a Figure (typical for routines
+    that *return* a figure, e.g. plot_validation_pair / plot_batch / fit_gold)
+    only emits the ``<Figure size ...>`` text repr — no ``display_data`` png —
+    so every tool consumer sees text instead of a rendered image.  The magic
+    is safe to run unconditionally: inline captures figures as png while the
+    native Qt viewers (``disp``) open their own windows unaffected.
+    """
+    try:
+        ipython.run_line_magic("matplotlib", "inline")
+    except Exception:
+        try:
+            import matplotlib
+
+            matplotlib.use("module://matplotlib_inline.backend_inline")
+        except Exception:
+            pass  # matplotlib not importable: nothing to render anyway
+
+
 def load_ipython_extension(ipython: Any) -> None:
     """Register magics and (unless autostart is disabled) start the MCP server.
 
@@ -126,6 +147,9 @@ def load_ipython_extension(ipython: Any) -> None:
     starts the MCP explicitly with ``%peaksMCP_start``.
     """
     ipython.register_magics(PeaksMCPMagics)
+    # Runs before any user/agent code, so plotting cells render as inline png
+    # instead of surfacing bare ``<Figure>`` reprs.
+    _ensure_matplotlib_inline(ipython)
     if os.environ.get("PEAKSMCP_AUTOSTART", "true").lower() != "false":
         _start(ipython)
 
