@@ -4,7 +4,6 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from peaksMCP.workflows.process_cut import preprocess_cut, process_cut
 from peaksMCP.workflows.slice_view import show_mapping_slice
 
 
@@ -75,12 +74,3 @@ def test_show_mapping_slice_errors_are_plain_and_actionable():
         show_mapping_slice(four_d, dim="a")
 
 
-def test_process_cut_contract_aliases_and_input_guard():
-    """process_cut is the recommended workflow verb; preprocess_cut is its
-    runtime alias, and the public contract is documented."""
-    assert preprocess_cut is process_cut
-    doc = (process_cut.__doc__ or "").lower()
-    assert "preprocess one arpes cut" in doc
-    assert "returns" in doc
-    with pytest.raises(TypeError):
-        process_cut("not-a-dataarray")  # fails fast, not deep inside peaks

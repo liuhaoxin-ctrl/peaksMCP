@@ -245,7 +245,7 @@ def translate_datasheet(
     # them before the per-Index notes).  The header may also carry the
     # experiment-wide high-symmetry offset (``AI请看的Note：Cut theta_offset=1.5``);
     # parse it and backfill any record that has no per-row offset of its own, so
-    # ``process_cut`` finds ``theta_offset_deg`` on every record.
+    # every record carries ``theta_offset_deg``.
     agent_notes = []
     for header, kind in note_headers.items():
         if kind != "agent":

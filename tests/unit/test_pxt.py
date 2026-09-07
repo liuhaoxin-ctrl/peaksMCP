@@ -108,22 +108,6 @@ def test_misleading_agent_note_header_is_human_not_leaked(tmp_path):
     assert document.records["7"].theta_offset_deg is None
 
 
-def test_theta_offset_auto_find_reads_structured_record_field():
-    """The cut-preprocessing lookup prefers the per-record ``theta_offset_deg``
-    embedded by the converter; a missing value returns None (no error)."""
-    from peaksMCP.workflows.process_cut import _theta_offset_from_metadata
-
-    data = xr.DataArray([[1.0, 2.0]], dims=("eV", "theta_par"))
-    data.attrs["experiment_metadata_json"] = json.dumps(
-        {"theta_offset_deg": 1.5, "experiment": {"data_format": "sweep"}}
-    )
-    assert _theta_offset_from_metadata(data) == 1.5
-    data.attrs["experiment_metadata_json"] = json.dumps({"theta_offset_deg": None})
-    assert _theta_offset_from_metadata(data) is None
-    data.attrs.pop("experiment_metadata_json")
-    assert _theta_offset_from_metadata(data) is None
-
-
 def test_gold_reference_marked_from_data_format(tmp_path):
     """``Au`` / ``gold`` / ``金`` in ``Data format`` is flagged as
     ``is_gold_reference`` so the agent can pick the gold record to fit the
@@ -484,7 +468,7 @@ def test_auto_datasheet_malformed_is_ignored(tmp_path):
 def test_theta_offset_in_note_header_is_backfilled_to_records(tmp_path):
     """The experiment-wide offset embedded in an agent note-column HEADER
     (``AI请看的Note：Cut theta_offset=1.5``) is parsed and backfilled onto every
-    record that has no per-row offset of its own, so process_cut finds it."""
+    record that has no per-row offset of its own."""
     source = tmp_path / "datasheet.csv"
     source.write_text(
         "Experiment title,,,\n"

@@ -221,7 +221,7 @@ resources:
       # ONCE (no extra display()/plt.show()) and applies the figure conventions:
       # mathtext axis labels, shared y axis, one colorbar and a dashed Fermi
       # guide on the k-space panel.
-      # raw: 2D (eV, theta_par); processed: 2D (eV, kx) from process_cut.
+      # raw: 2D (eV, theta_par); processed: 2D (eV, kx) after EF-corrected k_convert.
       # Options: shared_scale=True compares intensities on one colour scale;
       # titles / ylabel / ef_line / colorbar_label are also exposed.
       fig = plot_validation_pair(raw, processed, shared_scale=False)

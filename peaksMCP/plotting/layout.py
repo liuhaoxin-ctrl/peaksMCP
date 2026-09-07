@@ -75,7 +75,14 @@ def _ranges_comparable(items: Sequence[xr.DataArray], *, max_ratio: float = 5.0)
 
 
 def _display_figures(figures: list[Figure]) -> None:
-    """Render figures inline when running inside IPython/Jupyter.
+    """Render each figure inline exactly once when inside IPython/Jupyter.
+
+    Display-then-close: matplotlib's inline backend also flushes the "current"
+    figure at the end of the cell, so a bare ``display(fig)`` renders the same
+    figure twice — and the second render can come out as a blank/transparent
+    PNG ("drawn but not rendered").  Closing each figure right after displaying
+    it leaves the backend nothing extra to flush.  The returned figure objects
+    still support ``savefig`` after ``plt.close``.
 
     Non-interactive callers (scripts, tests) receive the returned list and keep
     control of ``plt.show`` / saving, exactly as before.
@@ -86,7 +93,9 @@ def _display_figures(figures: list[Figure]) -> None:
         if get_ipython() is not None:
             from IPython.display import display
 
-            display(*figures)
+            for figure in figures:
+                display(figure)
+                plt.close(figure)
     except Exception:
         pass
 

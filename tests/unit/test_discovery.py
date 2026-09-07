@@ -66,19 +66,19 @@ def test_interactive_widget_apis_are_discoverable_by_intent():
 
 def test_get_resolves_canonical_id_name_and_alias():
     """peaks_get_api must accept the full canonical ID, the bare API name and
-    any search alias (e.g. preprocess_cut) — all resolve to the same entry."""
+    any search alias (e.g. mapping slice) — all resolve to the same entry."""
     index = build_index()
     entry = next(
         item
         for item in index.entries
-        if item["id"] == "module:peaksMCP.workflows.process_cut:process_cut"
+        if item["id"] == "module:peaksMCP.workflows.slice_view:show_mapping_slice"
     )
-    assert entry["name"] == "process_cut"
-    assert "preprocess_cut" in entry.get("aliases", [])
+    assert entry["name"] == "show_mapping_slice"
+    assert "mapping slice" in entry.get("aliases", [])
     assert index.get(entry["id"]) is not None
-    resolved_name = index.get("process_cut")
+    resolved_name = index.get("show_mapping_slice")
     assert resolved_name is not None and resolved_name["id"] == entry["id"]
-    resolved_alias = index.get("preprocess_cut")
+    resolved_alias = index.get("mapping slice")
     assert resolved_alias is not None and resolved_alias["id"] == entry["id"]
 
 

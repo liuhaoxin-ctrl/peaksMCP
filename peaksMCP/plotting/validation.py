@@ -37,7 +37,7 @@ def plot_validation_pair(
     """Render a before/after validation figure for one processed cut.
 
     Draws the raw (angle-space) cut next to its k-space result (typically the
-    ``data`` entry returned by :func:`peaksMCP.workflows.process_cut`) so the
+    k-space result of a conversion workflow) so the
     conversion can be checked at a glance.  Use this function instead of
     hand-writing the side-by-side matplotlib block: labels use mathtext, the
     panels share the y axis, the colorbar is added once and (by default) a

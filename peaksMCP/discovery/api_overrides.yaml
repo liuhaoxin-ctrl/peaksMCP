@@ -28,7 +28,6 @@ aliases:
   subtract_data: [subtract scans, difference spectrum, 数据相减, 差谱]
   merge_data: [merge scans, combine spectra, concatenate, 数据合并, 拼接]
   estimate_sym_point: [symmetry point, mirror centre, 对称中心, 对称点]
-  process_cut: [preprocess cut, preprocess_cut, cut preprocessing workflow, 切割预处理, cut预处理, 预处理数据, 数据预处理, preprocess data, preprocess, k-space 预处理, preprocess to k-space, sweep to k-space]
   show_mapping_slice: [mapping slice, slice of mapping, energy map, map slice, constant energy map, 切片图, mapping切片, mapping切片图, 展示mapping, 固定能层图]
   read_meta: [summarize sweeps, list records, sweep classification, experiment summary, experiment records, read metadata, 汇总记录, 实验记录, 数据清单, 读元数据]
   drift_correction: [drift correction, align maps, 漂移校正, 图像配准]
@@ -42,22 +41,19 @@ overrides:
     docstring_note: |
       k_convert converts a cut whose Fermi level is already FLATTENED: it
       reads the Fermi-level kinetic energy from the EF_correction metadata
-      (stored by fitting a gold reference with `fit_gold`, then
+      (stored by fitting a gold reference once with `fit_gold`, then
       `metadata.set_EF_correction`). A raw cut carries no such calibration,
       so k_convert alone gives an un-flattened axis.
-      In peaksMCP, `process_cut` is that full chain on one 2D sweep: fit the
-      gold EF (or apply an existing EF_correction), store it, then run
-      k_convert — use process_cut for "preprocess this cut". Call k_convert
-      directly only on data that already has EF_correction set.
+      The intended order per cut: fit the gold reference once, apply its
+      `EF_correction` via `metadata.set_EF_correction`, then k_convert.
       The `return_kz_scan_in_hv` option applies to photon-energy (hv) scans
       converted to out-of-plane momentum (kz).
   fit_gold:
     docstring_note: |
-      fit_gold fits the Fermi level of a gold reference to produce the
-      EF_correction. It is ONE STEP of cut preprocessing: peaksMCP's
-      `process_cut` runs it (Au-reference mode) when no EF_correction is
-      supplied, then applies the correction and converts to k-space. When the
-      goal is "preprocess this cut", call process_cut.
+      fit_gold fits the Fermi level of a gold reference and returns its
+      EF_correction. Fit the gold reference once per dataset, then apply the
+      resulting EF_correction to each cut (`metadata.set_EF_correction`)
+      before k-space conversion with k_convert.
       fit_gold is a matplotlib routine: one static multi-panel Figure rendered
       inline in the notebook as a single image. Read the fit results (e.g. EF)
       from the printed text/attributes of the same call.

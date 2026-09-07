@@ -60,7 +60,7 @@ def _record_verified_api(state: SharedState, entry: dict[str, Any]) -> None:
     """Remember that a canonical API was fetched via peaks_get_api this session.
 
     Unlocking covers the canonical name and every search alias, so a later
-    cell that writes the alias (e.g. ``preprocess_cut`` for ``process_cut``)
+    cell that writes the alias (e.g. ``mapping slice`` for ``show_mapping_slice``)
     is not blocked as an unverifiable name.
     """
     names = {str(entry.get("name") or "")}

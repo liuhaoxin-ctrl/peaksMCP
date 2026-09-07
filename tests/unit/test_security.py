@@ -539,18 +539,25 @@ def test_get_api_proof_unlocks_unknown_name(tmp_path):
     state.bridge.request.return_value = {"ok": True}
     nb = UnsafeNotebookBackend(state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl"))
 
-    # `preprocess_cut` is only an alias of process_cut -> unverifiable by name.
-    first = nb.write_with_api_check("preprocess_cut(da)", timeout=5)
+    # A python-callable alias no longer ships, so add one in-test to exercise
+    # the unlock path: an unverified name is blocked until peaks_get_api proof.
+    entry = next(e for e in state.api_index.entries if e["name"] == "show_mapping_slice")
+    aliases = list(entry.get("aliases") or [])
+    entry["aliases"] = aliases
+    alias_name = "mapping_slice_alias"
+    if alias_name not in aliases:
+        aliases.append(alias_name)
+
+    first = nb.write_with_api_check(f"{alias_name}(da, dim='eV')", timeout=5)
     assert first["blocked"] is True
 
-    entry = next(e for e in state.api_index.entries if e["name"] == "process_cut")
     _record_verified_api(state, entry)  # what a successful peaks_get_api records
 
-    again = nb.write_with_api_check("preprocess_cut(da)", timeout=5)
+    again = nb.write_with_api_check(f"{alias_name}(da, dim='eV')", timeout=5)
     assert not again.get("blocked")
     assert again.get("ok") is True
     verified = again.get("api_check", {}).get("verified_peaks_apis", [])
-    assert any(item["name"] == "preprocess_cut" for item in verified)
+    assert any(item["name"] == alias_name for item in verified)
 
 
 def test_call_names_resolve_aliases_and_skip_unparsable():
@@ -588,8 +595,6 @@ def test_savefig_is_permanently_blocked(tmp_path):
     assert "askuserquestion" not in blocked["message"]
     assert "disabled" in blocked["message"]
 
-    # Saving DATA (a netCDF deliverable) is not gated by the figure-save rule.
-    assert not nb.write_with_api_check("save_processed(da, 'out.nc')", timeout=5).get("blocked")
 
 
 def test_write_with_api_check_classifies_generic_and_verified_calls(tmp_path):

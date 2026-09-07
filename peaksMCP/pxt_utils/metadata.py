@@ -2,7 +2,7 @@
 
 Single home for the field matchers that previously lived separately in the
 datasheet translator (``csv_translator``) and the cut workflow
-(``process_cut``): loading the metadata document (path / parsed dict /
+(record preprocessing): loading the metadata document (path / parsed dict /
 ``DataArray`` attrs), extracting the high-symmetry offset from notes, and
 classifying a ``Data format`` value as gold / sweep / mapping.  ``read_meta``
 builds the structured per-index digest used before preprocessing, so agents

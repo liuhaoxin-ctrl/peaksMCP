@@ -154,41 +154,6 @@ def test_publication_grid_rejects_unvalidated_data():
         publication_grid([bad], titles=["bad"])
 
 
-def test_save_processed_roundtrips_metadata_attrs(tmp_path):
-    from pathlib import Path
-
-    import numpy as np
-    import peaks
-    import xarray as xr
-
-    from peaksMCP.workflows import save_processed
-
-    da = xr.DataArray(
-        np.random.rand(10, 10),
-        dims=("eV", "kx"),
-        coords={
-            "eV": xr.DataArray(np.linspace(-1, 0, 10), dims="eV", attrs={"units": "eV"}),
-            "kx": xr.DataArray(np.linspace(-0.3, 0.3, 10), dims="kx", attrs={"units": "1 / angstrom"}),
-        },
-        attrs={
-            "units": "counts",
-            "experiment_metadata_json": {"a": 1},
-            "_EF_correction": {"c0": 2.6597},
-            "calibration": {"ef_correction": {"c0": 2.6597}},
-            "history": "AnalysisHistoryRecordCollection(entries=[...])",
-        },
-    )
-
-    path = save_processed(da, str(tmp_path / "out"))
-    assert path.endswith(".nc") and Path(path).is_file()
-    # Raw to_netcdf would reject the dict attrs; save_processed must round-trip.
-    back = peaks.load(path)
-    assert back.attrs["_EF_correction"] == {"c0": 2.6597}
-    import pint
-
-    assert isinstance(back.coords["kx"].attrs["units"], pint.Unit)
-
-
 def test_read_meta_classifies_records_and_dimensionality(tmp_path):
     import json
 
