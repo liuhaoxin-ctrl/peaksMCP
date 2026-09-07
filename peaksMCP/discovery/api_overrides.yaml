@@ -39,11 +39,11 @@ aliases:
 overrides:
   k_convert:
     docstring_note: |
-      Convert an EF-flattened cut to (eV, kx).
-      Input: DataArray carrying EF_correction metadata (one gold fit).
-      Output: (eV, kx) DataArray. Hierarchy: fit_gold once ->
-      metadata.set_EF_correction -> k_convert per cut. `return_kz_scan_in_hv`
-      applies to hv (kz) scans.
+      Convert a cut to (eV, kx), flattening the Fermi edge in the same call.
+      Input: raw (kinetic, theta_par) DataArray + EF_correction (fit_gold
+      output) passed as k_convert(EF_correction=...). Output: (eV, kx)
+      DataArray. Hierarchy: fit_gold once -> k_convert per cut with that
+      EF_correction. `return_kz_scan_in_hv` applies to hv (kz) scans.
   fit_gold:
     docstring_note: |
       Fit the Fermi edge of a gold reference.
