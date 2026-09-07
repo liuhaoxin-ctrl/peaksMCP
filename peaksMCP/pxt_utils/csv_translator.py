@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import csv
 import hashlib
-import re
 from pathlib import Path
 from typing import Any
 
+from .metadata import is_gold_format, theta_offset_deg
 from .models import ExperimentMetadata, ExperimentRecord
 
 _KNOWN_FIELDS = {
@@ -70,44 +70,6 @@ def _note_kind(header: str) -> str:
     if "请" in header or "agent" in lowered:
         return "agent"
     return "human"
-
-
-#: Number following the ``theta_offset`` token in a note, e.g.
-#: ``theta_offset：1.5`` / ``theta_offset= -0.5度``.
-_THETA_OFFSET_RE = re.compile(
-    r"theta[_ ]?offset\s*[:：=]?\s*([+-]?\d+(?:\.\d+)?)", re.IGNORECASE
-)
-
-
-def _theta_offset_deg(value: str) -> float | None:
-    """Return the first ``theta_offset``-prefixed number in a note, or None."""
-    match = _THETA_OFFSET_RE.search(value or "")
-    if match is None:
-        return None
-    try:
-        return float(match.group(1))
-    except ValueError:
-        return None
-
-
-def _is_gold_format(data_format: str) -> bool:
-    """True when ``Data format`` marks this index as a gold (Au) reference.
-
-    The datasheet tags gold data (used for Fermi-edge fitting) with ``Au`` /
-    ``gold`` / ``金`` in the ``Data format`` column, either alone or combined
-    with the scan type in a comma/space separated list, e.g. ``Au``,
-    ``Au sweep`` or ``sweep,Au`` (the real L112 datasheet uses the last form).
-    """
-    raw = (data_format or "").strip()
-    lowered = (
-        raw.lower()
-        .replace("_", " ")
-        .replace("-", " ")
-        .replace(",", " ")
-        .replace(";", " ")
-        .split()
-    )
-    return "au" in lowered or "gold" in lowered or "金" in raw
 
 
 def _agent_note_from_header(header: str) -> str | None:
@@ -191,7 +153,7 @@ def _record(
         else {},
         analyser=analyser,
         experiment=experiment,
-        is_gold_reference=_is_gold_format(data_format),
+        is_gold_reference=is_gold_format(data_format),
         unmapped=unmapped,
     )
 
@@ -277,7 +239,7 @@ def translate_datasheet(
                 continue
             notes.append(f"Index {index}: {value}")
             if records[key].theta_offset_deg is None:
-                records[key].theta_offset_deg = _theta_offset_deg(value)
+                records[key].theta_offset_deg = theta_offset_deg(value)
 
     # AI-visible notes embedded in note-column headers come first (agent reads
     # them before the per-Index notes).  The header may also carry the
@@ -293,7 +255,7 @@ def translate_datasheet(
             continue
         label = header.split("：", 1)[0] if "：" in header else header.split(":", 1)[0]
         agent_notes.append(f"{label}：{content}")
-        header_offset = _theta_offset_deg(content)
+        header_offset = theta_offset_deg(content)
         if header_offset is not None:
             for record in records.values():
                 if record.theta_offset_deg is None:

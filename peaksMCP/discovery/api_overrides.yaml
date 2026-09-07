@@ -28,7 +28,8 @@ aliases:
   subtract_data: [subtract scans, difference spectrum, 数据相减, 差谱]
   merge_data: [merge scans, combine spectra, concatenate, 数据合并, 拼接]
   estimate_sym_point: [symmetry point, mirror centre, 对称中心, 对称点]
-  process_cut: [preprocess cut, preprocess_cut, cut preprocessing workflow, 切割预处理, cut预处理]
+  process_cut: [preprocess cut, preprocess_cut, cut preprocessing workflow, 切割预处理, cut预处理, 预处理数据, 数据预处理, preprocess data, preprocess]
+  show_mapping_slice: [mapping slice, slice of mapping, energy map, map slice, constant energy map, 切片图, mapping切片, mapping切片图, 展示mapping, 固定能层图]
   read_meta: [summarize sweeps, list records, sweep classification, experiment summary, experiment records, read metadata, 汇总记录, 实验记录, 数据清单, 读元数据]
   drift_correction: [drift correction, align maps, 漂移校正, 图像配准]
   disp_from_hv: [dispersion from hv, photon energy dispersion, 光子能色散]
@@ -39,43 +40,30 @@ aliases:
 overrides:
   k_convert:
     docstring_note: |
-      Note: ordinary angle-to-momentum conversion (k_convert) does NOT require
-      photon energy (hv). The `return_kz_scan_in_hv` option is only used when
-      converting photon-energy (hv) scans to out-of-plane momentum (kz); regular
-      spectrum conversion needs no hv.
+      Ordinary angle-to-momentum conversion (k_convert) uses the binding-energy
+      scale; the `return_kz_scan_in_hv` option applies to photon-energy (hv)
+      scans converted to out-of-plane momentum (kz).
   fit_gold:
     docstring_note: |
-      fit_gold is a PURE matplotlib routine: it returns one static multi-panel
-      matplotlib Figure rendered inline in the notebook as a single image.
-      It is NOT a Bokeh/holoviews/Plotly object:
-      - do not pass bokeh-style options (cmap, tools, sizing_mode, ...);
-      - do not claim it produces interactive widgets or that its panels can be
-        recolored via a `cmap` argument.
-      Confirm it ran by checking the cell output contains a rendered image
-      (image/png). A lone '<Figure size ...>' text repr means the figure was
-      NOT displayed — do not analyze numbers from an unrendered figure; rerun
-      with the sanctioned inline-display pattern instead. Read fit results
-      (e.g. EF) from the printed text/attributes of the same call, not from
-      figure pixels.
+      fit_gold is a matplotlib routine: one static multi-panel Figure rendered
+      inline in the notebook as a single image. Read the fit results (e.g. EF)
+      from the printed text/attributes of the same call.
   plot_validation_pair:
     docstring_note: |
       plot_validation_pair returns a matplotlib Figure (static, inline). It is
       a diagnostic pair: always state which raw input and which processed
-      output the pair shows. If the cell output is only a '<Figure size ...>'
-      text repr (no image), the figure was not displayed — treat it as a
-      rendering fault, not as a successful validation, and rerun via the
-      plotting-format template.
+      output the pair shows.
   plot_batch:
     docstring_note: |
-      plot_batch returns matplotlib Figures rendered inline (one image per
-      panel/set). Confirm each call produced rendered images in the output;
-      a '<Figure ...>' text repr alone means nothing was displayed.
+      plot_batch returns matplotlib Figures rendered inline, one image per
+      panel/set.
   disp:
     docstring_note: |
       disp is peaks' NATIVE interactive data viewer (Qt GUI windows) — the
       intended tool when the user asks for an "interactive panel" / GUI
-      viewing of the data (not the static matplotlib templates).
-      - Import it explicitly (it is NOT available as ``pks.disp``):
+      viewing of the data; static inline figures come from the matplotlib
+      templates instead.
+      - Import it explicitly from ``peaks.core.GUI.disp_panels``:
           from peaks.core.GUI.disp_panels import disp
       - Call it on loaded data: ``data.disp()``, or as a function accepting
         one DataArray, a list of 2D DataArrays or a DataTree:

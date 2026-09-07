@@ -111,7 +111,7 @@ def test_misleading_agent_note_header_is_human_not_leaked(tmp_path):
 def test_theta_offset_auto_find_reads_structured_record_field():
     """The cut-preprocessing lookup prefers the per-record ``theta_offset_deg``
     embedded by the converter; a missing value returns None (no error)."""
-    from peaksMCP.workflows.cut_preprocessing import _theta_offset_from_metadata
+    from peaksMCP.workflows.process_cut import _theta_offset_from_metadata
 
     data = xr.DataArray([[1.0, 2.0]], dims=("eV", "theta_par"))
     data.attrs["experiment_metadata_json"] = json.dumps(

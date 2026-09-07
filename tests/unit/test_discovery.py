@@ -71,7 +71,7 @@ def test_get_resolves_canonical_id_name_and_alias():
     entry = next(
         item
         for item in index.entries
-        if item["id"] == "module:peaksMCP.workflows.cut_preprocessing:process_cut"
+        if item["id"] == "module:peaksMCP.workflows.process_cut:process_cut"
     )
     assert entry["name"] == "process_cut"
     assert "preprocess_cut" in entry.get("aliases", [])

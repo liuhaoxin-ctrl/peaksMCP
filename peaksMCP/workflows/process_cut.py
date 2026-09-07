@@ -47,7 +47,7 @@ def process_cut(
     theta_offset : float, optional
         High-symmetry-point offset in degrees: ``theta_par`` is shifted by this
         amount so that the high-symmetry point maps to kx = 0 after conversion.
-        MUST come from experiment metadata (e.g. ``notes``), never invented.
+        MUST come from experiment metadata (e.g. ``notes``).
         When ``None``, the function looks it up in ``da.attrs``
         ``experiment_metadata_json`` (per-record ``theta_offset_deg``); if not
         found the offset is treated as 0 — callers should ask the user when the
@@ -78,6 +78,17 @@ def process_cut(
         not be used.
         ``theta_offset_deg`` / ``geometry`` : provenance of the shift.
     """
+    if not isinstance(da, xr.DataArray):
+        raise TypeError(
+            f"process_cut: da must be an xarray.DataArray, got {type(da).__name__}. "
+            "Load data with peaks.load(...) first."
+        )
+    if da.ndim != 2 or "eV" not in da.dims:
+        raise ValueError(
+            f"process_cut: expected a 2-D (eV, other) sweep, got "
+            f"dims {list(da.dims)}. process_cut processes one sweep cut at a "
+            "time; slice mapping data with show_mapping_slice instead."
+        )
     if ef_correction is None:
         # Au-reference mode: fit the Fermi edge on this data (produces the
         # EF_quality convergence report).
@@ -123,34 +134,27 @@ def _theta_offset_from_metadata(da: xr.DataArray) -> float | None:
     ``<number>度`` phrase.  Returns None when nothing usable is found — callers
     must then ask the user rather than assume a value.
     """
-    import json
     import re
 
-    raw = da.attrs.get("experiment_metadata_json")
-    if not raw:
-        return None
-    try:
-        meta = json.loads(raw) if isinstance(raw, str) else raw
-    except (json.JSONDecodeError, TypeError):
-        return None
+    from peaksMCP.pxt_utils.metadata import load_metadata, theta_offset_deg
 
-    if isinstance(meta, dict):
-        for key in ("theta_par_offset_deg", "theta_offset_deg"):
-            value = meta.get(key)
-            if value is not None:
-                try:
-                    return float(value)
-                except (TypeError, ValueError):
-                    pass
+    meta = load_metadata(da)
 
-    notes = meta.get("notes", []) if isinstance(meta, dict) else []
-    token = re.compile(
-        r"theta[_ ]?offset\s*[:：=]?\s*([+-]?\d+(?:\.\d+)?)", re.IGNORECASE
-    )
-    for note in notes:
+    for key in ("theta_par_offset_deg", "theta_offset_deg"):
+        value = meta.get(key)
+        if value is not None:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                pass
+
+    for note in meta.get("notes", []) if isinstance(meta, dict) else []:
         if not isinstance(note, str):
             continue
-        match = token.search(note) or re.search(r"([0-9]*\.?[0-9]+)\s*度", note)
+        offset = theta_offset_deg(note)
+        if offset is not None:
+            return offset
+        match = re.search(r"([0-9]*\.?[0-9]+)\s*度", note)
         if match:
             try:
                 return float(match.group(1))

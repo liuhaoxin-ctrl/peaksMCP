@@ -519,7 +519,7 @@ class ApiIndex:
         """Return one canonical entry.
 
         Accepts the full canonical ID returned by :meth:`search` (e.g.
-        ``module:peaksMCP.workflows.cut_preprocessing:process_cut``), a bare
+        ``module:peaksMCP.workflows.process_cut:process_cut``), a bare
         API name (``process_cut``), or one of its search aliases
         (``preprocess_cut``) — aliases resolve to the canonical entry so a
         typo'd ``peaks_get_api`` still returns the real API instead of an
