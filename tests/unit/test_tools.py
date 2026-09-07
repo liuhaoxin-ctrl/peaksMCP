@@ -50,10 +50,6 @@ def test_tool_metadata_is_nonempty():
 
 
 def test_output_content_keeps_plain_text_after_an_earlier_image():
-    import json
-
-    from mcp.types import TextContent
-
     from peaksMCP.server.jupyter_peaks.core.tools import _output_content
 
     class Notebook:
@@ -66,20 +62,12 @@ def test_output_content_keeps_plain_text_after_an_earlier_image():
             }
 
     blocks = _output_content(Notebook())
-    # The model receives only a marker that an inline image was rendered —
-    # never the pixel payload — and the duplicate "<Figure>" repr is suppressed.
-    markers = [
-        json.loads(block.text)
-        for block in blocks
-        if isinstance(block, TextContent) and "inline_image_rendered" in block.text
-    ]
-    assert len(markers) == 1
-    assert markers[0]["mime_type"] == "image/png"
-    assert not any(
-        isinstance(block, TextContent) and "<Figure>" in block.text
-        for block in blocks
-    )
-    assert any(isinstance(block, TextContent) and block.text == "later text" for block in blocks)
+    # One closing line reports the rendered figure; the duplicate "<Figure>"
+    # repr is suppressed; later plain text still reaches the model.
+    text = "\n".join(getattr(block, "text", "") for block in blocks)
+    assert "Inline figure rendered" in text and "(1 image(s))" in text
+    assert "<Figure>" not in text
+    assert "later text" in text
 
 
 def test_output_content_reports_interactive_widget_as_text():
@@ -154,9 +142,7 @@ def test_output_content_preserves_structured_cell_errors():
     assert error["traceback"][0] == "Traceback (most recent call last):"
 
 
-def test_output_content_reports_inline_images_as_markers_without_payloads():
-    import json
-
+def test_output_content_reports_inline_images_without_payloads():
     from mcp.types import TextContent
 
     import peaksMCP.server.jupyter_peaks.core.tools as tools
@@ -174,17 +160,43 @@ def test_output_content_reports_inline_images_as_markers_without_payloads():
 
     blocks = tools._output_content(Notebook())
     marker = next(block for block in blocks if isinstance(block, TextContent))
-    payload = json.loads(marker.text)
-    assert payload["output_type"] == "inline_image_rendered"
-    assert payload["decoded_bytes"] == 7
-    assert "pixels are not sent to the model" in payload["note"]
+    assert marker.text.startswith("Inline figure rendered")
+    assert "pixels are not sent to the model" in marker.text
 
 
-def test_output_content_preserves_frontend_omission_metadata():
-    import json
+def test_output_content_reads_markdown_boxes_as_plain_text():
+    """peaks' colored analysis boxes are text/markdown only (no text/plain);
+    the model must still read the numbers inside them."""
+    from peaksMCP.server.jupyter_peaks.core.tools import _output_content
 
-    from mcp.types import TextContent
+    class Notebook:
+        def active_cell_output(self):
+            return {
+                "outputs": [
+                    {
+                        "output_type": "display_data",
+                        "data": {
+                            "text/markdown": (
+                                '<div class="alert alert-block alert-success">'
+                                "<b>Au fitting results: </b> Resolution (1st fit) "
+                                "9.08 meV, accuracy_by_2nd_fitting 9.08 meV</div>"
+                            )
+                        },
+                    }
+                ]
+            }
 
+    blocks = _output_content(Notebook())
+    readable = "\n".join(getattr(block, "text", "") for block in blocks)
+    assert "Au fitting results:" in readable
+    assert "Resolution (1st fit) 9.08 meV" in readable
+    assert "accuracy_by_2nd_fitting 9.08 meV" in readable
+    assert "<div>" not in readable and "<b>" not in readable
+
+
+def test_output_content_counts_frontend_omitted_image_as_rendered():
+    """A frontend-omitted (oversized) image still counts as a rendered figure —
+    one closing line, no per-item byte/limit bookkeeping."""
     from peaksMCP.server.jupyter_peaks.core.tools import _output_content
 
     class Notebook:
@@ -206,10 +218,10 @@ def test_output_content_preserves_frontend_omission_metadata():
                 ]
             }
 
-    block = next(
-        block for block in _output_content(Notebook()) if isinstance(block, TextContent)
+    block_text = "\n".join(
+        getattr(block, "text", "") for block in _output_content(Notebook())
     )
-    assert json.loads(block.text)["mime_type"] == "image/svg+xml"
+    assert "Inline figure rendered" in block_text and "(1 image(s))" in block_text
 
 
 def test_server_status_exposes_index_stale():

@@ -27,8 +27,7 @@ _INTERACTIVE_MIMES = (
     "application/vnd.plotly.v1+json",
     "application/vnd.bokehjs_exec.v0+json",
 )
-_MAX_IMAGE_BYTES = 8 * 1024 * 1024
-_MAX_RESPONSE_IMAGE_BYTES = 16 * 1024 * 1024
+_IMAGE_MIMES = ("image/png", "image/jpeg", "image/svg+xml")
 
 
 def _clean_output_text(value: Any) -> str:
@@ -37,59 +36,19 @@ def _clean_output_text(value: Any) -> str:
     return _ANSI_ESCAPE.sub("", text)
 
 
-def _base64_decoded_size(payload: str) -> int:
-    """Return decoded size without allocating the decoded image."""
-    compact = "".join(payload.split())
-    padding = 2 if compact.endswith("==") else 1 if compact.endswith("=") else 0
-    return max(0, len(compact) * 3 // 4 - padding)
+def _markdown_to_text(payload: Any) -> str:
+    """Extract readable text from a Jupyter ``text/markdown`` payload.
 
-
-def _image_omitted_content(
-    mime: str,
-    size: int,
-    *,
-    reason: str,
-) -> TextContent:
-    """Describe an intentionally omitted oversized inline image."""
-    return TextContent(
-        type="text",
-        text=json.dumps(
-            {
-                "output_type": "image_omitted",
-                "mime_type": mime,
-                "decoded_bytes": size,
-                "per_image_limit_bytes": _MAX_IMAGE_BYTES,
-                "response_limit_bytes": _MAX_RESPONSE_IMAGE_BYTES,
-                "reason": reason,
-            },
-            ensure_ascii=False,
-        ),
-    )
-
-
-def _inline_image_rendered_content(mime: str, size: int) -> TextContent:
-    """Report an image rendered inline in the notebook (never sent to the model).
-
-    The user inspects figures in the notebook; the model only needs to know
-    that an image was actually produced (and roughly how large) so it neither
-    receives pixel payloads nor mistakes a missing render for a success.
+    Colored analysis boxes (peaks' ``analysis_warning``) are rendered as
+    markdown/HTML and carry no ``text/plain``, so without this the model reads
+    nothing from them.  Strip tags and unescape entities to plain text.
     """
-    return TextContent(
-        type="text",
-        text=json.dumps(
-            {
-                "output_type": "inline_image_rendered",
-                "mime_type": mime,
-                "decoded_bytes": size,
-                "note": (
-                    "Rendered in the notebook for the user; image pixels are not "
-                    "sent to the model. A bare '<Figure ...>' repr instead of "
-                    "this marker means the figure was NOT displayed."
-                ),
-            },
-            ensure_ascii=False,
-        ),
-    )
+    import html
+
+    text = "".join(payload) if isinstance(payload, list) else str(payload)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html.unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _require_index(state: SharedState):
@@ -171,8 +130,18 @@ def _register(mcp: FastMCP, name: str, function: Any, audit: AuditLogger) -> Non
 
 
 def _output_content(notebook: NotebookBackend) -> list[TextContent]:
-    """Convert Jupyter MIME bundles to native MCP text content."""
+    """Convert Jupyter cell outputs to the text the model may read.
+
+    Rules (keep the model's view simple):
+    - image pixels are never sent; each output that rendered one counts toward
+      a single closing "figure rendered in the notebook" line;
+    - ``text/markdown`` boxes (peaks' colored analysis boxes) are converted to
+      plain text so the model can read the numbers inside them;
+    - interactive widgets stay as short markers (frontend-only);
+    - errors and stream/text output pass through unchanged.
+    """
     blocks: list[TextContent] = []
+    rendered_images = 0
     for output in notebook.active_cell_output().get("outputs", []):
         if not isinstance(output, dict):
             continue
@@ -196,45 +165,49 @@ def _output_content(notebook: NotebookBackend) -> list[TextContent]:
         data = output.get("data", {})
         if not isinstance(data, dict):
             data = {}
-        omitted_by_frontend = data.get(_OMITTED_IMAGE_MIME, [])
-        if isinstance(omitted_by_frontend, list):
-            for item in omitted_by_frontend:
-                if isinstance(item, dict):
-                    try:
-                        omitted_size = max(0, int(item.get("decoded_bytes", 0)))
-                    except (TypeError, ValueError):
-                        omitted_size = 0
-                    blocks.append(
-                        _image_omitted_content(
-                            str(item.get("mime_type", "image/unknown")),
-                            omitted_size,
-                            reason=str(item.get("reason", "frontend_limit")),
-                        )
-                    )
+        markdown = data.get("text/markdown")
+        if markdown:
+            readable = _markdown_to_text(markdown)
+            if readable:
+                blocks.append(TextContent(type="text", text=readable))
         interactive_mime = next(
             (mime for mime in _INTERACTIVE_MIMES if data.get(mime)), None
         )
-        interactive_output = interactive_mime is not None
-        if interactive_output:
+        if interactive_mime is not None:
             blocks.append(_interactive_omitted_content(interactive_mime))
         text = output.get("text")
         if text:
-            blocks.append(TextContent(type="text", text="".join(text) if isinstance(text, list) else str(text)))
-        output_has_image = False
-        for mime in ("image/png", "image/jpeg", "image/svg+xml"):
-            payload = data.get(mime)
-            if not payload:
-                continue
-            payload = "".join(payload) if isinstance(payload, list) else str(payload)
-            if mime == "image/svg+xml":
-                image_bytes = len(payload.encode("utf-8"))
-            else:
-                image_bytes = _base64_decoded_size(payload)
-            blocks.append(_inline_image_rendered_content(mime, image_bytes))
-            output_has_image = True
+            blocks.append(
+                TextContent(
+                    type="text",
+                    text="".join(text) if isinstance(text, list) else str(text),
+                )
+            )
+        has_image = any(data.get(mime) for mime in _IMAGE_MIMES) or bool(
+            data.get(_OMITTED_IMAGE_MIME)
+        )
+        if has_image:
+            rendered_images += 1
         plain = data.get("text/plain")
-        if plain and not output_has_image and not interactive_output:
-            blocks.append(TextContent(type="text", text="".join(plain) if isinstance(plain, list) else str(plain)))
+        if plain and not has_image and interactive_mime is None:
+            blocks.append(
+                TextContent(
+                    type="text",
+                    text="".join(plain) if isinstance(plain, list) else str(plain),
+                )
+            )
+    if rendered_images:
+        blocks.append(
+            TextContent(
+                type="text",
+                text=(
+                    f"Inline figure rendered in the notebook for the user "
+                    f"({rendered_images} image(s)); image pixels are not sent "
+                    f"to the model. A bare '<Figure ...>' repr instead of this "
+                    f"line means the figure was NOT displayed."
+                ),
+            )
+        )
     return blocks or [TextContent(type="text", text="No active-cell output.")]
 
 

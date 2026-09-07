@@ -39,11 +39,11 @@ async def test_inline_png_reports_rendered_marker_without_pixels():
     server = JupyterPeaksMCPServer(state)
     async with Client(server.mcp) as client:
         result = await client.call_tool("notebook_read_active_cell_output", {})
-    # Image pixels are never sent to the model; a marker confirms the figure
+    # Image pixels are never sent to the model; one line confirms the figure
     # rendered in the notebook, and the "<Figure>" text repr is suppressed.
     assert not any(block.type == "image" for block in result.content)
     text = "\n".join(getattr(block, "text", "") for block in result.content)
-    assert "inline_image_rendered" in text and "image/png" in text
+    assert "Inline figure rendered" in text
     assert "<Figure>" not in text
 
 
