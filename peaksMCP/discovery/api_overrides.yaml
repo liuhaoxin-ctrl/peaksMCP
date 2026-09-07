@@ -40,11 +40,22 @@ aliases:
 overrides:
   k_convert:
     docstring_note: |
-      Ordinary angle-to-momentum conversion (k_convert) uses the binding-energy
-      scale; the `return_kz_scan_in_hv` option applies to photon-energy (hv)
-      scans converted to out-of-plane momentum (kz).
+      k_convert is ONE STEP of cut preprocessing. It converts an angle-domain
+      cut to (eV, kx) after the Fermi-level correction is applied.
+      The peaksMCP workflow `process_cut` runs that whole chain — EF
+      correction then k_convert — on one 2D sweep. When the goal is
+      "preprocess this cut", call process_cut; call k_convert directly only to
+      convert an already-corrected cut.
+      Ordinary conversion uses the binding-energy scale; the
+      `return_kz_scan_in_hv` option applies to photon-energy (hv) scans
+      converted to out-of-plane momentum (kz).
   fit_gold:
     docstring_note: |
+      fit_gold fits the Fermi level of a gold reference to produce the
+      EF_correction. It is ONE STEP of cut preprocessing: peaksMCP's
+      `process_cut` runs it (Au-reference mode) when no EF_correction is
+      supplied, then applies the correction and converts to k-space. When the
+      goal is "preprocess this cut", call process_cut.
       fit_gold is a matplotlib routine: one static multi-panel Figure rendered
       inline in the notebook as a single image. Read the fit results (e.g. EF)
       from the printed text/attributes of the same call.
