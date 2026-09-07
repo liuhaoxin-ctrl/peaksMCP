@@ -40,14 +40,16 @@ aliases:
 overrides:
   k_convert:
     docstring_note: |
-      k_convert is ONE STEP of cut preprocessing. It converts an angle-domain
-      cut to (eV, kx) after the Fermi-level correction is applied.
-      The peaksMCP workflow `process_cut` runs that whole chain — EF
-      correction then k_convert — on one 2D sweep. When the goal is
-      "preprocess this cut", call process_cut; call k_convert directly only to
-      convert an already-corrected cut.
-      Ordinary conversion uses the binding-energy scale; the
-      `return_kz_scan_in_hv` option applies to photon-energy (hv) scans
+      k_convert converts a cut whose Fermi level is already FLATTENED: it
+      reads the Fermi-level kinetic energy from the EF_correction metadata
+      (stored by fitting a gold reference with `fit_gold`, then
+      `metadata.set_EF_correction`). A raw cut carries no such calibration,
+      so k_convert alone gives an un-flattened axis.
+      In peaksMCP, `process_cut` is that full chain on one 2D sweep: fit the
+      gold EF (or apply an existing EF_correction), store it, then run
+      k_convert — use process_cut for "preprocess this cut". Call k_convert
+      directly only on data that already has EF_correction set.
+      The `return_kz_scan_in_hv` option applies to photon-energy (hv) scans
       converted to out-of-plane momentum (kz).
   fit_gold:
     docstring_note: |
