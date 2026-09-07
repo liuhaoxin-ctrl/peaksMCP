@@ -39,49 +39,26 @@ aliases:
 overrides:
   k_convert:
     docstring_note: |
-      k_convert converts a cut whose Fermi level is already FLATTENED: it
-      reads the Fermi-level kinetic energy from the EF_correction metadata
-      (stored by fitting a gold reference once with `fit_gold`, then
-      `metadata.set_EF_correction`). A raw cut carries no such calibration,
-      so k_convert alone gives an un-flattened axis.
-      The intended order per cut: fit the gold reference once, apply its
-      `EF_correction` via `metadata.set_EF_correction`, then k_convert.
-      The `return_kz_scan_in_hv` option applies to photon-energy (hv) scans
-      converted to out-of-plane momentum (kz).
+      Convert an EF-flattened cut to (eV, kx).
+      Input: DataArray carrying EF_correction metadata (one gold fit).
+      Output: (eV, kx) DataArray. Hierarchy: fit_gold once ->
+      metadata.set_EF_correction -> k_convert per cut. `return_kz_scan_in_hv`
+      applies to hv (kz) scans.
   fit_gold:
     docstring_note: |
-      fit_gold fits the Fermi level of a gold reference and returns its
-      EF_correction. Fit the gold reference once per dataset, then apply the
-      resulting EF_correction to each cut (`metadata.set_EF_correction`)
-      before k-space conversion with k_convert.
-      fit_gold is a matplotlib routine: one static multi-panel Figure rendered
-      inline in the notebook as a single image. Read the fit results (e.g. EF)
-      from the printed text/attributes of the same call.
+      Fit the Fermi edge of a gold reference.
+      Output: EF_correction (poly dict), EF_quality, inline figure.
+      Hierarchy: apply its EF_correction to each cut via
+      metadata.set_EF_correction before k_convert.
   plot_validation_pair:
     docstring_note: |
-      plot_validation_pair returns a matplotlib Figure (static, inline). It is
-      a diagnostic pair: always state which raw input and which processed
-      output the pair shows.
+      Inline before/after figure for one cut: raw angle-space vs processed
+      k-space.
   plot_batch:
     docstring_note: |
-      plot_batch returns matplotlib Figures rendered inline, one image per
-      panel/set.
+      Inline grid of matplotlib figures for a list of DataArrays.
   disp:
     docstring_note: |
-      disp is peaks' NATIVE interactive data viewer (Qt GUI windows) — the
-      intended tool when the user asks for an "interactive panel" / GUI
-      viewing of the data; static inline figures come from the matplotlib
-      templates instead.
-      - Import it explicitly from ``peaks.core.GUI.disp_panels``:
-          from peaks.core.GUI.disp_panels import disp
-      - Call it on loaded data: ``data.disp()``, or as a function accepting
-        one DataArray, a list of 2D DataArrays or a DataTree:
-        ``disp([data_6, data_12], primary_dim=...)`` shows them together
-        (multiple viewers are configured via ``peaks.opts.gui.max_viewers``).
-      - ``primary_dim`` picks which dimension is on the y axis (default uses
-        the conventional peaks axes, eV excluded from centering); for k-space
-        (eV, kx) data pass ``primary_dim='kx'``.
-      - In Jupyter the Qt6 event loop is enabled automatically; in a plain
-        script it blocks until the window closes.
-      - The data must already be loaded in the kernel (kernel restarts clear
-        variables — reload before opening).
+      peaks' native Qt interactive viewer for loaded data.
+      Use: data.disp() or disp([da, ...], primary_dim=...); import from
+      peaks.core.GUI.disp_panels.
