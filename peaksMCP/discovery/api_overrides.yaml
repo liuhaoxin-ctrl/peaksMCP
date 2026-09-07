@@ -28,7 +28,7 @@ aliases:
   subtract_data: [subtract scans, difference spectrum, 数据相减, 差谱]
   merge_data: [merge scans, combine spectra, concatenate, 数据合并, 拼接]
   estimate_sym_point: [symmetry point, mirror centre, 对称中心, 对称点]
-  process_cut: [preprocess cut, preprocess_cut, cut preprocessing workflow, 切割预处理, cut预处理, 预处理数据, 数据预处理, preprocess data, preprocess]
+  process_cut: [preprocess cut, preprocess_cut, cut preprocessing workflow, 切割预处理, cut预处理, 预处理数据, 数据预处理, preprocess data, preprocess, k-space 预处理, preprocess to k-space, sweep to k-space]
   show_mapping_slice: [mapping slice, slice of mapping, energy map, map slice, constant energy map, 切片图, mapping切片, mapping切片图, 展示mapping, 固定能层图]
   read_meta: [summarize sweeps, list records, sweep classification, experiment summary, experiment records, read metadata, 汇总记录, 实验记录, 数据清单, 读元数据]
   drift_correction: [drift correction, align maps, 漂移校正, 图像配准]
