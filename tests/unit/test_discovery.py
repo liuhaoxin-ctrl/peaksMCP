@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from peaksMCP.discovery.index import build_index, load_api_overrides, load_project_added
+from peaksMCP.discovery.index import build_index, load_api_overrides
 from peaksMCP.discovery.signatures import describe_api
 
 
@@ -63,22 +63,36 @@ def test_interactive_widget_apis_are_discoverable_by_intent():
         assert "iplot" not in names, (query, names)
 
 
-def test_get_resolves_canonical_id_name_and_alias():
-    """peaks_get_api must accept the full canonical ID, the bare API name and
-    any search alias (e.g. mapping slice) — all resolve to the same entry."""
+def test_get_resolves_canonical_id_name_alias_and_legacy_id():
+    """peaks_get_api must accept the canonical ID (module:peaksMCP.overrides:
+    <name>), the bare API name, a pre-canonical implementation id (legacy)
+    and any search alias (e.g. mapping slice) — all resolve to the same
+    canonical entry."""
     index = build_index()
     entry = next(
         item
         for item in index.entries
-        if item["id"] == "module:peaksMCP.workflows.slice_view:show_mapping_slice"
+        if item["id"] == "module:peaksMCP.overrides:show_mapping_slice"
     )
     assert entry["name"] == "show_mapping_slice"
+    assert entry["module"] == "peaksMCP.overrides"
     assert "mapping slice" in entry.get("aliases", [])
     assert index.get(entry["id"]) is not None
     resolved_name = index.get("show_mapping_slice")
     assert resolved_name is not None and resolved_name["id"] == entry["id"]
     resolved_alias = index.get("mapping slice")
     assert resolved_alias is not None and resolved_alias["id"] == entry["id"]
+    # Pre-canonical implementation id resolves through legacy_ids but is never
+    # a searchable entry itself.
+    legacy = index.get("module:peaksMCP.workflows.slice_view:show_mapping_slice")
+    assert legacy is not None and legacy["id"] == entry["id"]
+    assert "module:peaksMCP.workflows.slice_view:show_mapping_slice" in entry["legacy_ids"]
+    assert not any(
+        item["id"] == "module:peaksMCP.workflows.slice_view:show_mapping_slice"
+        for item in index.entries
+    )
+    # A bare implementation-module call name resolves too.
+    assert index.get("show_mapping_slice")["module"] == "peaksMCP.overrides"
 
 
 def test_bound_drops_receiver_by_name_not_scope():
@@ -133,31 +147,59 @@ def test_project_added_declaration_matches_the_live_index():
     """The curated project record must not drift from what is exposed.
 
     Discovery is an AST scan, so a new public function joins the index
-    automatically; this asserts the review record keeps up in both directions
-    (nothing stale declared, nothing exposed undeclared).
+    automatically; this asserts the review record keeps up in both directions.
+    Every declared project API must be exposed under the single canonical
+    module (peaksMCP.overrides), and no implementation-module function may
+    leak into the index undeclared.
     """
     index = build_index()
-    declared = load_project_added()
-    exposed = {
+    declared_names = {
+        str(name)
+        for name, config in load_api_overrides().items()
+        if config.get("project")
+    }
+    assert declared_names, "project_added must not be empty"
+    canonical = {
+        item["name"]
+        for item in index.entries
+        if item.get("project_added") and item["module"] == "peaksMCP.overrides"
+    }
+    assert canonical == declared_names, (
+        f"declared but not exposed canonically: {sorted(declared_names - canonical)}; "
+        f"exposed but never declared: {sorted(canonical - declared_names)}"
+    )
+    # Implementation modules must never surface project functions directly.
+    leaked = {
         f"{item['module']}:{item['name']}"
         for item in index.entries
-        if str(item["module"]).startswith("peaksMCP")
+        if str(item["module"]).startswith("peaksMCP.")
+        and item["module"] != "peaksMCP.overrides"
+        and not item.get("project_added")
     }
-    assert declared, "project_added must not be empty"
-    assert not declared - exposed, f"declared but no longer in the index: {sorted(declared - exposed)}"
-    assert not exposed - declared, f"exposed but never declared: {sorted(exposed - declared)}"
+    assert not leaked, f"undeclared project function exposed: {sorted(leaked)}"
 
 
 def test_project_added_entries_are_flagged_in_the_index():
     """build_index marks declared project entries so callers can audit them."""
     index = build_index()
-    flagged = {f"{item['module']}:{item['name']}" for item in index.entries if item.get("project_added")}
-    exposed = {
-        f"{item['module']}:{item['name']}"
+    flagged = {
+        item["name"]
         for item in index.entries
-        if str(item["module"]).startswith("peaksMCP")
+        if item.get("project_added")
     }
-    assert flagged and flagged == exposed
+    assert flagged
+    # Every flagged entry is canonical; nothing else carries the flag.
+    assert all(
+        item["module"] == "peaksMCP.overrides"
+        for item in index.entries
+        if item.get("project_added")
+    )
+    declared_names = {
+        str(name)
+        for name, config in load_api_overrides().items()
+        if config.get("project")
+    }
+    assert flagged == declared_names
 
 
 def test_alias_and_override_keys_resolve_to_real_apis():

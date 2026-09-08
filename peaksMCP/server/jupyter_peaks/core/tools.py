@@ -34,6 +34,22 @@ _INTERACTIVE_MIMES = (
 _IMAGE_MIMES = ("image/png", "image/jpeg", "image/svg+xml")
 
 
+def _search_match_mode(query: Any, searched: str, matches: list[dict[str, Any]]) -> str:
+    """Classify how one search resolved: exact_name / exact_alias / fuzzy / list.
+
+    ``searched == "override"`` means the query hit an override name or alias
+    exactly; name equality decides which.  Any other non-empty query resolved
+    through the mixed full-index fallback (fuzzy).  An empty query is a list.
+    """
+    query_text = query.strip().lower() if isinstance(query, str) else ""
+    if not query_text:
+        return "list"
+    primary = matches[0]["name"] if matches else ""
+    if searched == "override":
+        return "exact_name" if primary.lower() == query_text else "exact_alias"
+    return "fuzzy"
+
+
 def _clean_output_text(value: Any) -> str:
     """Join Jupyter text fragments and remove terminal colour escapes."""
     text = "".join(value) if isinstance(value, list) else str(value)
@@ -273,11 +289,18 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
     """
     def peaks_search_api(query: str, scope: str = "all", limit: int = 5) -> dict[str, Any]:
         index = _require_index(state)
-        searched_tier, matches = index.search_tiered(query, scope, limit)
+        searched, matches = index.search_tiered(query, scope, limit)
+        match_mode = _search_match_mode(query, searched, matches)
         return {
             "query": query,
             "scope": scope,
-            "searched_tier": searched_tier,
+            # Backwards-compatible: searched_tier keeps the same label values.
+            "searched_tier": searched,
+            # Canonical names for the two search dimensions:
+            # searched_namespace is override / mixed / all; match_mode is
+            # exact_name / exact_alias / fuzzy / list.
+            "searched_namespace": searched,
+            "match_mode": match_mode,
             "count": len(matches),
             "peaks_version": index.peaks_version,
             "fingerprint": index.fingerprint,

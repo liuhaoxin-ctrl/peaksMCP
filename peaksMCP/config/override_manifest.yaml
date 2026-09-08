@@ -57,6 +57,7 @@ apis:
       - write result
       - write data
       - write output
+      - write the data out
       - export result
       - persist
       - persist result

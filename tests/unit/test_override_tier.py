@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from peaksMCP.discovery.index import (
+    CANONICAL_MODULE,
+    TIER_MIXED,
     TIER_NATIVE,
     TIER_OVERRIDE,
     build_index,
@@ -16,7 +18,9 @@ def test_every_entry_is_tagged_with_a_tier():
     # so adding/removing a facade only touches the manifest, never this test.
     declared = load_project_added()
     override = [item for item in index.entries if item.get("project_added")]
-    assert {f"{item['module']}:{item['name']}" for item in override} == declared
+    # Project entries live under ONE canonical module (module:peaksMCP.overrides:<name>).
+    assert {item["module"] for item in override} == {CANONICAL_MODULE}
+    assert len(override) == len(declared)
     for item in index.entries:
         expected = TIER_OVERRIDE if item.get("project_added") else TIER_NATIVE
         assert item["tier"] == expected, item["id"]
@@ -42,23 +46,23 @@ def test_override_exact_name_wins_stage_one():
     assert matches[0]["name"] == "read_meta"
 
 
-def test_native_query_falls_back_to_native_tier():
+def test_native_query_falls_back_to_mixed_namespace():
     index = build_index()
     # A native peaks alias must not be shadowed by any override.
-    tier, matches = index.search_tiered("energy distribution curve", limit=5)
-    assert tier == TIER_NATIVE
+    searched, matches = index.search_tiered("energy distribution curve", limit=5)
+    assert searched == TIER_MIXED
     assert "EDC" in _names(matches)
     # A native exact name likewise falls through (no override equals it).
-    tier, matches = index.search_tiered("k_convert", limit=3)
-    assert tier == TIER_NATIVE
+    searched, matches = index.search_tiered("k_convert", limit=3)
+    assert searched == TIER_MIXED
     assert matches[0]["name"] == "k_convert"
 
 
 def test_weak_partial_override_match_does_not_hijack_short_names():
     """'plot' must not be routed to plot_batch — only exact name/alias wins."""
     index = build_index()
-    tier, matches = index.search_tiered("plot", limit=5)
-    assert tier == TIER_NATIVE
+    searched, matches = index.search_tiered("plot", limit=5)
+    assert searched == TIER_MIXED
     # The fallback is the normal full-index ranking, not an override-only list.
     assert not (matches and all(m["tier"] == TIER_OVERRIDE for m in matches))
 
@@ -83,3 +87,16 @@ def test_override_apis_are_black_box_without_source_path():
     native = next(item for item in index.entries if item["name"] == "k_convert")
     native_detail = describe_api(native)
     assert native_detail["source_path"].endswith(".py")
+
+
+def test_search_match_mode_classification():
+    """peaks_search_api's match_mode must reflect how the query resolved."""
+    from peaksMCP.server.jupyter_peaks.core.tools import _search_match_mode
+
+    override_hit = [{"name": "load_data"}]
+    mixed_hit = [{"name": "k_convert"}]
+    assert _search_match_mode("load_data", "override", override_hit) == "exact_name"
+    assert _search_match_mode("加载数据", "override", override_hit) == "exact_alias"
+    assert _search_match_mode("load the dataset", "mixed", mixed_hit) == "fuzzy"
+    assert _search_match_mode("", "all", []) == "list"
+    assert _search_match_mode("anything", "mixed", []) == "fuzzy"

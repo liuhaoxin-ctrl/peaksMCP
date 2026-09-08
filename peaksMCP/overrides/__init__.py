@@ -7,12 +7,53 @@ peaks functions stay reachable through search/get.  Every facade:
 - renders at most one canonical summary line (Show convention);
 - never writes to disk by itself — persistence goes through ``save_result``
   with an explicit preview -> approve flow (Save convention).
+
+Single canonical import surface: every project API (the override tier) is
+importable from ``peaksMCP.overrides``.  The implementation modules below
+(``peaksMCP.plotting.*``, ``peaksMCP.pxt_utils.*``,
+``peaksMCP.workflows.*``) stay importable for Python compatibility, but
+discovery projects their index entries onto ``peaksMCP.overrides`` and never
+shows the implementation module to the model.
 """
 
 from __future__ import annotations
+
+from peaksMCP.plotting.layout import plot_batch
+from peaksMCP.plotting.validation import plot_validation_pair
+from peaksMCP.pxt_utils.converter import convert_path, convert_pxt
+from peaksMCP.pxt_utils.csv_translator import translate_datasheet
+from peaksMCP.pxt_utils.metadata import (
+    classify_data_format,
+    is_gold_format,
+    read_meta,
+    theta_offset_deg,
+)
+from peaksMCP.workflows.publication import validate_arpes_metadata
+from peaksMCP.workflows.slice_view import show_mapping_slice
 
 from .load import load_data
 from .models import Report, report_dict, report_summary
 from .save import save_result
 
-__all__ = ["load_data", "save_result", "Report", "report_dict", "report_summary"]
+__all__ = [
+    # loading and persistence facades
+    "load_data",
+    "save_result",
+    # conversion and metadata
+    "convert_pxt",
+    "convert_path",
+    "translate_datasheet",
+    "read_meta",
+    "classify_data_format",
+    "is_gold_format",
+    "theta_offset_deg",
+    "validate_arpes_metadata",
+    # plotting and workflows
+    "plot_batch",
+    "plot_validation_pair",
+    "show_mapping_slice",
+    # report plumbing
+    "Report",
+    "report_dict",
+    "report_summary",
+]

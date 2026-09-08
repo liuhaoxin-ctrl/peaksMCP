@@ -56,6 +56,20 @@ _HIDDEN_MODULES = frozenset(
 TIER_OVERRIDE = "override"
 TIER_NATIVE = "native"
 
+#: Canonical module for every project (override-tier) API.  Search/get expose
+#: project functions ONLY under ``module:peaksMCP.overrides:<name>``; the
+#: implementation module (where the function actually lives, e.g.
+#: ``peaksMCP.plotting.layout``) is projection detail and is never shown.
+#: The original implementation id is kept in each entry's ``legacy_ids`` so
+#: :meth:`ApiIndex.get` can still resolve pre-canonical ids.
+CANONICAL_MODULE = "peaksMCP.overrides"
+
+#: Searched-namespace label for the fallback stage: no override name/alias hit
+#: exactly, so the query ranked against the full index (override candidates
+#: plus native).  Reported as ``searched_namespace="mixed"`` — it is no longer
+#: mislabelled as "native" (that word now means the entry tier only).
+TIER_MIXED = "mixed"
+
 #: Minimum relevance that qualifies a stage-1 override hit in the two-tier
 #: search (exact alias tier, 900, and above — i.e. the query equals an
 #: override's canonical name or one of its aliases).  Weaker partial matches
@@ -572,6 +586,21 @@ def build_index() -> ApiIndex:
             item["project_added"] = True
         # Override tier = this project's black-box APIs; everything else native.
         item["tier"] = TIER_OVERRIDE if item.get("project_added") else TIER_NATIVE
+    # Single-canonical projection: every project entry is exposed ONLY as
+    # ``module:peaksMCP.overrides:<name>``.  The implementation-module id is
+    # preserved in ``legacy_ids`` so ApiIndex.get still resolves
+    # pre-canonical ids (and python imports of the implementation modules stay
+    # valid, they are just projection detail now).
+    for item in entries:
+        if not item.get("project_added"):
+            continue
+        original_id = str(item["id"])
+        item["id"] = f"module:{CANONICAL_MODULE}:{item['name']}"
+        item["module"] = CANONICAL_MODULE
+        legacy_ids = list(item.get("legacy_ids") or [])
+        if original_id not in legacy_ids:
+            legacy_ids.append(original_id)
+        item["legacy_ids"] = legacy_ids
     fingerprint = source_fingerprint()
     entries = [item for item in entries if item.get("module") not in _HIDDEN_MODULES]
     return ApiIndex(entries=entries, peaks_version=getattr(peaks, "__version__", "?"), fingerprint=fingerprint)
@@ -727,15 +756,17 @@ def search_index_tiered(
 
     Stage 1 ranks only the override tier. If its best hit reaches
     :data:`OVERRIDE_MIN_SCORE` (the query equals an override's canonical name
-    or one of its aliases), the override matches are returned alone under tier
-    ``override``. Otherwise the search falls back to the full index under tier
-    ``native``, so native ``peaks`` APIs — and weakly matched overrides — stay
-    reachable. An empty query lists the whole index under tier ``all``.
+    or one of its aliases), the override matches are returned alone under
+    searched-namespace ``override``. Otherwise the search falls back to the
+    full index under ``mixed`` — override candidates plus native peaks APIs
+    are ranked together (this is a mixed namespace, not a native-only list).
+    An empty query lists the whole index under ``all``.
 
     Returns
     -------
     tuple of (str, list of dict)
-        Searched tier label followed by the best matching records.
+        Searched-namespace label (``override`` / ``mixed`` / ``all``) followed
+        by the best matching records.
     """
     if scope not in _SCOPES:
         raise ValueError(f"invalid scope {scope!r}; expected one of {sorted(_SCOPES)}")
@@ -746,7 +777,7 @@ def search_index_tiered(
     override_rows = _rank_entries(entries, query, scope, TIER_OVERRIDE)
     if override_rows and override_rows[0][0] >= OVERRIDE_MIN_SCORE:
         return TIER_OVERRIDE, _trim_rows(override_rows, limit)
-    return TIER_NATIVE, _trim_rows(_rank_entries(entries, query, scope, "all"), limit)
+    return TIER_MIXED, _trim_rows(_rank_entries(entries, query, scope, "all"), limit)
 
 
 @dataclass(slots=True)
@@ -770,10 +801,10 @@ class ApiIndex:
         return search_index_tiered(self.entries, query, scope, limit)[1]
 
     def search_tiered(self, query: str, scope: str = "all", limit: int = 5) -> tuple[str, list[dict[str, Any]]]:
-        """Two-tier override-first search with the searched-tier label.
+        """Two-stage override-first search with the searched-namespace label.
 
-        Returns a ``(searched_tier, matches)`` pair where ``searched_tier`` is
-        ``"override"`` (query hit an override name/alias exactly), ``"native"``
+        Returns a ``(searched_namespace, matches)`` pair where the label is
+        ``"override"`` (query hit an override name/alias exactly), ``"mixed"``
         (fell back to the full index) or ``"all"`` (empty query).
         """
         return search_index_tiered(self.entries, query, scope, limit)
@@ -782,15 +813,21 @@ class ApiIndex:
         """Return one canonical entry.
 
         Accepts the full canonical ID returned by :meth:`search` (e.g.
-        ``module:peaksMCP.workflows.slice_view:show_mapping_slice``), a bare
-        API name (``show_mapping_slice``), or one of its search aliases
-        (``mapping slice``) — aliases resolve to the canonical entry so a
-        typo'd ``peaks_get_api`` still returns the real API instead of an
-        unknown-ID error.
+        ``module:peaksMCP.overrides:show_mapping_slice``), a bare API name
+        (``show_mapping_slice``), a pre-canonical implementation id (e.g.
+        ``module:peaksMCP.workflows.slice_view:show_mapping_slice``, resolved
+        through ``legacy_ids``), or one of its search aliases (``mapping
+        slice``) — aliases resolve to the canonical entry so a typo'd
+        ``peaks_get_api`` still returns the real API instead of an unknown-ID
+        error.
         """
         wanted = canonical_id.strip()
         for entry in self.entries:
-            if entry["id"] == wanted or entry["name"] == wanted:
+            if (
+                entry["id"] == wanted
+                or entry["name"] == wanted
+                or wanted in entry.get("legacy_ids", [])
+            ):
                 return entry
         lowered = wanted.lower()
         if lowered:
