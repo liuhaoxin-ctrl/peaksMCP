@@ -165,7 +165,7 @@ def test_alias_and_override_keys_resolve_to_real_apis():
     index = build_index()
     known = {item["name"] for item in index.entries} | {item["id"] for item in index.entries}
     documented = load_api_overrides()
-    assert documented, "config/manifest.yaml must define at least one API entry"
+    assert documented, "config catalogs must define at least one API entry"
     for key, config in documented.items():
         assert key in known, f"entry targets a missing API: {key}"
         if config.get("project"):

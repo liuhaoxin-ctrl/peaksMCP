@@ -1,0 +1,118 @@
+version: 1
+# Upstream (native) peaks presentation catalog - retrieval/display only.
+#
+# Split from the retired config/manifest.yaml (one release of compatibility
+# keeps reading that file when both new catalogs are absent).
+# Every entry is an upstream peaks API fixed to the native tier: `aliases`
+# feed natural-language search and `docstring_note` prepends curated usage
+# guidance.  Project black-box exposure lives in
+# config/override_manifest.yaml - no module/project/exposure declarations
+# belong here.
+apis:
+  History:
+    aliases: [processing history, provenance, 处理历史]
+
+  # --- cuts, curves and derived quantities ---
+  EDC:
+    aliases: [energy distribution curve, 能量分布曲线, 能谱曲线]
+  MDC:
+    aliases: [momentum distribution curve, 动量分布曲线, 动量曲线]
+  DOS:
+    aliases: [density of states, 态密度, 态密]
+  tot:
+    aliases: [total intensity, integrated intensity, spectral weight, 总强度, 谱权重]
+  extract_cut:
+    aliases: [slice data, crop spectrum, line cut, 切片, 选区, 截取]
+  radial_cuts:
+    aliases: [radial cut, angular cut, 径向切片, 径向切割]
+  deriv:
+    aliases: [derivative, differentiation, 导数, 微分, 求导]
+  curvature:
+    aliases: [curvature, 曲率]
+
+  # --- preprocessing ---
+  smooth:
+    aliases: [smoothing, filter, 平滑, 滤波]
+  norm:
+    aliases: [normalize, normalization, 归一化, 标准化]
+  bgs:
+    aliases: [background subtraction, subtract background, 背景扣除]
+  bin_data:
+    aliases: [bin pixels, coarsen data, 数据分箱, 像素合并]
+  sym:
+    aliases: [symmetrize, mirror spectrum, 对称化, 镜像对称]
+  rotate:
+    aliases: [rotate image, angular rotation, 旋转谱图, 数据旋转]
+  degrid:
+    aliases: [remove mesh grid, FFT grid removal, 去网格, 去除条纹]
+  mask_data:
+    aliases: [polygon mask, region mask, 多边形掩膜, 区域遮罩]
+  drop_nan_borders:
+    aliases: [trim nan edges, crop empty border, 删除空边, 裁剪NaN边界]
+  drift_correction:
+    aliases: [drift correction, align maps, 漂移校正, 图像配准]
+  correct_isolated_bad_pixels:
+    aliases: [bad pixel removal, clean bad pixels, 坏点修复, 去坏点]
+
+  # --- combining scans ---
+  sum_data:
+    aliases: [sum scans, add spectra, 数据相加, 求和]
+  subtract_data:
+    aliases: [subtract scans, difference spectrum, 数据相减, 差谱]
+  merge_data:
+    aliases: [merge scans, combine spectra, concatenate, 数据合并, 拼接]
+
+  # --- Fermi level and k-space ---
+  estimate_EF:
+    aliases: [Fermi level, Fermi energy, 费米能级]
+  estimate_sym_point:
+    aliases: [symmetry point, mirror centre, 对称中心, 对称点]
+  fit_gold:
+    aliases:
+      - gold reference fit
+      - fit Fermi edge
+      - gold fit
+      - Fermi level fit
+      - 金参考拟合
+      - 金边拟合
+      - 金拟合
+      - 费米边拟合
+      - 费米能级拟合
+    docstring_note: |
+      Fit the Fermi edge of a gold reference.
+      Output: EF_correction (poly dict), EF_quality, inline figure.
+      Hierarchy: apply its EF_correction to each cut via
+      metadata.set_EF_correction before k_convert.
+  k_convert:
+    aliases: [momentum conversion, k-space, 动量转换, k空间]
+    docstring_note: |
+      Convert a cut to (eV, kx), flattening the Fermi edge in the same call.
+      Input: raw (kinetic, theta_par) DataArray + EF_correction (fit_gold
+      output) passed as k_convert(EF_correction=...). Output: (eV, kx)
+      DataArray. Hierarchy: fit_gold once -> k_convert per cut with that
+      EF_correction. `return_kz_scan_in_hv` applies to hv (kz) scans.
+  disp_from_hv:
+    aliases: [dispersion from hv, photon energy dispersion, 光子能色散]
+
+  # --- plotting and viewing ---
+  plot_grid:
+    aliases: [figure grid, visualize batch, panel plot, 绘图, 画图, 批量谱图]
+  disp:
+    aliases:
+      - interactive viewer
+      - interactive plot
+      - GUI viewer
+      - data viewer widget
+      - 3D viewer
+      - 交互式查看器
+      - 交互式绘图
+      - 三维查看器
+      - interactive
+      - interactive panel
+      - panel viewer
+      - 交互面板
+      - 原生交互查看器
+    docstring_note: |
+      peaks' native Qt interactive viewer for loaded data.
+      Use: data.disp() or disp([da, ...], primary_dim=...); import from
+      peaks.core.GUI.disp_panels.

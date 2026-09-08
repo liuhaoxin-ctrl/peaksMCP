@@ -134,14 +134,29 @@ def test_save_result_json(tmp_path):
 
 # ---------- ③ manifest file parses ----------
 
-def test_manifest_v3_exists_and_registers_facades():
+def test_override_manifest_v3_exists_and_registers_facades():
     from pathlib import Path
 
     import yaml
 
     raw = yaml.safe_load(
-        Path("peaksMCP/config/manifest.yaml").read_text(encoding="utf-8")
+        Path("peaksMCP/config/override_manifest.yaml").read_text(encoding="utf-8")
     )
     assert raw["version"] == 3
     names = {entry["name"] for entry in raw["project"]}
     assert {"load_data", "save_result"} <= names
+
+
+def test_native_catalog_v1_exists_and_holds_only_upstream_entries():
+    from pathlib import Path
+
+    import yaml
+
+    raw = yaml.safe_load(
+        Path("peaksMCP/config/native_catalog.yaml").read_text(encoding="utf-8")
+    )
+    assert raw["version"] == 1
+    apis = raw["apis"]
+    assert apis and len(apis) >= 25  # upstream presentation stays complete
+    assert all(not (config or {}).get("project") for config in apis.values())
+    assert "k_convert" in apis and "fit_gold" in apis

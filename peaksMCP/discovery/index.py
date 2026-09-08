@@ -27,11 +27,19 @@ _INDEX_PACKAGE = Path(__file__).resolve().parent.parent
 _ADAPTER_SOURCES = (
     "discovery/index.py",
     "discovery/signatures.py",
-    "config/manifest.yaml",
+    "config/native_catalog.yaml",
+    "config/override_manifest.yaml",
     "config/metadata.py",
     "config/metadata_baseline.yaml",
     "server/jupyter_peaks/core/tools.py",
 )
+#: Curated presentation documents: upstream aliases/notes (native tier) and
+#: the project black-box manifest.  ``load_overrides()`` merges their ``apis``
+#: blocks; the retired single-file config/manifest.yaml is read only as a
+#: compatibility fallback when both new catalogs are absent.
+_NATIVE_CATALOG = "config/native_catalog.yaml"
+_OVERRIDE_MANIFEST = "config/override_manifest.yaml"
+_LEGACY_MANIFEST = "config/manifest.yaml"
 
 #: peaks modules whose entries must never be surfaced by search/get.  The
 #: hvplot-based ``iplot`` accessor is intentionally hidden: "interactive"
@@ -352,31 +360,51 @@ def scan_modules(
     return entries
 
 
+def _read_config_document(path: Path) -> dict[str, Any]:
+    """Parse one curated YAML document; an unreadable file yields {}."""
+    try:
+        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
+
+
 def load_overrides(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
-    """Load the curated API presentation document.
+    """Load the curated API presentation documents.
 
     Parameters
     ----------
     path : str or os.PathLike, optional
-        Override file to read; defaults to the packaged
-        ``config/manifest.yaml`` (v2-shaped ``apis`` block inside the v3
-        manifest; legacy ``discovery/api_overrides.yaml`` was retired).
+        Explicit override file to read (any legacy shape, including the
+        retired single-file ``config/manifest.yaml``).  When omitted, the
+        merged view of ``config/native_catalog.yaml`` (upstream, native tier)
+        and ``config/override_manifest.yaml`` (project APIs) is returned; the
+        legacy single file is read as a compatibility fallback only when both
+        new catalogs are absent.
 
     Returns
     -------
     dict
-        Parsed document. An unreadable file yields an empty document.
-
-    Examples
-    --------
-    >>> "apis" in load_overrides()
-    True
+        Merged document with ``version``, ``apis`` (native entries merged
+        with project entries) and the override manifest's ``project`` seeds.
     """
-    target = Path(path) if path else Path(__file__).resolve().parents[1] / "config" / "manifest.yaml"
-    try:
-        return yaml.safe_load(target.read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError):
+    if path is not None:
+        return _read_config_document(Path(path))
+    config_dir = Path(__file__).resolve().parents[1] / "config"
+    native = _read_config_document(config_dir / "native_catalog.yaml")
+    overrides = _read_config_document(config_dir / "override_manifest.yaml")
+    if not native and not overrides:
+        legacy = _read_config_document(config_dir / "manifest.yaml")
+        if legacy:
+            return legacy
         return {}
+    merged: dict[str, Any] = {"version": overrides.get("version", 3)}
+    merged_apis: dict[str, Any] = {}
+    for document in (native, overrides):
+        merged_apis.update(document.get("apis") or {})
+    merged["apis"] = merged_apis
+    if overrides.get("project"):
+        merged["project"] = overrides["project"]
+    return merged
 
 
 def load_api_overrides(path: str | os.PathLike[str] | None = None) -> dict[str, dict[str, Any]]:
@@ -388,8 +416,8 @@ def load_api_overrides(path: str | os.PathLike[str] | None = None) -> dict[str, 
     Parameters
     ----------
     path : str or os.PathLike, optional
-        Override file to read; defaults to the packaged
-        ``config/manifest.yaml`` (see :func:`load_overrides`).
+        Explicit override file to read; defaults to the merged
+        native/override catalogs (see :func:`load_overrides`).
 
     Returns
     -------
@@ -408,16 +436,16 @@ def load_api_overrides(path: str | os.PathLike[str] | None = None) -> dict[str, 
 def load_project_added(path: str | os.PathLike[str] | None = None) -> set[str]:
     """Return the ``module:name`` ids this project adds to the API.
 
-    Derived from the ``project: true`` flag in ``config/manifest.yaml``, so
-    the audited exposure record cannot drift from the aliases and notes that
+    Derived from the ``project: true`` flag in ``config/override_manifest.yaml``,
+    so the audited exposure record cannot drift from the aliases and notes that
     sit next to it. :func:`build_index` marks every matching entry with
     ``project_added=True`` so callers can tell project code from upstream.
 
     Parameters
     ----------
     path : str or os.PathLike, optional
-        Override file to read; defaults to the packaged
-        ``config/manifest.yaml`` (see :func:`load_overrides`).
+        Explicit override file to read; defaults to the merged
+        native/override catalogs (see :func:`load_overrides`).
 
     Returns
     -------
