@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import warnings
 from collections.abc import Iterable, Sequence
 from typing import Any, Literal
 
@@ -225,14 +224,15 @@ def plot_batch(
             plt.close(figure)
             raise ValueError("a shared colorbar requires compatible two-dimensional data units")
         ranges_compatible = _ranges_comparable(page) if unit_compatible else False
-        use_shared_colorbar = unit_compatible and ranges_compatible and shared_colorbar in {True, "auto"}
         if shared_colorbar is True and unit_compatible and not ranges_compatible:
-            warnings.warn(
-                "plot_batch: intensity ranges differ too much across panels for one "
-                "shared colorbar; falling back to per-panel colorbars.",
-                UserWarning,
-                stacklevel=2,
+            # Explicit True is a strict request: one shared colorbar or an
+            # error.  Only "auto" may degrade to per-panel colorbars.
+            plt.close(figure)
+            raise ValueError(
+                "a shared colorbar requires comparable intensity ranges across "
+                "panels; pass shared_colorbar='auto' to allow per-panel colorbars"
             )
+        use_shared_colorbar = unit_compatible and ranges_compatible and shared_colorbar in {True, "auto"}
         limits = _global_limits(page) if use_shared_colorbar else None
         mappable = None
 

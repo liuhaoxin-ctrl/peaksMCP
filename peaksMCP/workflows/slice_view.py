@@ -123,15 +123,28 @@ def show_mapping_slice(
             f"show_mapping_slice: dim {dim!r} not in data dims "
             f"{list(data.dims)}. Pick one of those."
         )
+    # Validate shape BEFORE any .load(): a lazy backend must not be forced to
+    # read data that is rejected anyway.
+    if data.ndim < 2:
+        raise ValueError(
+            f"show_mapping_slice: data must have at least 2 dimensions, got "
+            f"ndim={data.ndim} ({list(data.dims)})."
+        )
+    empty_dims = [name for name, size in data.sizes.items() if size == 0]
+    if empty_dims:
+        raise ValueError(
+            f"show_mapping_slice: empty dimension(s) {empty_dims} "
+            f"(size 0) cannot be sliced."
+        )
     position = _resolve_slice_index(data, dim, index)
     slice_ = data.isel({dim: position})
-    slice_.load()  # small by design; explicit so a lazy backend never surprises
     remaining = list(slice_.dims)
     if len(remaining) > 2:
         raise ValueError(
             f"show_mapping_slice: slicing '{dim}' leaves {len(remaining)} "
             f"dimensions ({remaining}); slice along one more axis first."
         )
+    slice_.load()  # small by design; explicit so a lazy backend never surprises
     if debug:
         print(
             f"show_mapping_slice[debug]: dims={list(data.dims)} "

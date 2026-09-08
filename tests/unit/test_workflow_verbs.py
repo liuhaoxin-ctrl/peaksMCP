@@ -72,5 +72,13 @@ def test_show_mapping_slice_errors_are_plain_and_actionable():
     four_d = xr.DataArray(np.zeros((2, 2, 3, 4)), dims=("a", "b", "c", "d"))
     with pytest.raises(ValueError, match="slice along one more axis first"):
         show_mapping_slice(four_d, dim="a")
+    # 1-D and empty-dimensional inputs are rejected BEFORE any .load(): the
+    # lazy backend must not be forced to read data that is refused anyway.
+    one_d = xr.DataArray(np.zeros(8), dims="eV")
+    with pytest.raises(ValueError, match="at least 2 dimensions"):
+        show_mapping_slice(one_d, dim="eV")
+    empty = xr.DataArray(np.zeros((0, 8)), dims=("eV", "y"))
+    with pytest.raises(ValueError, match="empty dimension"):
+        show_mapping_slice(empty, dim="y")
 
 
