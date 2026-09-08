@@ -1,26 +1,36 @@
 # peaksMCP Prompt & API Injection Inventory
 
-- **Snapshot**: 2026-09-08 · committed on top of `main` @ `a58da6f` (covers the v2 rewrite of the curated API-presentation document **and** the move of L3 runtime prompt text into `config/prompts.yaml`) · all counts below verified by actually running `build_index()` / `load_api_overrides()` / `load_project_added()` / `prompts()` plus `ruff` and `pytest`.
+- **Snapshot**: 2026-09-08 · committed on top of `main` @ `a58da6f` (covers the v2 rewrite of the curated API-presentation document, the move of L3 runtime prompt text into `config/prompts.yaml`, and the always-on server-instructions follow-up) · all counts below verified by actually running `build_index()` / `load_api_overrides()` / `load_project_added()` / `prompts()` plus `ruff` and `pytest`.
 - **Totals**: 15 MCP tool descriptions · 7 plot-resource templates · **45 curated runtime prompt strings in `config/prompts.yaml`** (1 server-instruction paragraph + 1 interactive note + 6 `mcp_list_resources` guidance strings + 5 `notebook_unsafe` hard-block replies + 30 code-scanner + 2 IPython-scanner issue templates) · 2 skill/command files · 50 curated API entries (262 alias terms — 145 pure-ASCII, 117 containing CJK — and 5 `docstring_note`s) · a few frontend UI strings.
-- **One-line conclusion**: every curated prompt the model sees now lives in YAML — L1/L2 in `config/metadata_baseline.yaml`, **L3 in `config/prompts.yaml`** (new; wording no longer requires editing Python), L5 in `discovery/api_overrides.yaml`. Only mechanisms (docstring-note prepend, search ranking, audit keys) and small operational strings remain in code.
+- **One-line conclusion**: every model-visible **copy** that used to be hardcoded in Python now lives in YAML — L1/L2 in `config/metadata_baseline.yaml`, L3 in `config/prompts.yaml` (new; wording no longer requires editing Python), L5 in `discovery/api_overrides.yaml`. L4 stays Markdown (skills), L6 ships as UI text in the JupyterLab build. Only mechanisms (docstring-note prepend, search ranking, audit keys) and small operational strings remain in code.
 - This English edition **replaces the earlier Chinese-language edition** of the same date. Figures in that edition described the pre-rewrite v1 state (e.g. “13 of 18 project functions have no aliases”, a 91-line YAML) and are now stale: the current tree consolidated `api_overrides.yaml` into one entry per API, gave every project function aliases, and moved the L3 copy out of Python.
 
 ---
 
-# Part I · Prompt surfaces (what the model sees)
+# Part I · Prompt & copy surfaces
 
-| Layer | Content | Delivery | Curated in |
-|---|---|---|---|
-| L1 | 15 MCP tool descriptions | every tool-list broadcast | `metadata_baseline.yaml` |
-| L2 | 7 plotting-format templates | each `mcp_list_resources` call | `metadata_baseline.yaml` |
-| L3 | 45 runtime strings (server instructions, guidance, block replies, scanner issue text) | always-on server instructions / payloads / errors / consent | **`prompts.yaml`** (Python only formats) |
-| L4 | skill + slash command | loaded on demand | Markdown files |
-| L5 | per-API search aliases + docstring notes | injected into the search index / docstrings | `api_overrides.yaml` |
-| L6 | frontend consent copy | JupyterLab extension UI | `index.ts` |
+The inventory is organised into six delivery layers (L1–L6). A layer is defined
+by three questions — **who sees the text** (model vs human user), **when it is
+delivered**, and **where the wording lives**:
+
+| Layer | What it is | Carrier / location | Delivered | Visible to |
+|---|---|---|---|---|
+| L1 | 15 MCP tool descriptions (`title` + `description`) | `config/metadata_baseline.yaml` (`tools:`) | every tool-list broadcast | model |
+| L2 | 7 plotting-format templates (run verbatim) | `config/metadata_baseline.yaml` (`resources:`) | each `mcp_list_resources` call | model |
+| L3 | 45 runtime prompt strings: always-on server instructions, interactive note, list-resources guidance (6), hard-block replies (5), scanner/IPython issue templates (32) | `config/prompts.yaml` | per session / per call / on refusal / consent dialog | model |
+| L4 | skill + slash command | `claude_plugin/skills/cut-preprocessing/SKILL.md`, `.claude/commands/test_helper.md` | loaded on demand | model |
+| L5 | per-API search aliases + docstring notes (50 curated entries) | `discovery/api_overrides.yaml` | injected into index entries / docstrings | model |
+| L6 | frontend consent copy (Chinese UI text) | `peaksMCP/extensions/jupyterlab/src/index.ts` | JupyterLab dialog | human user |
+
+**Data-driven state** (what editing a phrase costs): L1/L2/L3/L5 are YAML single
+sources — copy is edited in YAML, not in Python (L3 code only formats
+placeholders); L4 is Markdown; L6 ships inside the JupyterLab extension build.
+The sections below expand each row; Part II covers the extra APIs injected into
+the index and Part III the findings and fix status.
 
 ## L1 — MCP tool descriptions (15)
 
-**Where**: `peaksMCP/config/metadata_baseline.yaml:2-78` · **Injected at**: `core/tools.py:129` (`mcp.tool(name=…, title=metadata["title"], description=metadata["description"])`). Full text lives in the YAML (single source); one-line intents:
+**Where**: `peaksMCP/config/metadata_baseline.yaml:2-78` · **Injected at**: `core/tools.py:128` (`mcp.tool(name=…, title=metadata["title"], description=metadata["description"])`). Full text lives in the YAML (single source); one-line intents:
 
 | Tool | Intent |
 |---|---|
@@ -259,7 +269,7 @@ New private helpers (underscore, not indexed): `_fit_gold_2d_from_center`, `_fit
 ruff check peaksMCP tests tools        → All checks passed
 pytest -m 'not e2e'                    → 392 passed, 9 deselected
 ```
-(392 includes the five discovery regression tests from the v2 rewrite, the seven prompts-config tests and the server-instructions guard test in `tests/unit/test_prompts_config.py`; discovery-only run: 14 passed.)
+(392 includes the five discovery regression tests from the v2 rewrite and the eight prompts-config tests in `tests/unit/test_prompts_config.py` (incl. the server-instructions guard); discovery-only run: 14 passed.)
 
 **Fix log — 2026-09-08** (see also the repo memory file): #1/#2 removed dangling SKILL references and corrected the accessor wording after confirming `hasattr(peaks, "save") is False`; #3 closed the alias gap by consolidating the curated record to one entry per API, so all 18 project functions became searchable; #4 made the exposure audit bidirectional via the `project: true` flag driving `load_project_added()`; #5 re-indented the block-scalar comments 12→6 spaces; #6 added the EF-handoff signature-contract test; **#7 moved the L3 copy into `config/prompts.yaml`** — `prompts()` in `config/metadata.py` loads it, `tools.py`/`notebook_unsafe.py`/`code_scanner.py`/`ipython_scanner.py` read it once at import and only format `{placeholders}`; **#8 moved the FastMCP `instructions` block into the same file** (`server_instructions`, read by `mcp_server.py`), completed the L6 line list and added the declared non-goals. Wording was preserved byte-for-byte (regression tests in `test_prompts_config.py` tie scanner output and the server instructions back to the YAML templates); rule ids, risk levels and audit `reason` keys stayed in code. Negative checks were run (e.g. injecting a ghost project entry turns the tests red) so the assertions are not vacuous.
 
