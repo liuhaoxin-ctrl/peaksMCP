@@ -48,7 +48,9 @@ class SharedState:
     kernel_state: str = "idle"
     busy_since: float | None = None
     active_cell: dict[str, Any] = field(default_factory=dict)
-    active_cell_output: list[dict[str, Any]] = field(default_factory=list)
+    #: Per-cell-id output history (updated by frontend Comm pushes). Single
+    #: source of truth for cell outputs: the model receives outputs inside the
+    #: write-tool response (settled against this cache), never by a second read.
     cell_outputs: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     lock: threading.RLock = field(default_factory=threading.RLock)
     started_at: float = field(default_factory=time.time)

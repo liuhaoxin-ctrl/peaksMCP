@@ -252,13 +252,12 @@ def test_read_only_path_and_open_are_allowed(code):
     "import matplotlib.pyplot as plt\nfig, ax = plt.subplots()\nfig.savefig('out.png')",
     "import matplotlib.pyplot as plt\nplt.figure().savefig('out.pdf')",
 ])
-def test_savefig_is_hard_blocked(code):
-    """savefig is permanently disabled: figures are rendered inline and there is
-    no approval path for writing them to disk."""
+def test_savefig_requires_explicit_consent(code):
+    """savefig is never automatic: it always lands in requires_explicit_consent
+    so the user sees the exact cell and approves before a figure is written."""
     result = scan_code(code)
-    assert result.blocked
-    assert any(issue.rule_id == "SAVE001" for issue in result.issues)
-    assert result.requires_explicit_consent == []
+    assert not result.blocked
+    assert any(issue.rule_id == "SAVE001" for issue in result.requires_explicit_consent)
 
 
 @pytest.mark.parametrize("code", [
@@ -493,8 +492,9 @@ def test_call_names_resolve_aliases_and_skip_unparsable():
     assert call_names("def broken(:") == []  # unparsable -> no matches
 
 
-def test_savefig_is_permanently_blocked(tmp_path):
-    """savefig is disabled outright — no ask-user confirmation path exists."""
+def test_savefig_requires_user_approval(tmp_path):
+    """A savefig cell pauses for explicit user approval (SAVE001 consent); it is
+    never executed without it, and executes once the user approves."""
     from unittest.mock import Mock
 
     from peaksMCP.discovery.index import build_index
@@ -504,17 +504,27 @@ def test_savefig_is_permanently_blocked(tmp_path):
     )
     from peaksMCP.server.jupyter_peaks.security import AuditLogger, ConsentManager
 
+    code = "import matplotlib.pyplot as plt\nplt.savefig('x.png')"
     state = SharedState(Mock(user_ns={}))
-    state.require_consent = False
+    state.require_consent = False  # the save gate must hold regardless of the switch
     state.api_index = build_index()
     state.bridge = Mock()
-    state.bridge.request.return_value = {"ok": True}
-    nb = UnsafeNotebookBackend(state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl"))
+    state.bridge.request.return_value = {"ok": True, "outputs": [], "id": "c1"}
+    nb = UnsafeNotebookBackend(
+        state, ConsentManager(callback=lambda _op, _details: False), AuditLogger(tmp_path / "t.jsonl")
+    )
 
-    blocked = nb.write_with_api_check("import matplotlib.pyplot as plt\nplt.savefig('x.png')", timeout=5)
-    assert blocked["blocked"] is True
-    assert "askuserquestion" not in blocked["message"]
-    assert "disabled" in blocked["message"]
+    # Denied: the user rejects the save cell -> it never reaches the kernel.
+    with pytest.raises(PermissionError, match="did not approve"):
+        nb.write_with_api_check(code, timeout=5)
+    state.bridge.request.assert_not_called()
+
+    # Approved: the cell executes and the output is returned for normalisation.
+    consent = ConsentManager(callback=lambda _op, _details: True)
+    nb = UnsafeNotebookBackend(state, consent, AuditLogger(tmp_path / "t2.jsonl"))
+    result = nb.write_with_api_check(code, timeout=5)
+    assert not result.get("blocked")
+    assert any(op[0][0] == "execute_code" for op in state.bridge.request.call_args_list)
 
 
 

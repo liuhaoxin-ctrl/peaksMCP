@@ -19,7 +19,7 @@ prompts:
   # ---------------------------------------------- server-level instructions
   # Delivered on every session through FastMCP server instructions (the most
   # globally visible prompt in the system).
-  server_instructions: "Work through peaksMCP tools only. Query peaks_search_api and peaks_get_api before writing unfamiliar Peaks code. Write model-generated Peaks analysis code through notebook_write_with_api_check, which verifies every Peaks API reference against the live API index before appending and executing a new cell. Inspect xarray variables before analysis and preserve units in every figure. Prefer a peaksMCP plotting facade (plot_batch, plot_validation_pair, show_mapping_slice, publication_grid) over hand-written matplotlib; when raw matplotlib is unavoidable use constrained_layout, DejaVu Sans with mathtext symbols ($k_x$, $E_F$) and English labels, 150 dpi inline and 300 dpi when saving. Figures render inline in the notebook for the user; a rendered cell returns an 'Inline figure rendered ...' line. Describe a figure's type (matplotlib vs bokeh/holoviews) and options only from what the output actually shows. Executing or adding notebook cells appends at the end of the notebook; existing cells remain unchanged."
+  server_instructions: "Work through peaksMCP tools only. Query peaks_search_api and peaks_get_api before writing unfamiliar Peaks code. Write model-generated Peaks analysis code through notebook_write_with_api_check, which verifies every Peaks API reference against the live API index before appending and executing a new cell. Inspect xarray variables before analysis and preserve units in every figure. Prefer a peaksMCP plotting facade (plot_batch, plot_validation_pair, show_mapping_slice, publication_grid) over hand-written matplotlib; when raw matplotlib is unavoidable use constrained_layout, DejaVu Sans with mathtext symbols ($k_x$, $E_F$) and English labels, 150 dpi inline and 300 dpi when saving. Figures render inline in the notebook for the user; a rendered cell returns an 'Inline figure rendered ...' line. Describe a figure's type (matplotlib vs bokeh/holoviews) and options only from what the output actually shows. Executing or adding notebook cells appends at the end of the notebook; existing cells remain unchanged. Do not write analysis results to disk: show them in the notebook first and let the user decide. A cell that writes a file or saves a figure pauses for the user's explicit approval in the notebook; never claim a file was saved unless that approval was given."
 
   # ------------------------------------------------------------------ tools
   interactive_omitted_note: "Interactive panel/widget rendered in the notebook for the user; it cannot be embedded here. Consider it done and describe the figure to the user."
@@ -27,7 +27,6 @@ prompts:
   # ------------------------------------------------------- notebook_unsafe
   notebook_unsafe:
     index_build_failed: "The Peaks API index could not be built; restart the kernel."
-    savefig_forbidden: "This cell saves a figure to disk (savefig), which is permanently disabled: figures are rendered inline in the notebook. Remove the savefig call — there is no user-confirmation path for saving figures."
     unknown_api_first: "Execution blocked: unverifiable API reference(s) {names}. None of these resolve to a Peaks API by exact name. Use peaks_search_api to find the correct API (candidates: {suggestions}) or fix the typo. If the receiver is complex (e.g. a function return value), assign it to an intermediate variable first. This name must be fetched with peaks_get_api before it can be used."
     unknown_api_retry: "Execution blocked: these names were already reported as unverifiable this session ({names}) and no successful peaks_get_api has followed. Call peaks_search_api, then peaks_get_api(<canonical id>) once for each name, then resubmit the cell."
     api_check_rule: "Prefer a peaksMCP override API whenever one fits the user's intent; use the native peaks API only when no override applies, and non-Peaks functions only when Peaks has no corresponding API. Unrecognised method names block execution."
@@ -59,7 +58,7 @@ prompts:
     deserialize_unsafe: "unsafe deserialization via {name}"
     env_mutation: "process environment modification"
     env_mutation_aliased: "process environment modification through an aliased os.environ"
-    savefig_disabled: "figure save to disk (savefig) is disabled; figures are rendered inline"
+    savefig_consent: "figure save to disk (savefig) requires explicit user confirmation; figures render inline by default"
     # execution
     exec_dynamic: "dynamic code execution via {name}"
     exec_indirect: "dynamic code execution via indirect fetch of {target}"

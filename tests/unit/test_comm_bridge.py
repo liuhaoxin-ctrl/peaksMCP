@@ -73,7 +73,7 @@ def test_stale_messages_cannot_update_state_or_heartbeat(bridge, message_type):
     bridge.last_seen = 0
     old.emit({"type": message_type, "cell": {"id": "stale"}, "outputs": []})
     assert bridge.state.active_cell == {"id": "new"}
-    assert bridge.state.active_cell_output[0]["text"] == "new"
+    assert bridge.state.cell_outputs["new"][0]["text"] == "new"
     assert bridge.last_seen == 0
     assert not bridge.connected
     current.emit({"type": "heartbeat"})
@@ -97,7 +97,7 @@ def test_delayed_execution_output_does_not_replace_the_active_cell(bridge):
     })
 
     assert bridge.state.active_cell["id"] == "active"
-    assert bridge.state.active_cell_output[0]["text"] == "current"
+    assert bridge.state.cell_outputs["active"][0]["text"] == "current"
     assert bridge.state.cell_outputs["executed"][0]["output_type"] == "display_data"
 
 

@@ -47,10 +47,11 @@ def test_comm_bridge_request_reply_and_state_update():
     assert result.get("value") == 42
     assert comm.sent[-1]["type"] == "request"
 
-    # A pushed active-cell message updates the state cache.
+    # A pushed active-cell message updates the cursor state (no raw outputs
+    # stored on it) and caches outputs per cell id for the settle buffer.
     comm.message_callback({"content": {"data": {"type": "active_cell", "cell": {"id": "c1", "index": 1}, "outputs": [{"output_type": "display_data"}]}}})
     assert state.active_cell == {"id": "c1", "index": 1}
-    assert len(state.active_cell_output) == 1
+    assert len(state.cell_outputs["c1"]) == 1
 
 
 def test_comm_bridge_fails_closed_when_disconnected():

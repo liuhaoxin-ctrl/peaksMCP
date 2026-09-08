@@ -203,16 +203,6 @@ async function handle(panel: NotebookPanel, comm: Kernel.IComm, data: any): Prom
     let result: any = {};
     switch (data.operation) {
       case 'read_active_cell': result = cellJSON(panel); break;
-      case 'read_notebook':
-        result = { path: panel.context.path, active_index: notebook.activeCellIndex,
-          cells: Array.from({length: notebook.widgets.length}, (_, i) => {
-            const cell = notebook.widgets[i];
-            return {id: cell.model.id, index: i, cell_type: cell.model.type, source: cell.model.sharedModel.getSource()};
-          }) };
-        break;
-      case 'move_cursor':
-        notebook.activeCellIndex = data.direction === 'index' ? data.index : Math.max(0, Math.min(notebook.widgets.length - 1, notebook.activeCellIndex + (data.direction === 'previous' ? -1 : 1)));
-        result = cellJSON(panel); break;
       case 'request_consent': {
         // Pass the target cell's current source so the consent dialog can show
         // exactly which cell will be deleted/overwritten and what it holds now.
@@ -265,18 +255,6 @@ async function handle(panel: NotebookPanel, comm: Kernel.IComm, data: any): Prom
           result = { saved: false, error: saveErr instanceof Error ? saveErr.message : String(saveErr) };
         }
         break;
-      case 'read_cell_at': {
-        const idx = typeof data.index === 'number' ? data.index : notebook.activeCellIndex;
-        if (!Number.isInteger(idx) || idx < 0 || idx >= notebook.widgets.length) {
-          throw new Error('cell index is out of range');
-        }
-        const cell = notebook.widgets[idx];
-        result = {
-          id: cell.model.id, index: idx, cell_type: cell.model.type,
-          source: cell.model.sharedModel.getSource(),
-        };
-        break;
-      }
       case 'restart_kernel':
         // Frontend-initiated restart so JupyterLab reconnects the session and the
         // extension re-opens the Comm (a REST restart would leave the UI detached).
@@ -312,21 +290,12 @@ const plugin: JupyterFrontEndPlugin<void> = {
     let activePanel: NotebookPanel | null = null;
     let panelDisconnectors: Array<() => void> = [];
     let disconnectKernelStatus: (() => void) | null = null;
-    let disconnectOutputs: (() => void) | null = null;
 
     const isTransitional = (status: unknown): boolean =>
       ['restarting', 'autorestarting', 'starting', 'connecting'].includes(String(status ?? ''));
 
-    const clearOutputBinding = (): void => {
-      if (disconnectOutputs) {
-        try { disconnectOutputs(); } catch { /* noop */ }
-        disconnectOutputs = null;
-      }
-    };
-
     const teardown = (why: string, notify = false): void => {
       console.log(`[peaksmcp] teardown comm (${why})`);
-      clearOutputBinding();
       if (heartbeatTimer !== null) {
         window.clearInterval(heartbeatTimer);
         heartbeatTimer = null;
@@ -350,25 +319,16 @@ const plugin: JupyterFrontEndPlugin<void> = {
         try { disconnectKernelStatus(); } catch { /* noop */ }
         disconnectKernelStatus = null;
       }
-      clearOutputBinding();
     };
 
     const publish = (panel: NotebookPanel, current: Kernel.IComm): void => {
       if (activePanel !== panel || panel.isDisposed || comm !== current) { return; }
       const cell = cellJSON(panel);
-      try { current.send({type: 'active_cell', cell, outputs: cell.outputs ?? []}); }
+      // Cursor metadata only: outputs travel with the execute response and the
+      // executed-cell pushes, never with the active-cell notification.
+      const meta = {id: cell.id, index: cell.index, cell_type: cell.cell_type, source: cell.source};
+      try { current.send({type: 'active_cell', cell: meta}); }
       catch { if (comm === current) { teardown('publish send failed'); } }
-    };
-
-    const bindActiveOutputs = (panel: NotebookPanel, current: Kernel.IComm): void => {
-      clearOutputBinding();
-      if (activePanel !== panel || comm !== current) { return; }
-      const active = panel.content.activeCell;
-      const outputs = active && active.model.type === 'code' ? (active.model as any).outputs : null;
-      if (!outputs) { return; }
-      const onOutputsChanged = (): void => { publish(panel, current); };
-      outputs.changed.connect(onOutputsChanged);
-      disconnectOutputs = () => { outputs.changed.disconnect(onOutputsChanged); };
     };
 
     const connect = async (): Promise<void> => {
@@ -419,7 +379,6 @@ const plugin: JupyterFrontEndPlugin<void> = {
         catch { if (comm === newComm) { teardown('heartbeat send failed'); } }
       }, 2000);
       publish(panel, newComm);
-      bindActiveOutputs(panel, newComm);
     };
 
     const bindKernelStatus = (panel: NotebookPanel): void => {
@@ -472,7 +431,6 @@ const plugin: JupyterFrontEndPlugin<void> = {
         const current = comm;
         if (activePanel !== panel || !current) { return; }
         publish(panel, current);
-        bindActiveOutputs(panel, current);
       };
       const onDisposed = (): void => {
         if (activePanel !== panel) { return; }

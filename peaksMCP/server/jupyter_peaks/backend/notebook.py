@@ -8,11 +8,7 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
-from ..active_cell_bridge import CommBridge
 from .base import SharedState
-
-# Single source of truth for the cached-cell-output cap (shared with the bridge).
-_MAX_CACHED_CELL_OUTPUTS = CommBridge.MAX_CACHED_CELLS
 
 
 def _json_value(value: Any, limit: int = 80) -> Any:
@@ -153,48 +149,23 @@ class NotebookBackend:
         return {"name": name, "type": f"{type(value).__module__}.{type(value).__name__}", "repr": repr(value)[:4000]}
 
     def active_cell(self) -> dict[str, Any]:
+        """Return the current frontend cell, outputs included.
+
+        The tool layer normalises ``outputs`` before the model sees them; this
+        backend method itself stays transport-neutral and returns the raw cell
+        snapshot exactly as the frontend produced it.
+        """
         if self.state.bridge and self.state.bridge.connected:
             try:
                 result = self.state.bridge.request("read_active_cell", timeout=5)
                 if isinstance(result, dict):
-                    self.state.active_cell = result
-                    outputs = result.get("outputs")
-                    cell_id = result.get("id")
-                    if isinstance(outputs, list):
-                        self.state.active_cell_output = list(outputs)
-                        if isinstance(cell_id, str) and cell_id:
-                            self.state.cell_outputs.pop(cell_id, None)
-                            self.state.cell_outputs[cell_id] = list(outputs)
-                            while (
-                                len(self.state.cell_outputs)
-                                > _MAX_CACHED_CELL_OUTPUTS
-                            ):
-                                oldest = next(iter(self.state.cell_outputs))
-                                self.state.cell_outputs.pop(oldest, None)
+                    self.state.active_cell = {
+                        key: value for key, value in result.items() if key != "outputs"
+                    }
+                    return result
             except Exception:
                 pass
         return dict(self.state.active_cell)
-
-    def active_cell_output(self) -> dict[str, Any]:
-        cell_id = self.state.active_cell.get("id")
-        if isinstance(cell_id, str) and cell_id in self.state.cell_outputs:
-            return {
-                "cell_id": cell_id,
-                "outputs": list(self.state.cell_outputs[cell_id]),
-            }
-        return {"cell_id": cell_id, "outputs": list(self.state.active_cell_output)}
-
-    def notebook_content(self) -> dict[str, Any]:
-        if not self.state.bridge:
-            raise RuntimeError("JupyterLab Comm bridge is not connected")
-        return self.state.bridge.request("read_notebook")
-
-    def move_cursor(self, direction: str = "next", index: int | None = None) -> dict[str, Any]:
-        if direction not in {"next", "previous", "index"}:
-            raise ValueError("direction must be next, previous, or index")
-        if direction == "index" and index is None:
-            raise ValueError("index is required when direction='index'")
-        return self.state.bridge.request("move_cursor", {"direction": direction, "index": index})
 
     def server_status(self) -> dict[str, Any]:
         return {
@@ -208,14 +179,3 @@ class NotebookBackend:
             "api_count": len(self.state.api_index.entries) if self.state.api_index else 0,
             "index_stale": bool(self.state.api_index and self.state.api_index.is_stale()),
         }
-
-    def kernel_status(self) -> dict[str, Any]:
-        return {"state": self.state.kernel_state, "busy_since": self.state.busy_since}
-
-    def wait_for_kernel(self, timeout: float = 30.0, poll_interval: float = 0.1) -> dict[str, Any]:
-        deadline = time.monotonic() + max(0.1, timeout)
-        while time.monotonic() < deadline:
-            if self.state.kernel_state == "idle":
-                return {"ready": True, **self.kernel_status()}
-            time.sleep(max(0.02, poll_interval))
-        return {"ready": False, "timed_out": True, **self.kernel_status()}

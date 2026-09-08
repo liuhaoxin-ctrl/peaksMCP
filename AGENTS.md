@@ -151,18 +151,28 @@ When adding, removing or renaming an MCP tool, update **all** of these:
 - [ ] Run `ruff check peaksMCP tests tools` and the unit tests
 
 Tool metadata lives in YAML, not hardcoded in Python. `config/metadata.py` loads
-`metadata_baseline.yaml` (14 tools) as the single source of truth for titles and
+`metadata_baseline.yaml` (9 tools: 7 read-only/guidance + 2 mutation) as the single
+source of truth for titles and
 descriptions, and `prompts.yaml` for the runtime prompt text that tools,
 `notebook_unsafe.py` and the code scanners show the model/user.
 
 ---
 
-## 6. Security modes and consent
+## 6. Security and consent
 
-All 14 tools (12 read-only/guidance + 2 mutation) are **always exposed** in every
-mode; the mode only changes how strictly the 2 mutation tools
-(`notebook_write_with_api_check`, `notebook_add_cell`) ask for frontend consent
-**when consent is enabled**.
+All 9 tools (7 read-only/guidance + 2 mutation) are **always exposed**; consent
+for the 2 mutation tools (`notebook_write_with_api_check`, `notebook_add_cell`) is
+governed by two independent triggers:
+
+- **Plain execution** follows the single `require_consent` master switch: when
+  it is off (default) ordinary analysis cells run without a prompt (the AST
+  scanner still hard-blocks dangerous code and every call is audit-logged);
+- **Write-to-disk / network intents** (scanner findings `SAVE001` savefig,
+  `SAVE002` file writers, `FILE002` unclear file mode, `NET001` egress) always
+  require explicit frontend approval in the notebook — no result is persisted
+  unless the user sees the exact cell and approves it, regardless of the switch.
+
+There is no security mode.
 
 The notebook is a **strictly append-only log**: both mutation tools only append
 a new cell at the END and can never edit, delete or reorder an existing cell, so
@@ -172,11 +182,12 @@ resources system were all removed for exactly this reason (see changelog).
 
 The consent master switch is `mcp.require_consent` in the active profile
 (default **false**; the supervisor also exposes `PEAKSMCP_REQUIRE_CONSENT`).
-With consent **disabled** (the default) no frontend prompt is shown for any
-mutation: the AST code scanner (always-on hard block) and the audit log are the
-only guards. With consent **enabled**, every mutation tool asks for explicit
-frontend consent shown in the notebook. There is no mode that relaxes this
-policy — the single switch is the only consent control.
+With consent **disabled** (the default) plain execution shows no frontend
+prompt: the AST code scanner (always-on hard block) and the audit log are the
+only guards for ordinary cells. Write-to-disk cells always prompt for explicit
+frontend consent in the notebook (see above) — there is no way to persist a
+result without the user seeing the cell and approving it. There is no mode that
+relaxes this policy.
 
 The scanner (`security/code_scanner.py`) is AST-semantic (alias-aware,
 attribute-chain matching) and an early rejection layer, **not a complete
@@ -201,12 +212,12 @@ Consent decisions and every tool call are written to the audit log
 %peaksMCP_status         # show status
 ```
 
-There is **no security mode**. Consent for the two mutation tools
-(`notebook_write_with_api_check`, `notebook_add_cell`) is governed solely by the
-single `require_consent` master switch (profile `mcp.require_consent`, default
-**false**). When off, the AST scanner still hard-blocks dangerous code and every
-call is audit-logged, but no in-notebook consent prompt appears; flip it on to
-require explicit consent for every write/execute.
+There is **no security mode**. Plain-execution consent for the two mutation
+tools follows the single `require_consent` master switch (profile
+`mcp.require_consent`, default **false**): when off, ordinary cells run without
+a prompt (the scanner still hard-blocks dangerous code and every call is
+audit-logged). Write-to-disk intents (savefig / file writers / network egress)
+always require explicit in-notebook approval regardless of the switch.
 
 ---
 
@@ -269,3 +280,42 @@ Notes:
 - Do not configure peaksMCP as a *remote* MCP server in Claude Desktop: remote URLs
   must be `https://`, but the in-kernel MCP is plain HTTP on localhost. Use the STDIO
   proxy (`claude_plugin/.mcp.json`) instead.
+
+---
+
+## 11. Core design (derived from requirements, not from the file tree)
+
+The system is designed from the core requirements below; every module exists to
+serve one of them, and anything that duplicates or bypasses them is a defect.
+
+Requirements:
+1. The model understands user intent and schedules work; it composes functions
+   through `search`/`get`, and only falls back to native `peaks` calls when the
+   curated surface is insufficient. It never re-implements an existing function.
+2. All execution happens in the managed Jupyter notebook (append-only cells).
+3. Output is normalized: calling an existing function shows that function's own
+   standard output; model-generated results use the canonical minimal summary.
+   Nothing is added to reduce human review cost — noise is removed instead.
+4. Nothing is persisted unless the user explicitly consents, and consent is only
+   asked after the exact result to be saved has been shown to the user.
+
+Minimal subsystem map (single responsibility each):
+
+| Subsystem | Responsibility | Model sees |
+|---|---|---|
+| Contract (manifest) | One curated registry per callable task: name, params, returns, preconditions, side effects, errors, example, tier (facade vs native passthrough) | curated contract only |
+| Access (search/get) | Searchable index built only from the manifest + native catalog | contracts, never implementation |
+| Run (notebook) | Single append-and-run entry with AST/API/consent gates; functions compose here | executes in notebook |
+| Show (output normalization) | By task id: existing function -> its standard output verbatim; model-authored result -> canonical terse summary; strip progress/duplicate reprs | normalized text + rendered figures |
+| Save (persist) | One write primitive: render full preview of what will be written -> user consent -> atomic write; default off | preview + consent |
+| Observability | Minimal host/kernel/audit state for the human | dashboard/logs |
+
+House rules while developing:
+- New analysis verbs land in the curated surface with a manifest entry; anything
+  under the surface that does not earn a facade stays native and passes through.
+- Single canonical source per contract/prompt/output format: manifest, prompts
+  YAML and the Show formatter respectively — no duplicated instruction text.
+- Any new file-write path must route through the Save primitive (preview ->
+  consent), never write by itself.
+- Reports converge on one base shape {operation, status, partial, warnings,
+  selection, provenance}; add typed fields only where the model reads them.

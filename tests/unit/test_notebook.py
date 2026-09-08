@@ -70,15 +70,10 @@ def test_namespace_listing_and_missing_variable():
         backend.read_variable("missing")
 
 
-def test_wait_for_idle_timeout_and_success():
-    state = SharedState(FakeIPython({}))
-    backend = NotebookBackend(state)
-    assert backend.wait_for_kernel(0.1)["ready"]
-    state.kernel_state = "busy"
-    assert not backend.wait_for_kernel(0.05, 0.01)["ready"]
-
-
-def test_read_active_cell_refreshes_identity_scoped_output_cache():
+def test_read_active_cell_keeps_cursor_metadata_output_free():
+    """active_cell returns the frontend snapshot verbatim for the read tool to
+    normalise; the kernel-side cursor state never stores raw outputs (they live
+    in the bounded cell_outputs settle buffer instead)."""
     class Bridge:
         connected = True
 
@@ -94,8 +89,12 @@ def test_read_active_cell_refreshes_identity_scoped_output_cache():
     state.bridge = Bridge()
     backend = NotebookBackend(state)
 
+    cell = backend.active_cell()
+    assert cell["id"] == "cell-7"
+    assert cell["outputs"] == [{"output_type": "stream", "text": "fresh"}]
+    # Cursor metadata is stored without outputs; the duplicate output cache is gone.
+    assert state.active_cell == {"id": "cell-7", "source": "data.plot()"}
+    assert not hasattr(state, "active_cell_output")
+    # Fallback path when the bridge is absent returns whatever was last stored.
+    state.bridge = None
     assert backend.active_cell()["id"] == "cell-7"
-    assert backend.active_cell_output() == {
-        "cell_id": "cell-7",
-        "outputs": [{"output_type": "stream", "text": "fresh"}],
-    }

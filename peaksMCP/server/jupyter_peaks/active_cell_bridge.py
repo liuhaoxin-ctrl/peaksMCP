@@ -101,15 +101,15 @@ class CommBridge:
         if message_type in {"active_cell", "notebook_state"}:
             cell = data.get("cell") or data.get("active_cell") or {}
             if isinstance(cell, dict):
-                self.state.active_cell = cell
+                # Keep cursor metadata only; outputs live in cell_outputs and
+                # are served to the model through the write-tool response, not
+                # through the cursor cell.
+                self.state.active_cell = {
+                    key: value for key, value in cell.items() if key != "outputs"
+                }
             outputs = data.get("outputs")
-            if isinstance(outputs, list):
-                self.state.active_cell_output = outputs
+            if isinstance(outputs, list) and isinstance(cell, dict):
                 self._cache_cell_outputs(cell.get("id"), outputs)
-            elif isinstance(cell, dict) and cell.get("id") in self.state.cell_outputs:
-                self.state.active_cell_output = list(
-                    self.state.cell_outputs[cell["id"]]
-                )
             return
         if message_type == "cell_output":
             # Execution results may arrive after the user has moved to another
@@ -121,15 +121,13 @@ class CommBridge:
             outputs = data.get("outputs")
             if isinstance(cell_id, str) and isinstance(outputs, list):
                 self._cache_cell_outputs(cell_id, outputs)
-                if self.state.active_cell.get("id") == cell_id:
-                    self.state.active_cell_output = list(outputs)
 
     def _cache_cell_outputs(
         self,
         cell_id: Any,
         outputs: list[dict[str, Any]],
     ) -> None:
-        """Store bounded per-cell output history for active-cell lookups."""
+        """Store bounded per-cell output history for execution-result settle."""
         if not isinstance(cell_id, str) or not cell_id:
             return
         self.state.cell_outputs.pop(cell_id, None)

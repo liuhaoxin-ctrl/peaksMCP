@@ -37,34 +37,25 @@ tools:
     description: Summarize a variable; xarray results include dims, coordinates, units, attrs, chunks and Peaks accessors.
   notebook_read_active_cell:
     title: Read Active Cell
-    description: Read the source and identity of the currently selected JupyterLab cell.
-  notebook_read_active_cell_output:
-    title: Read Active Cell Output
-    description: Read text and inline image outputs from the current cell.
-  notebook_read_content:
-    title: Read Notebook Content
-    description: Read the current notebook cell structure through the JupyterLab Comm bridge.
-  notebook_move_cursor:
-    title: Move Notebook Cursor
-    description: Select the previous, next or numbered notebook cell.
+    description: >
+      Read the source and identity of the currently selected JupyterLab cell.
+      Raw cell outputs are normalised into an ``output`` list (errors, the
+      "Inline figure rendered ..." line, interactive markers); text-only
+      outputs are not echoed — they are displayed in the notebook for the user.
   notebook_server_status:
     title: MCP Server Status
     description: Return mode, API-index and Comm-bridge readiness for this kernel MCP server.
-  notebook_kernel_status:
-    title: Kernel Status
-    description: Return the kernel busy or idle state and busy start time.
-  notebook_wait_for_kernel:
-    title: Wait for Kernel
-    description: Wait for the current kernel to become idle up to a bounded timeout.
   notebook_write_with_api_check:
     title: Write Code With API Check
     description: >
       Write model-generated code to a new notebook cell, execute it, and automatically
-      verify every Peaks API reference against the live API index. Returns
-      verified_peaks_apis (names resolved to Peaks APIs) and generic_refs (names
-      with no Peaks counterpart). RULE: only use non-Peaks functions when Peaks
-      has no corresponding API. ALL model-generated Peaks analysis code MUST be
-      written through this tool.
+      verify every Peaks API reference against the live API index. Returns the executed
+      cell identity plus a normalised ``output`` list: errors and the "Inline figure
+      rendered ..." line are echoed; text-only outputs are intentionally not echoed
+      (they are displayed in the notebook for the user). Writing files or saving
+      figures always asks for your approval in the notebook before the cell runs.
+      RULE: only use non-Peaks functions when Peaks has no corresponding API.
+      ALL model-generated Peaks analysis code MUST be written through this tool.
   notebook_add_cell:
     title: Add Notebook Cell
     description: >

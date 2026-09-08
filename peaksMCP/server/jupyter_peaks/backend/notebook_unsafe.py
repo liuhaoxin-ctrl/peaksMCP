@@ -6,17 +6,13 @@ from typing import Any
 
 from peaksMCP.config import prompts as _load_prompts
 
-from ..security import AuditLogger, ConsentManager, call_names, scan_code
+from ..security import AuditLogger, ConsentManager, scan_code
 from ..security.api_allowlists import BUILTIN_NAMES, GENERIC_METHODS, GENERIC_MODULES
 from ..security.api_provenance import CallTarget, analyze_provenance, extract_call_targets
 from .base import SharedState, ensure_fresh_index
 
 #: Curated hard-block reply text (config/prompts.yaml), read once at import.
 _PROMPTS = _load_prompts().get("notebook_unsafe") or {}
-
-def _saves_figure(names: list[str]) -> bool:
-    """Whether the parsed cell writes a figure to disk (``*.savefig``)."""
-    return any(name.rsplit(".", 1)[-1] == "savefig" for name in names)
 
 
 def _refused(message: str) -> dict[str, Any]:
@@ -36,8 +32,6 @@ class UnsafeNotebookBackend:
         self,
         operation: str,
         code: str = "",
-        force_consent: bool = False,
-        cell: dict[str, Any] | None = None,
     ) -> None:
         scan = scan_code(code) if code else None
         if scan and scan.blocked:
@@ -48,18 +42,25 @@ class UnsafeNotebookBackend:
         # calls can hide behavior from static name matching.  Every operation
         # that actually executes Python is therefore gated by informed consent.
         #
-        # ``state.require_consent`` (profile ``mcp.require_consent``) is the
-        # single master switch: when False (default) no mutation asks for consent
-        # at all (the scanner still hard-blocks dangerous code and every call is
-        # audit-logged); the operator can flip it to True to re-enable consent
-        # for every write/execute.  There is no mode that relaxes this policy.
-        if self.state.require_consent:
+        # Two independent consent triggers:
+        # 1. ``state.require_consent`` (profile ``mcp.require_consent``) is the
+        #    master switch for plain execution: when False (default) no consent
+        #    is asked for ordinary analysis cells (the scanner still hard-blocks
+        #    dangerous code and every call is audit-logged).
+        # 2. Write-to-disk / network intents reported by the scanner
+        #    (``requires_explicit_consent``: SAVE001 savefig, SAVE002 file
+        #    writers, FILE002 unclear file mode, NET001 egress) ALWAYS require
+        #    explicit user approval in the notebook, regardless of the switch:
+        #    no result is persisted unless the user sees the exact cell and
+        #    approves it.  This is the requirement-first save gate.
+        requires_consent = self.state.require_consent or bool(
+            scan and scan.requires_explicit_consent
+        )
+        if requires_consent:
             details: dict[str, Any] = {"code": code[:4000], "scan": scan.to_dict() if scan else None}
-            if cell is not None:
-                details["cell"] = cell
             approved = self.consent.request(operation, details)
             if not approved:
-                self.audit.write(operation, "denied", {})
+                self.audit.write(operation, "denied", {"reason": "requires_explicit_consent"})
                 raise PermissionError("user did not approve the notebook operation")
         self.audit.write(operation, "approved", {})
 
@@ -142,13 +143,6 @@ class UnsafeNotebookBackend:
             index = ensure_fresh_index(self.state)
         except Exception:
             return _refused(_PROMPTS["index_build_failed"])
-
-        names = call_names(code)
-        if _saves_figure(names):
-            self.audit.write(
-                "notebook_write_with_api_check", "blocked", {"reason": "savefig_forbidden"}
-            )
-            return _refused(_PROMPTS["savefig_forbidden"])
 
         targets = extract_call_targets(code)
         tags, generic_roots, defined, imported = analyze_provenance(

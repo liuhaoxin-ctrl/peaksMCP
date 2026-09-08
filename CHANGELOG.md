@@ -1,6 +1,38 @@
 # Changelog
 
 ## [Unreleased] — 2026-09-08
+### Output normalisation lands on the write tool; save gate is consent-first (BREAKING)
+
+The model no longer reads outputs back: `notebook_write_with_api_check` is the
+single execution channel and returns the **normalised** output summary (errors,
+the "Inline figure rendered ..." line, interactive markers) instead of the raw
+Jupyter outputs (text echoes + base64 images). Text-only outputs are suppressed
+by design — they are displayed in the notebook for the user.
+
+- `core/tools.py`: extracted `_normalize_outputs` / `_text_blocks`; the write
+  tool now returns `{id, index, cell_type, source, execution_success, saved,
+  save_error, output, api_check}` and never the raw `outputs`. Outputs settle
+  against the Comm push cache for a short bounded window so trailing inline
+  images are not lost (`_settle_executed_outputs`).
+- Tool surface 14 -> 9: removed `notebook_read_active_cell_output` (superseded
+  by the write-tool summary), `notebook_read_content`, `notebook_move_cursor`,
+  `notebook_kernel_status`, `notebook_wait_for_kernel`. `notebook_read_active_cell`
+  now returns a normalised `output` list too.
+- Output state dedup: `SharedState.active_cell_output` deleted; cell outputs
+  live only in the bounded per-cell `cell_outputs` settle buffer. Frontend
+  `active_cell` notifications carry cursor metadata only (no outputs).
+- Save gate (requirement-first): scanner `SAVE001` savefig is no longer a hard
+  block — it joins `SAVE002` file writers / `NET001` egress as an explicit
+  consent finding. `UnsafeNotebookBackend._authorize` now requires user approval
+  whenever the scanner reports a write/network intent, **regardless of the
+  `require_consent` switch**: a result is never persisted unless the user sees
+  the exact cell and approves it. Figures can be saved again after approval.
+- `config/prompts.yaml`: `savefig_forbidden` removed, `savefig_consent` added,
+  server instructions state the show-first / approve-to-save rule.
+- Frontend: removed the dead `read_notebook` / `read_cell_at` / `move_cursor`
+  handlers and the active-cell outputs push; the executed-cell push
+  (`cell_output`) stays for the settle buffer.
+
 
 ### Security mode removed; single `require_consent` switch (BREAKING)
 
@@ -22,6 +54,17 @@ master switch (profile, default **false**). There is no mode that relaxes it.
 - Behaviour change: with `require_consent: true`, append-only `notebook_add_cell`
   now also prompts (previously `dangerous` auto-approved non-executing appends).
   With `require_consent: false` (default) nothing changes.
+
+### Leftover dead parameters and stale comments removed
+
+Follow-up convergence after the `ExecutionMode` collapse:
+
+- `backend/notebook_unsafe.py`: `_authorize` dropped the dead `force_consent`
+  parameter (no caller ever passed it) and the dead `cell` parameter plus its
+  `if cell is not None: details["cell"] = cell` branch (never triggered).
+- `security/code_scanner.py`, `core/tools.py`, `AGENTS.md`: corrected comments
+  still referencing the removed "dangerous mode" / "active mode" consent policy
+  to describe the single `require_consent` switch.
 
 ### Tool-name inventory now derived from one source (BREAKING-adjacent)
 

@@ -46,19 +46,14 @@ def test_tool_metadata_is_nonempty():
     assert all(tool.title and tool.description for tool in tools)
 
 
-def test_output_content_suppresses_plain_text_even_after_an_image():
-    from peaksMCP.server.jupyter_peaks.core.tools import _output_content
+def test_normalize_outputs_suppresses_plain_text_even_after_an_image():
+    from peaksMCP.server.jupyter_peaks.core.tools import _normalize_outputs
 
-    class Notebook:
-        def active_cell_output(self):
-            return {
-                "outputs": [
-                    {"data": {"image/png": "aW1hZ2U=", "text/plain": "<Figure>"}},
-                    {"data": {"text/plain": "later text"}},
-                ]
-            }
-
-    blocks = _output_content(Notebook())
+    outputs = [
+        {"data": {"image/png": "aW1hZ2U=", "text/plain": "<Figure>"}},
+        {"data": {"text/plain": "later text"}},
+    ]
+    blocks = _normalize_outputs(outputs)
     # One closing line reports the rendered figure; the duplicate "<Figure>"
     # repr is suppressed; plain text after the figure is NOT echoed.
     text = "\n".join(getattr(block, "text", "") for block in blocks)
@@ -67,30 +62,25 @@ def test_output_content_suppresses_plain_text_even_after_an_image():
     assert "later text" not in text
 
 
-def test_output_content_reports_interactive_widget_as_text():
+def test_normalize_outputs_reports_interactive_widget_as_text():
     import json
 
     from mcp.types import TextContent
 
-    from peaksMCP.server.jupyter_peaks.core.tools import _output_content
+    from peaksMCP.server.jupyter_peaks.core.tools import _normalize_outputs
 
-    class Notebook:
-        def active_cell_output(self):
-            return {
-                "outputs": [
-                    {
-                        "data": {
-                            "application/vnd.jupyter.widget-view+json": {
-                                "model_id": "abc",
-                                "version_major": 2,
-                            },
-                            "text/plain": "HoloViews Layout",
-                        }
-                    }
-                ]
+    outputs = [
+        {
+            "data": {
+                "application/vnd.jupyter.widget-view+json": {
+                    "model_id": "abc",
+                    "version_major": 2,
+                },
+                "text/plain": "HoloViews Layout",
             }
-
-    blocks = _output_content(Notebook())
+        }
+    ]
+    blocks = _normalize_outputs(outputs)
     markers = [
         block.text
         for block in blocks
@@ -106,30 +96,25 @@ def test_output_content_reports_interactive_widget_as_text():
     )
 
 
-def test_output_content_preserves_structured_cell_errors():
+def test_normalize_outputs_preserves_structured_cell_errors():
     import json
 
     from mcp.types import TextContent
 
-    from peaksMCP.server.jupyter_peaks.core.tools import _output_content
+    from peaksMCP.server.jupyter_peaks.core.tools import _normalize_outputs
 
-    class Notebook:
-        def active_cell_output(self):
-            return {
-                "outputs": [
-                    {
-                        "output_type": "error",
-                        "ename": "ValueError",
-                        "evalue": "bad calibration",
-                        "traceback": [
-                            "\x1b[31mTraceback (most recent call last):\x1b[0m",
-                            "ValueError: bad calibration",
-                        ],
-                    }
-                ]
-            }
-
-    blocks = _output_content(Notebook())
+    outputs = [
+        {
+            "output_type": "error",
+            "ename": "ValueError",
+            "evalue": "bad calibration",
+            "traceback": [
+                "\x1b[31mTraceback (most recent call last):\x1b[0m",
+                "ValueError: bad calibration",
+            ],
+        }
+    ]
+    blocks = _normalize_outputs(outputs)
     assert len(blocks) == 1
     assert isinstance(blocks[0], TextContent)
     error = json.loads(blocks[0].text)
@@ -139,84 +124,69 @@ def test_output_content_preserves_structured_cell_errors():
     assert error["traceback"][0] == "Traceback (most recent call last):"
 
 
-def test_output_content_reports_inline_images_without_payloads():
+def test_normalize_outputs_reports_inline_images_without_payloads():
     from mcp.types import TextContent
 
-    import peaksMCP.server.jupyter_peaks.core.tools as tools
+    from peaksMCP.server.jupyter_peaks.core.tools import _normalize_outputs
 
-    class Notebook:
-        def active_cell_output(self):
-            return {
-                "outputs": [
-                    {
-                        "output_type": "display_data",
-                        "data": {"image/png": "QUJDREVGRw=="},
-                    }
-                ]
-            }
-
-    blocks = tools._output_content(Notebook())
+    outputs = [
+        {
+            "output_type": "display_data",
+            "data": {"image/png": "QUJDREVGRw=="},
+        }
+    ]
+    blocks = _normalize_outputs(outputs)
     marker = next(block for block in blocks if isinstance(block, TextContent))
     assert marker.text.startswith("Inline figure rendered")
     assert "pixels are not sent to the model" in marker.text
 
 
-def test_output_content_suppresses_markdown_boxes_without_figure_or_error():
+def test_normalize_outputs_suppresses_markdown_boxes_without_figure_or_error():
     """peaks' colored analysis boxes are text/markdown only (no figure, no error);
     under output normalisation they are NOT echoed — the user reads them in the
     notebook, so they must not be re-stated inline as model review noise."""
-    from peaksMCP.server.jupyter_peaks.core.tools import _output_content
+    from peaksMCP.server.jupyter_peaks.core.tools import _normalize_outputs
 
-    class Notebook:
-        def active_cell_output(self):
-            return {
-                "outputs": [
-                    {
-                        "output_type": "display_data",
-                        "data": {
-                            "text/markdown": (
-                                '<div class="alert alert-block alert-success">'
-                                "<b>Au fitting results: </b> Resolution (1st fit) "
-                                "9.08 meV, accuracy_by_2nd_fitting 9.08 meV</div>"
-                            )
-                        },
-                    }
-                ]
-            }
-
-    blocks = _output_content(Notebook())
+    outputs = [
+        {
+            "output_type": "display_data",
+            "data": {
+                "text/markdown": (
+                    '<div class="alert alert-block alert-success">'
+                    "<b>Au fitting results: </b> Resolution (1st fit) "
+                    "9.08 meV, accuracy_by_2nd_fitting 9.08 meV</div>"
+                )
+            },
+        }
+    ]
+    blocks = _normalize_outputs(outputs)
     readable = "\n".join(getattr(block, "text", "") for block in blocks)
     assert "Au fitting results:" not in readable
     assert "Resolution (1st fit) 9.08 meV" not in readable
     assert "<div>" not in readable and "<b>" not in readable
 
 
-def test_output_content_counts_frontend_omitted_image_as_rendered():
+def test_normalize_outputs_counts_frontend_omitted_image_as_rendered():
     """A frontend-omitted (oversized) image still counts as a rendered figure —
     one closing line, no per-item byte/limit bookkeeping."""
-    from peaksMCP.server.jupyter_peaks.core.tools import _output_content
+    from peaksMCP.server.jupyter_peaks.core.tools import _normalize_outputs
 
-    class Notebook:
-        def active_cell_output(self):
-            return {
-                "outputs": [
+    outputs = [
+        {
+            "output_type": "display_data",
+            "data": {
+                "application/vnd.peaksmcp.image-omitted+json": [
                     {
-                        "output_type": "display_data",
-                        "data": {
-                            "application/vnd.peaksmcp.image-omitted+json": [
-                                {
-                                    "mime_type": "image/svg+xml",
-                                    "decoded_bytes": 9000000,
-                                    "reason": "per_image_limit",
-                                }
-                            ]
-                        },
+                        "mime_type": "image/svg+xml",
+                        "decoded_bytes": 9000000,
+                        "reason": "per_image_limit",
                     }
                 ]
-            }
-
+            },
+        }
+    ]
     block_text = "\n".join(
-        getattr(block, "text", "") for block in _output_content(Notebook())
+        getattr(block, "text", "") for block in _normalize_outputs(outputs)
     )
     assert "Inline figure rendered" in block_text and "(1 image(s))" in block_text
 

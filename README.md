@@ -74,7 +74,7 @@ plain HTTP on `127.0.0.1`.
 ```bash
 peaksMCP dash            # single entry: start the dashboard host if needed and open the operator console (alias: open)
 peaksMCP status          # expect host RUNNING + kernel_id once Jupyter is up
-peaksMCP mcp-ping        # expect ok: true, 14 tools (12 read-only/guidance + 2 append-only mutation)
+peaksMCP mcp-ping        # expect ok: true, 9 tools (7 read-only/guidance + 2 append-only mutation)
 ```
 
 The dashboard host must be running before Claude Desktop uses the tools (the STDIO

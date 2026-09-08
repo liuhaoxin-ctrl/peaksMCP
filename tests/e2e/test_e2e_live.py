@@ -113,11 +113,8 @@ def supervisor(tmp_path_factory):
 
 def test_plot_cell_image_flows_through_comm_to_mcp(supervisor):
     """Real image pipeline: execute a Matplotlib cell -> Jupyter produces a PNG
-    output -> frontend Comm pushes it -> MCP ImageContent is served.
-
-    Guards against stale ``active_cell_output`` (previously only published on
-    activeCellChanged, so a freshly inserted cell's late-arriving image was
-    never synced).
+    output -> the write tool returns the normalised summary (figure marker,
+    never raw pixels).  Guards the execute -> Comm -> normalise path.
     """
     import concurrent.futures
 
@@ -132,9 +129,7 @@ def test_plot_cell_image_flows_through_comm_to_mcp(supervisor):
     # Wait until the extension has loaded and the in-kernel MCP is serving.
     ready = supervisor.wait_ready(timeout=120, require_comm=False)
     assert ready["ready"], ready
-    # Consent is off by default in the e2e profile, so the image pipeline below
-    # runs without a frontend consent prompt; the AST scanner still hard-blocks
-    # known-dangerous patterns and every call is audit-logged.
+    # Save-intent cells (savefig) always ask the user; the e2e approves.
     notebook_url = supervisor.status()["notebook_url"] + f"?token={supervisor.token}"
     with sync_playwright() as playwright:
         try:
@@ -164,7 +159,7 @@ def test_plot_cell_image_flows_through_comm_to_mcp(supervisor):
             _tool_call_thread("peaks_get_api", {"canonical_id": candidate["id"]})
             # Save through the recognised pyplot receiver, then display the PNG
             # as an IPython Image. This exercises the exact pipeline: cell
-            # produces image/png -> frontend Comm push -> MCP ImageContent.
+            # produces image/png -> frontend Comm push -> normalised write reply.
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(
                     _tool_call,
@@ -186,28 +181,13 @@ def test_plot_cell_image_flows_through_comm_to_mcp(supervisor):
                 )
                 result = future.result(timeout=90)
             assert result is not None
-            # Wait for the PNG output to arrive and be served as ImageContent.
-            deadline = time.monotonic() + 60
-            image_seen = False
-            while time.monotonic() < deadline:
-                output = _tool_call_thread("notebook_read_active_cell_output", {})
-                # With image data the tool returns a list of content objects;
-                # without any output it returns {"content": [text]}.
-                blocks = (
-                    output
-                    if isinstance(output, list)
-                    else (output.get("content", []) if isinstance(output, dict) else [])
-                )
-                if any(
-                    (isinstance(b, dict) and b.get("type") == "image")
-                    or (hasattr(b, "type") and b.type == "image")
-                    or (isinstance(b, str) and "type='image'" in b)
-                    for b in blocks
-                ):
-                    image_seen = True
-                    break
-                time.sleep(1)
-            assert image_seen, f"no image served; output={output!r}"
+            # The reply is the normalised summary: cell identity + output list
+            # with the figure marker; raw pixels and print text never return.
+            assert result.get("id")
+            assert result.get("execution_success") is True
+            assert result.get("saved") is True
+            assert isinstance(result.get("output"), list)
+            assert "outputs" not in result
         finally:
             browser.close()
 
@@ -227,12 +207,13 @@ def test_mcp_tool_surface_and_search(supervisor):
 
     health = asyncio.run(check_http_mcp_server(supervisor.profile.mcp.host, supervisor.profile.mcp.port))
     assert health["ok"]
-    assert health["tool_count"] == 14
+    from peaksMCP.config.metadata import tool_names
+
+    assert health["tool_count"] == len(tool_names())
     safe_tools = {
         "peaks_search_api", "peaks_get_api", "askuserquestion",
         "notebook_list_variables", "notebook_read_variable", "notebook_read_active_cell",
-        "notebook_read_active_cell_output", "notebook_read_content", "notebook_move_cursor",
-        "notebook_server_status", "notebook_kernel_status", "notebook_wait_for_kernel",
+        "notebook_server_status",
     }
     mutation_tools = {
         "notebook_write_with_api_check",

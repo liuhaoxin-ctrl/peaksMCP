@@ -123,22 +123,7 @@ class _StubNotebook:
     def active_cell(self) -> dict:
         return {}
 
-    def active_cell_output(self) -> dict:
-        return {"outputs": []}
-
-    def notebook_content(self) -> dict:
-        return {}
-
-    def move_cursor(self, where: str) -> dict:
-        return {}
-
     def server_status(self) -> dict:
-        return {}
-
-    def kernel_status(self) -> dict:
-        return {}
-
-    def wait_for_kernel(self) -> dict:
         return {}
 
 

@@ -21,7 +21,6 @@ def test_prompts_yaml_exposes_all_runtime_groups():
     unsafe = doc["notebook_unsafe"]
     for key in (
         "index_build_failed",
-        "savefig_forbidden",
         "unknown_api_first",
         "unknown_api_retry",
         "api_check_rule",
@@ -36,7 +35,7 @@ def test_prompts_yaml_exposes_all_runtime_groups():
 _SCANNER_CASES = [
     ("import os\nos.system('whoami')", "SYS001", "sys_destructive", {"name": "os.system"}),
     ("import subprocess\nsubprocess.run(['ls'])", "CAP001", "cap_sandbox_via", {"name": "subprocess.run"}),
-    ("import matplotlib.pyplot as plt\nplt.savefig('o.png')", "SAVE001", "savefig_disabled", {}),
+    ("import matplotlib.pyplot as plt\nplt.savefig('o.png')", None, None, {}),
     ("import numpy as np\nx = np.array([1, 2])", None, None, {}),
     ("!ls", "IPY001", "ipy_shell", {}),
 ]
@@ -54,6 +53,17 @@ def test_scanner_descriptions_render_from_prompts_yaml(code, rule, key, values):
     assert matching[0].description == (template.format(**values) if values else template)
 
 
+def test_savefig_consent_copy_renders_from_prompts_yaml():
+    """savefig is now a consent finding (SAVE001 in requires_explicit_consent),
+    and its yellow-note copy must render from the curated prompts YAML."""
+    result = scan_code("import matplotlib.pyplot as plt\nplt.savefig('o.png')")
+    assert not result.blocked
+    matching = [issue for issue in result.requires_explicit_consent if issue.rule_id == "SAVE001"]
+    assert matching
+    template = prompts()["scanner"]["savefig_consent"]
+    assert matching[0].description == template
+
+
 def test_server_instructions_are_delivered_from_prompts_yaml():
     """The always-on FastMCP server instructions must come from the YAML."""
     from peaksMCP.server.jupyter_peaks.mcp_server import _SERVER_INSTRUCTIONS
@@ -68,4 +78,5 @@ def test_interactive_and_block_copy_are_not_empty_strings():
     """The high-traffic L3 strings must stay populated (no accidental blanks)."""
     doc = prompts()
     assert len(doc["interactive_omitted_note"]) > 20
-    assert len(doc["notebook_unsafe"]["savefig_forbidden"]) > 50
+    assert len(doc["scanner"]["savefig_consent"]) > 20
+    assert len(doc["notebook_unsafe"]["index_build_failed"]) > 20

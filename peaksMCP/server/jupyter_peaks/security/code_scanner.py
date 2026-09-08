@@ -79,9 +79,10 @@ class ScanResult:
     issues: list[SecurityIssue] = field(default_factory=list)
     block_reason: str | None = None
     syntax_error: dict[str, Any] | None = None
-    # Patterns that are not hard-blocked but require an explicit, informed
-    # user consent even in dangerous mode (e.g. ``plt.savefig`` — figures are
-    # shown inline by default and must not be written unless the user asks).
+    # Patterns that are not hard-blocked but require an explicit, informed user
+    # consent when consent is enabled (``state.require_consent``), e.g.
+    # ``plt.savefig`` — figures are shown inline by default and must not be
+    # written unless the user asks.
     requires_explicit_consent: list[SecurityIssue] = field(default_factory=list)
 
     @property
@@ -588,7 +589,7 @@ def _classify_call(
     elif _is_env_mutation_call(node, aliases):
         issues.append(SecurityIssue("ENV001", _desc("env_mutation"), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
     elif _is_savefig(node, aliases):
-        issues.append(SecurityIssue("SAVE001", _desc("savefig_disabled"), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+        consent_issues.append(SecurityIssue("SAVE001", _desc("savefig_consent"), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
     elif name in _FILE_WRITERS or name.rsplit(".", 1)[-1] in _FILE_WRITE_METHOD_NAMES:
         consent_issues.append(SecurityIssue("SAVE002", _desc("file_write_consent", name=name), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
     target = _indirect_call_target(node, aliases)
