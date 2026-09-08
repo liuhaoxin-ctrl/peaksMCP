@@ -99,11 +99,18 @@ def test_cut_preprocessing_workflow_load_to_before_after_figure():
 def test_black_box_docs_match_how_the_functions_are_used():
     """The curated interface each override advertises must match real usage."""
     index = build_index()
+    # Contract for this map, not a snapshot:
+    #  - every key is an override this workflow actually calls, imported above;
+    #  - every value lists the keyword parameters that call passes, which must
+    #    exist in the live signature (guarded below via describe_api).
+    # Add a row when a new facade joins the workflow; the globals() guard makes
+    # a rename fail here instead of silently testing a stale list.
     used = {
         "load_data": {"source"},
         "plot_validation_pair": {"shared_scale"},
         "plot_batch": {"max_cols"},
     }
+    assert set(used) <= set(globals()), "used map must only name overrides imported above"
     for name, params in used.items():
         entry = index.get(name)
         assert entry is not None, f"{name} must be discoverable in the index"

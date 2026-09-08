@@ -1,13 +1,22 @@
 from __future__ import annotations
 
-from peaksMCP.discovery.index import TIER_NATIVE, TIER_OVERRIDE, build_index
+from peaksMCP.discovery.index import (
+    TIER_NATIVE,
+    TIER_OVERRIDE,
+    build_index,
+    load_project_added,
+)
 from peaksMCP.discovery.signatures import describe_api
 
 
 def test_every_entry_is_tagged_with_a_tier():
     index = build_index()
+    # The tagged set must mirror the curated declaration exactly.  Compare
+    # against the declaration source (manifest) instead of a hard-coded count,
+    # so adding/removing a facade only touches the manifest, never this test.
+    declared = load_project_added()
     override = [item for item in index.entries if item.get("project_added")]
-    assert len(override) == 13
+    assert {f"{item['module']}:{item['name']}" for item in override} == declared
     for item in index.entries:
         expected = TIER_OVERRIDE if item.get("project_added") else TIER_NATIVE
         assert item["tier"] == expected, item["id"]

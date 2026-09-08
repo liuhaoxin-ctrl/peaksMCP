@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
+from peaksMCP.pxt_utils import converter as _converter_module
 from peaksMCP.pxt_utils.converter import (
     _default_output_dir,
     _index_from_path,
@@ -19,6 +20,31 @@ from peaksMCP.pxt_utils.csv_translator import translate_datasheet
 from peaksMCP.pxt_utils.loader import load_pxt
 
 PXT_FIXTURES = Path(__file__).parents[1] / "fixtures" / "pxt"
+
+
+def _patch_converter_reader(monkeypatch, reader):
+    """Replace the PXT reader where the converter sees it.
+
+    converter.py binds the reader at import time (``from .loader import
+    load_pxt``), so patching ``loader.load_pxt`` directly would silently
+    patch nothing.  Converter tests therefore patch the converter module's
+    own binding through this single helper — the dotted target string lives
+    in exactly one place; ``test_converter_reader_binding_guard`` fails
+    loudly if that binding ever moves.
+    """
+    monkeypatch.setattr(_converter_module, "load_pxt", reader)
+
+
+def test_converter_reader_binding_guard():
+    """Keep the converter's import-time reader binding in view.
+
+    If converter.py stopped importing the reader under this exact name,
+    every ``_patch_converter_reader`` call would silently replace a dead
+    module attribute and the tests would pass without exercising the
+    converter at all.  The guard asserts the patched attribute is the real
+    reader object.
+    """
+    assert _converter_module.load_pxt is load_pxt
 
 
 def write_datasheet(path, rows):
@@ -235,7 +261,7 @@ def test_converter_embeds_matching_metadata_and_protects_output(monkeypatch, tmp
     metadata = tmp_path / "metadata.json"
     write_datasheet(tmp_path / "datasheet.csv", ["5,43,S,9.4,2.2,,2.7,400,5,note,extra"])
     translate_datasheet(tmp_path / "datasheet.csv", metadata)
-    monkeypatch.setattr("peaksMCP.pxt_utils.converter.load_pxt", lambda _path: xr.DataArray(np.ones((2, 3)), dims=("eV", "theta_par"), attrs={"units": "counts"}))
+    _patch_converter_reader(monkeypatch, lambda _path: xr.DataArray(np.ones((2, 3)), dims=("eV", "theta_par"), attrs={"units": "counts"}))
     target = tmp_path / "BP_0005.nc"
     first = convert_pxt(source, target, metadata_path=metadata)
     assert first.status == "converted"
@@ -252,8 +278,8 @@ def test_force_replaces_existing_output_without_unlinking_target(monkeypatch, tm
     source.touch()
     target = tmp_path / "BP_0005.nc"
     target.write_bytes(b"previous-valid-output")
-    monkeypatch.setattr(
-        "peaksMCP.pxt_utils.converter.load_pxt",
+    _patch_converter_reader(
+        monkeypatch,
         lambda _path: xr.DataArray(
             np.arange(6).reshape(2, 3),
             dims=("eV", "theta_par"),
@@ -288,7 +314,7 @@ def test_non_force_does_not_overwrite_concurrent_publisher(monkeypatch, tmp_path
             attrs={"units": "counts"},
         )
 
-    monkeypatch.setattr("peaksMCP.pxt_utils.converter.load_pxt", publish_competing_output)
+    _patch_converter_reader(monkeypatch, publish_competing_output)
     result = convert_pxt(source, target, force=False)
     assert result.status == "skipped"
     assert result.warnings == ["output was created by another conversion"]
@@ -332,7 +358,7 @@ def test_converter_rejects_unsafe_targets_before_loading(monkeypatch, tmp_path, 
         target = tmp_path / "directory.nc"
         target.mkdir()
     loader = Mock(side_effect=AssertionError("unsafe target must be rejected before loading"))
-    monkeypatch.setattr("peaksMCP.pxt_utils.converter.load_pxt", loader)
+    _patch_converter_reader(monkeypatch, loader)
     before = set(tmp_path.iterdir())
 
     result = convert_pxt(source, target, force=force)
@@ -359,7 +385,7 @@ def test_converter_rechecks_source_alias_before_publication(monkeypatch, tmp_pat
             target.hardlink_to(source)
         return xr.DataArray(np.ones((2, 3)), dims=("eV", "theta_par"))
 
-    monkeypatch.setattr("peaksMCP.pxt_utils.converter.load_pxt", changed_target)
+    _patch_converter_reader(monkeypatch, changed_target)
     result = convert_pxt(source, target, force=True)
     assert result.status == "failed"
     assert result.error_type == "ValueError"
@@ -372,7 +398,7 @@ def test_convert_path_force_cannot_overwrite_raw_input(monkeypatch, tmp_path):
     source = tmp_path / "BP_0005.pxt"
     source.write_bytes(b"original raw data")
     loader = Mock(side_effect=AssertionError("load must not run"))
-    monkeypatch.setattr("peaksMCP.pxt_utils.converter.load_pxt", loader)
+    _patch_converter_reader(monkeypatch, loader)
     report = convert_path(source, source, force=True)
     assert report.items[0].status == "failed"
     assert report.items[0].error_type == "ValueError"
@@ -391,8 +417,8 @@ def test_convert_path_single_file_to_directory(monkeypatch, tmp_path):
     itself as the target (which previously produced a silent 'skipped')."""
     source = tmp_path / "BP_0003.pxt"
     source.touch()
-    monkeypatch.setattr(
-        "peaksMCP.pxt_utils.converter.load_pxt",
+    _patch_converter_reader(
+        monkeypatch,
         lambda _path: xr.DataArray(np.ones((2, 3)), dims=("eV", "theta_par"), attrs={"units": "counts"}),
     )
     output_dir = tmp_path / "converted"
