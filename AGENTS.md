@@ -92,7 +92,16 @@ Claude Desktop <-> STDIO proxy <-> HTTP MCP <-> Jupyter kernel <-> JupyterLab Co
   `kernel.py` (kernelspec), `profiles.py` (pydantic config), `api.py` + `webapp/`
   (dashboard)
 - `peaksMCP/discovery/` — API index: `index.py` (AST scan + fingerprint + search),
-  `signatures.py` (signature/docstring extraction)
+  `signatures.py` (signature/docstring extraction). Every project API is
+  exposed under exactly one canonical id, `module:peaksMCP.overrides:<name>`;
+  implementation modules stay importable but never surface in search. The
+  full-index fallback is reported as `searched_namespace="mixed"` (never
+  "native").
+- `peaksMCP/overrides/` — curated black-box facades: the single canonical
+  import surface (`peaksMCP.overrides`). `load_data` / `save_result`,
+  `convert_experiment` / `inspect_experiment`, `fit_gold_reference`,
+  `preprocess_cut` / `preprocess_mapping` / `preprocess_batch`, plus plotting
+  facades re-exported from their implementation modules.
 - `peaksMCP/pxt_utils/` — PXT→NetCDF conversion: `loader.py`, `converter.py`
   (atomic batch), `csv_translator.py`, `models.py`
 - `peaksMCP/batch/` — CPU-budgeted process pool (`executor.py`, `resource_budget.py`)
@@ -101,6 +110,13 @@ Claude Desktop <-> STDIO proxy <-> HTTP MCP <-> Jupyter kernel <-> JupyterLab Co
 - `peaksMCP/config/metadata_baseline.yaml` — tool presentation metadata (single source)
 - `peaksMCP/config/prompts.yaml` — runtime prompt text (interactive/guidance copy,
   `notebook_unsafe` hard-block replies, code/ipython scanner issue descriptions)
+- `peaksMCP/config/native_catalog.yaml` — upstream peaks presentation
+  (aliases + docstring notes; fixed native tier; strict v1 schema)
+- `peaksMCP/config/override_manifest.yaml` — project black-box exposure
+  (strict v3 schema: per-API rows + facade contract seeds)
+- `peaksMCP/config/schema.py` — strict validation for both catalogs (duplicate
+  keys, unknown fields, enum values, ghost references); a damaged default
+  configuration fails the index build loudly
 - `claude_plugin/` — Claude Desktop plugin (`.mcp.json`, skills)
 
 ---

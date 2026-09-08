@@ -143,9 +143,11 @@ terminal `Ctrl+C` does **not** stop it — use `peaksMCP stop`.
 
 > **Data operations are deliberately not CLI commands.** PXT conversion,
 > datasheet translation and loading a scan run as **notebook cells** through the
-> MCP tools (`convert_path` / `convert_pxt` / `translate_datasheet` / `load_pxt`),
-> so the code scanner, the API check and the consent gate always apply. The CLI
-> and the operator console only control processes (Jupyter, kernel, MCP) and
-> snapshots.
+> MCP tools, composing the curated facades of `peaksMCP.overrides`
+> (`load_data` / `convert_experiment` / `translate_datasheet` /
+> `fit_gold_reference` / `preprocess_cut` / `preprocess_mapping` /
+> `preprocess_batch` / `save_result`), so the code scanner, the API check and the
+> consent gate always apply. The CLI and the operator console only control
+> processes (Jupyter, kernel, MCP) and snapshots.
 
 See `docs/ARCHITECTURE.md` for the compact architecture map.

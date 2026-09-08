@@ -3,6 +3,21 @@
 - **Snapshot**: 2026-09-08 · committed on top of `main` @ `a58da6f` (covers the v2 rewrite of the curated API-presentation document, the move of L3 runtime prompt text into `config/prompts.yaml`, and the always-on server-instructions follow-up) · all counts below verified by actually running `build_index()` / `load_api_overrides()` / `load_project_added()` / `prompts()` plus `ruff` and `pytest`.
 - **Totals**: 15 MCP tool descriptions · 7 plot-resource templates · **46 curated runtime prompt strings in `config/prompts.yaml`** (1 server-instruction paragraph + 1 interactive note + 6 `mcp_list_resources` guidance strings + 6 `notebook_unsafe` texts = 5 hard-block replies + 1 api-check rule + 30 code-scanner + 2 IPython-scanner issue templates) · 2 skill/command files · 50 curated API entries (262 alias terms — 145 pure-ASCII, 117 containing CJK — and 5 `docstring_note`s) · a few frontend UI strings.
 - **One-line conclusion**: every model-visible **copy** that used to be hardcoded in Python now lives in YAML — L1/L2 in `config/metadata_baseline.yaml`, L3 in `config/prompts.yaml` (new; wording no longer requires editing Python), L5 in `discovery/api_overrides.yaml`. L4 stays Markdown (skills), L6 ships as UI text in the JupyterLab build. Only mechanisms (docstring-note prepend, search ranking, audit keys) and small operational strings remain in code.
+- **Change note (2026-09, supersedes the figures below)**: the curated
+  presentation was split from the retired single `discovery/api_overrides.yaml`
+  into `config/native_catalog.yaml` (upstream, native tier) and
+  `config/override_manifest.yaml` (project exposure, strict v3 schema; duplicate
+  keys/unknown fields/enum values/ghost seeds are rejected and a damaged default
+  configuration fails the index build). Project APIs are exposed under one
+  canonical id `module:peaksMCP.overrides:<name>` and importable from
+  `peaksMCP.overrides`; the search fallback reports
+  `searched_namespace="mixed"` with a per-call `match_mode`. The facade surface
+  now includes `load_data`/`save_result`, `convert_experiment`/
+  `inspect_experiment`, `fit_gold_reference`, `preprocess_cut`/
+  `preprocess_mapping`/`preprocess_batch`, plotting facades re-exported from
+  `peaksMCP.overrides`, and `publication_grid` was removed. Counts in the
+  tables below are the pre-change snapshot and are regenerated from the two
+  catalogs going forward.
 - This English edition **replaces the earlier Chinese-language edition** of the same date. Figures in that edition described the pre-rewrite v1 state (e.g. “13 of 18 project functions have no aliases”, a 91-line YAML) and are now stale: the current tree consolidated `api_overrides.yaml` into one entry per API, gave every project function aliases, and moved the L3 copy out of Python.
 
 ---
