@@ -63,20 +63,21 @@ Curated-presentation, prompt-governance & override-tier pass (`a58da6f` →
   guards, EF-handoff signature contract, prompts-config rendering incl. the
   server-instructions guard, override-tier / black-box behaviour
   (`tests/unit/test_override_tier.py`), an end-to-end override workflow test
-  (`tests/unit/test_override_workflow.py`) that loads a real PXT fixture,
-  stages the preprocessed (eV, kx) cut and renders the before/after
-  `plot_validation_pair` figure plus a `plot_batch` grid, then verifies the
-  black-box docs (signature/module/aliases, no `source_path`) match usage.
-- Real-data acceptance tests (`tests/integration/
-  test_override_realdata_cut_preprocessing.py`): run only when the L112
-  `data_netcdf` set is present (`PEAKSMCP_REALDATA_DIR`, or the known local
-  path) — peaks load of a converted NetCDF carries the geometry
-  (loc=L112, manipulator axes), EF + theta offset then `k_convert` yields
-  (eV, kx) and `plot_validation_pair` renders the before/after figure; the
-  experiment metadata JSON stays consumable by `load_metadata`.
-- Non-e2e suite: **404 passed locally** (401 + 3 real-data tests; without the
-  data set those three skip), 9 deselected · `ruff check peaksMCP tests tools`:
-  all checks passed.
+  (`tests/unit/test_override_workflow.py`) that loads a real synthetic PXT
+  fixture via `load_pxt`, stages the preprocessed (eV, kx) cut in memory and
+  renders the before/after `plot_validation_pair` figure plus a `plot_batch`
+  grid, then verifies the black-box docs match usage.
+- Real-data acceptance (`tests/integration/
+  test_override_realdata_cut_preprocessing.py`, runs against the raw L112
+  `BP260623/data` PXT folder): mirrors a Jupyter session — starts from the
+  raw `.pxt` cut, converts via the override `convert_pxt` (the only on-disk
+  artifact), keeps EF/offset/`k_convert` and the figures in memory (figures
+  are inline `Figure` objects, no image files), asserts a second NetCDF is
+  written only when `kd.save(...)` is explicitly requested, and keeps
+  `experiment_metadata.json` consumable by the override `load_metadata`.
+- Non-e2e suite: **405 passed locally** (401 + 4 real-data tests; CI without
+  the data folder skips those four), 9 deselected ·
+  `ruff check peaksMCP tests tools`: all checks passed.
 
 ## 0.1.0
 
