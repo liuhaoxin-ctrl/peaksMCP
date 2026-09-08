@@ -371,3 +371,63 @@ def test_load_data_index_tags_processed_netcdf_entries(tmp_path, capsys):
     assert loaded.processed == ["BP_0005_processed"]
     out = capsys.readouterr().out
     assert "processed=1" in out
+
+
+def test_load_data_accepts_experiment_root_with_subfolders(monkeypatch, tmp_path, capsys):
+    """Pointing load_data at the experiment ROOT (data/ + data_netcdf/) works:
+    subfolders are indexed with their own contexts, converted NetCDF wins over
+    the raw PXT for the same stem, and the summary names the gold scan."""
+    import json as _json
+
+    from peaksMCP.overrides import LoadedScans, load_data
+    from peaksMCP.overrides import load as load_module
+
+    root = tmp_path / "BP260623"
+    data_dir = root / "data"
+    nc_dir = root / "data_netcdf"
+    data_dir.mkdir(parents=True)
+    nc_dir.mkdir()
+    (data_dir / "BP_0005.pxt").write_bytes(b"x")
+    (data_dir / "BP_0020.pxt").write_bytes(b"x")
+    (nc_dir / "BP_0005.nc").write_bytes(b"x")
+    (data_dir / "datasheet.csv").write_text(
+        "Experiment title,,,,\n"
+        "Index,Theta,Polarization,Temperture,Ei,Central Energy,Ef,slit,"
+        "Pass E.,Data format,Comment\n"
+        "5,430,S,9.4,2.2,,2.7,400,5,sweep,,\n"
+        "20,430,S,9.4,2.2,,2.7,400,5,Au sweep,Au\n",
+        encoding="utf-8",
+    )
+
+    def fake_pxt(path):
+        return xr.DataArray(np.ones((3, 4)), dims=("eV", "theta_par"),
+                            attrs={"units": "counts"})
+
+    def fake_nc(path, lazy=True):
+        import os
+
+        stem = os.path.basename(os.fspath(path))[:-3]
+        index = load_module._index_from_stem(stem)
+        document = {"records": {"5": {"experiment": {"data_format": "sweep"}},
+                                "20": {"experiment": {"data_format": "Au sweep"}}}}
+        return xr.DataArray(
+            np.ones((3, 4)), dims=("eV", "theta_par"),
+            attrs={"experiment_index": index,
+                   "experiment_metadata_json": _json.dumps(document)},
+        ), "NetCDF"
+
+    monkeypatch.setattr(load_module, "_single", fake_nc)  # nc header + data layer
+    monkeypatch.setattr("peaksMCP.pxt_utils.loader.load_pxt", fake_pxt)
+    monkeypatch.setattr(load_module, "_scan_pxt_header_sizes",
+                        lambda path: {"eV": 3, "theta_par": 4})
+    exp = load_data(str(root))
+    assert isinstance(exp, LoadedScans)
+    # Dedup: BP_0005 appears once (netcdf wins); BP_0020 stays raw pxt-only.
+    assert exp.stems == ["BP_0005", "BP_0020"]
+    assert exp.gold == ["BP_0020"] and exp.cuts == ["BP_0005"]
+    e5 = exp.entries[0]
+    assert e5.file_kind == "netcdf" and e5.sizes == {"eV": 3, "theta_par": 4}
+    out = capsys.readouterr().out
+    assert "gold=BP_0020" in out and "data_netcdf" in out
+    # repr is the one-line summary for print(exp).
+    assert "file(s) indexed" in repr(exp)

@@ -381,8 +381,15 @@ class LoadedScans:
             text += " metadata=none"
         if to_convert:
             text += f"; {to_convert} still need(s) conversion"
+        gold_names = self.gold[:3]
+        if gold_names and counts["gold"] <= 3:
+            text += "; gold=" + ",".join(gold_names)
         text += "; data layer via scans[stem]"
         return text[:200]
+
+    def __repr__(self) -> str:
+        """print(exp) shows the decision summary (the agent's first read)."""
+        return self.summary_line()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -459,16 +466,59 @@ def load_data(
             f"load_data: path not found: {path}. Check the path before retrying."
         )
     if path.is_dir():
-        return _index_paths(
-            sorted(
-                item
-                for item in path.iterdir()
-                if item.is_file() and item.suffix.lower() in _SUPPORTED_SUFFIXES
-            ),
-            lazy=lazy,
-            metadata=metadata,
-            directory=path,
+        groups = _data_groups(path)
+        flat = [file for _dir, files in groups for file in files]
+        if not flat:
+            found = [d.name for d in path.iterdir() if d.is_dir()]
+            hint = (
+                f" Data subfolders found: {sorted(found)[:8]} - point "
+                "load_data at a data/ or data_netcdf/ folder, or the whole "
+                "experiment root."
+                if found
+                else ""
+            )
+            raise ValueError(
+                f"load_data: no supported data files (.pxt, .nc) in {path}.{hint}"
+            )
+        if len(groups) == 1:
+            folder, files = groups[0]
+            data_dir = folder if folder is not None else path
+            return _index_paths(
+                files, lazy=lazy, metadata=metadata, directory=data_dir
+            )
+        # Experiment root: index each data subfolder with its own context
+        # (sibling datasheet + conversion state), then merge.
+        first_dir = groups[0][0] if groups[0][0] is not None else path
+        scans = _index_paths(
+            groups[0][1], lazy=lazy, metadata=metadata, directory=first_dir
         )
+        merged_entries = list(scans.entries)
+        payload = scans.payload
+        for folder, files in groups[1:]:
+            part = _index_paths(
+                files, lazy=lazy, metadata=metadata, directory=folder
+            )
+            merged_entries.extend(part.entries)
+            if payload is None:
+                payload = part.payload
+        # Deduplicate by stem across subfolders: the converted NetCDF wins
+        # over the raw PXT (same scan, full geometry) - unless no NetCDF
+        # exists, in which case the raw PXT entry stays (needs conversion).
+        by_stem: dict[str, ScanEntry] = {}
+        for entry in sorted(merged_entries, key=lambda e: e.file_kind != "netcdf"):
+            prior = by_stem.get(entry.stem)
+            if prior is None or entry.file_kind == "netcdf":
+                by_stem[entry.stem] = entry
+        merged_entries = list(by_stem.values())
+        subdirs = sorted({str(Path(e.path).parent.name) for e in merged_entries})
+        merged = LoadedScans(
+            merged_entries,
+            source=f"{path.name}/{{{', '.join(subdirs)}}}",
+            lazy=lazy,
+            payload=payload,
+        )
+        print(merged.summary_line())
+        return merged
     suffix = path.suffix.lower()
     if suffix not in _SUPPORTED_SUFFIXES:
         raise ValueError(
@@ -481,6 +531,36 @@ def load_data(
     return data
 
 
+def _data_groups(directory: Path) -> list[tuple[Path | None, list[Path]]]:
+    """Supported files grouped by their data folder.
+
+    Files directly inside ``directory`` form one group (folder=None); each
+    direct subfolder that contains supported files forms its own group, so an
+    experiment root (data/ + data_netcdf/) indexes every subfolder with its
+    own sibling-datasheet and conversion-state context.
+    """
+    own = sorted(
+        item
+        for item in directory.iterdir()
+        if item.is_file() and item.suffix.lower() in _SUPPORTED_SUFFIXES
+    )
+    groups: list[tuple[Path | None, list[Path]]] = []
+    if own:
+        groups.append((None, own))
+    for item in sorted(
+        child for child in directory.iterdir()
+        if child.is_dir() and not child.name.startswith(".")
+    ):
+        files = sorted(
+            f
+            for f in item.iterdir()
+            if f.is_file() and f.suffix.lower() in _SUPPORTED_SUFFIXES
+        )
+        if files:
+            groups.append((item, files))
+    return groups
+
+
 def _index_paths(
     paths: list[Path],
     *,
@@ -491,8 +571,18 @@ def _index_paths(
     """Build a LoadedScans index for a set of paths (no data read)."""
     if not paths:
         where = f" in {directory}" if directory is not None else ""
+        hint = ""
+        if directory is not None:
+            found = [d.name for d in directory.iterdir() if d.is_dir()]
+            hint = (
+                f" Data subfolders found: {sorted(found)[:8]} - point "
+                "load_data at a data/ or data_netcdf/ folder, or the whole "
+                "experiment root."
+                if found
+                else ""
+            )
         raise ValueError(
-            f"load_data: no supported data files (.pxt, .nc){where}."
+            f"load_data: no supported data files (.pxt, .nc){where}.{hint}"
         )
     payload: dict[str, Any] | None = None
     if metadata is not None:
