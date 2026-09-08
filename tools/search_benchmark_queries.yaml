@@ -9,23 +9,23 @@ version: 1
 cases:
   # --- load / save / conversion -----------------------------------------
   - query: "加载一个pxt文件"
-    expect: load_pxt
+    expect: load_data
   - query: "读取实验数据"
-    expect: load
+    expect: load_data
   - query: "open a pxt file"
-    expect: load_pxt
+    expect: load_data
   - query: "load the dataset from disk"
-    expect: load
+    expect: load_data
   - query: "保存成netcdf文件"
-    expect: save
+    expect: save_result
   - query: "保存处理后的数据"
-    expect: save
+    expect: save_result
   - query: "export the result to a file"
-    expect: save
+    expect: save_result
   - query: "write the data out"
-    expect: save
+    expect: save_result
   - query: "保存数据到nc文件"
-    expect: save
+    expect: save_result
   # --- cuts / selection --------------------------------------------------
   - query: "提取一条线cut"
     expect: extract_cut

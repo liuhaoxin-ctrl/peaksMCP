@@ -35,8 +35,12 @@ _ADAPTER_SOURCES = (
 
 #: peaks modules whose entries must never be surfaced by search/get.  The
 #: hvplot-based ``iplot`` accessor is intentionally hidden: "interactive"
-#: intent resolves to the native Qt viewer ``disp`` instead.
-_HIDDEN_MODULES = frozenset({"peaks.core.GUI.iplot.hvplot"})
+#: intent resolves to the native Qt viewer ``disp`` instead.  The PXT reader
+#: module is hidden too: loading is a single curated verb (``load_data`` in
+#: peaksMCP.overrides), so the raw ``load_pxt`` implementation stays internal.
+_HIDDEN_MODULES = frozenset(
+    {"peaks.core.GUI.iplot.hvplot", "peaksMCP.pxt_utils.loader"}
+)
 
 #: Presentation tiers inside one index: ``override`` marks the peaksMCP
 #: project-added APIs (black-box tier, preferred by search); everything else
@@ -466,9 +470,9 @@ def build_index() -> ApiIndex:
 
     package_dir = os.path.dirname(peaks.__file__)
     entries = _merge_duplicates([*scan_runtime(), *scan_modules(package_dir)])
-    # The agent should also discover peaksMCP's own analysis API (plotting /
-    # workflows / conversion) without relying on the skill file: scan the core
-    # data layer of this package into the same index.
+    # The agent should also discover peaksMCP's own analysis API (facades /
+    # plotting / workflows / conversion) without relying on the skill file:
+    # scan the core data layer of this package into the same index.
     import peaksMCP
 
     peaksmcp_dir = os.path.dirname(peaksMCP.__file__)
@@ -479,6 +483,7 @@ def build_index() -> ApiIndex:
                 peaksmcp_dir,
                 package_name="peaksMCP",
                 include_prefixes=(
+                    "peaksMCP.overrides",
                     "peaksMCP.plotting",
                     "peaksMCP.workflows",
                     "peaksMCP.pxt_utils",

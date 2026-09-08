@@ -14,11 +14,8 @@ version: 3
 # release of backward compatibility keeps both shapes working.
 apis:
   # =========================================================== peaks upstream
-  # --- loading and saving ---
-  load:
-    aliases: [open data, read data, 加载, 读取]
-  save:
-    aliases: [export, write data, 保存, 导出]
+  # --- loading and saving: unified facades live in the project block below,
+  # so upstream `load`/`save` no longer carry curated aliases here ---
   History:
     aliases: [processing history, provenance, 处理历史]
 
@@ -132,24 +129,70 @@ apis:
   # index flag an entry, so this block doubles as the audited exposure record:
   # adding a public function to peaksMCP without a row here fails the tests.
 
-  # --- PXT loading and conversion ---
-  load_pxt:
-    module: peaksMCP.pxt_utils.loader
+  # --- loading and saving (unified facades; the PXT reader itself is
+  # internal: peaksMCP.pxt_utils.loader is hidden from the index) ---
+  load_data:
+    module: peaksMCP.overrides.load
     project: true
     aliases:
+      - load data
+      - load dataset
+      - read dataset
+      - open dataset
+      - open data
+      - read data
+      - load a file
+      - load data file
+      - data file
       - load pxt
       - read pxt
       - open pxt
       - pxt file
       - load raw scan
+      - open raw scan
+      - 加载
+      - 读取
+      - 加载数据
+      - 读取数据
+      - 打开数据
       - 加载PXT
       - 读取PXT
       - 打开PXT
     docstring_note: |
-      Reads a raw PXT experiment as an xarray DataArray. To analyse a raw scan,
-      convert it first with convert_pxt (idempotent: skips if the .nc already
-      exists), then load the produced .nc — do not feed the raw PXT to peaks
-      workflows directly.
+      Unified loading entry: opens one data file as a DataArray — a NetCDF
+      (converted from PXT, full peaks geometry) or a raw PXT read for
+      inspection. Returns the array in the variable; it never writes to disk.
+  save_result:
+    module: peaksMCP.overrides.save
+    project: true
+    aliases:
+      - save result
+      - save output
+      - write result
+      - write data
+      - write output
+      - export result
+      - persist
+      - persist result
+      - save to file
+      - save to disk
+      - write to file
+      - write to disk
+      - save file
+      - store result
+      - 保存
+      - 导出
+      - 保存结果
+      - 导出结果
+      - 写入文件
+      - 落盘
+    docstring_note: |
+      Save facade with the preview -> consent flow. The first call only shows
+      what would be written (path, kind, size, shape) and writes nothing;
+      repeating it with approve=True performs the atomic write, and
+      overwrite=True is required when the target already exists. Use this for
+      every result the user asks to keep — analysis functions never persist
+      on their own.
   convert_pxt:
     module: peaksMCP.pxt_utils.converter
     project: true

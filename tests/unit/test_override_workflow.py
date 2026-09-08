@@ -25,8 +25,8 @@ from matplotlib.figure import Figure
 
 from peaksMCP.discovery.index import build_index
 from peaksMCP.discovery.signatures import describe_api
+from peaksMCP.overrides import load_data
 from peaksMCP.plotting import plot_batch, plot_validation_pair
-from peaksMCP.pxt_utils.loader import load_pxt
 
 #: Tiny real (synthetic binary) 2D PXT shipped with the test fixtures.
 PXT_2D = Path(__file__).parents[1] / "fixtures" / "pxt" / "synthetic_2d_nested.pxt"
@@ -70,8 +70,8 @@ def _preprocessed_cut(raw: xr.DataArray) -> xr.DataArray:
 
 
 def test_cut_preprocessing_workflow_load_to_before_after_figure():
-    """load_pxt -> preprocessing -> plot_validation_pair must all glue together."""
-    raw = load_pxt(PXT_2D)
+    """load_data -> preprocessing -> plot_validation_pair must all glue together."""
+    raw = load_data(PXT_2D)
     assert raw.dims == ("eV", "theta_par")
     assert raw.coords["eV"].attrs.get("units") == "eV"
     assert raw.coords["theta_par"].attrs.get("units") == "deg"
@@ -100,7 +100,7 @@ def test_black_box_docs_match_how_the_functions_are_used():
     """The curated interface each override advertises must match real usage."""
     index = build_index()
     used = {
-        "load_pxt": {"path"},
+        "load_data": {"source"},
         "plot_validation_pair": {"shared_scale"},
         "plot_batch": {"max_cols"},
     }

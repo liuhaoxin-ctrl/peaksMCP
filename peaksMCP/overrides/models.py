@@ -41,9 +41,14 @@ class Report:
         return text
 
 
-def report_dict(report: Any) -> dict[str, Any]:
+def _report_dict(report: Any) -> dict[str, Any]:
     """JSON-safe dict of a report, merging its dataclass fields with the
-    common vocabulary (works for dataclasses and plain Report subclasses)."""
+    common vocabulary (works for dataclasses and plain Report subclasses).
+
+    Module helpers are underscore-private on purpose: discovery scans
+    ``peaksMCP.overrides`` for model-facing verbs, and report plumbing is not
+    a verb.  ``peaksMCP.overrides`` re-exports the public names below.
+    """
     payload: dict[str, Any] = {}
     if is_dataclass(report) and not isinstance(report, type):
         payload = asdict(report)
@@ -54,9 +59,14 @@ def report_dict(report: Any) -> dict[str, Any]:
     return payload
 
 
-def report_summary(report: Any) -> str:
+def _report_summary(report: Any) -> str:
     """Short canonical line for model-facing output."""
     summary = getattr(report, "summary_line", None)
     if callable(summary):
         return summary()
-    return report_dict(report).get("status", "ok")
+    return _report_dict(report).get("status", "ok")
+
+
+# Public aliases for code that consumes reports (server/Show layer, tests).
+report_dict = _report_dict
+report_summary = _report_summary

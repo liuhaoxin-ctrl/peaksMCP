@@ -7,7 +7,7 @@ from peaksMCP.discovery.signatures import describe_api
 def test_every_entry_is_tagged_with_a_tier():
     index = build_index()
     override = [item for item in index.entries if item.get("project_added")]
-    assert len(override) == 12
+    assert len(override) == 13
     for item in index.entries:
         expected = TIER_OVERRIDE if item.get("project_added") else TIER_NATIVE
         assert item["tier"] == expected, item["id"]

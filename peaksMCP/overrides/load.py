@@ -8,7 +8,7 @@ Single entry for opening one data file in the notebook:
 
 Rules:
 - One file per call. Directories are handled by conversion/batch facades.
-- PXT input is read through the L112 loader; NetCDF through peaks.load.
+- PXT input is read through the internal PXT reader; NetCDF through peaks.load.
 - Optional ``metadata`` (path or dict) is embedded into
   ``attrs["experiment_metadata_json"]`` for later per-record lookups.
 - Returns the DataArray unchanged in the variable; the original file is never
@@ -40,9 +40,9 @@ class LoadReport(Report):
 
 def _register_l112_once() -> None:
     try:
-        from peaksMCP.pxt_utils.loader import register_l112_loader
+        from peaksMCP.pxt_utils.loader import _register_l112_loader
 
-        register_l112_loader()
+        _register_l112_loader()
     except Exception:
         pass  # native peaks already knows the location or registration is a no-op
 
