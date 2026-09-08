@@ -27,7 +27,7 @@ _INDEX_PACKAGE = Path(__file__).resolve().parent.parent
 _ADAPTER_SOURCES = (
     "discovery/index.py",
     "discovery/signatures.py",
-    "discovery/api_overrides.yaml",
+    "config/manifest.yaml",
     "config/metadata.py",
     "config/metadata_baseline.yaml",
     "server/jupyter_peaks/core/tools.py",
@@ -354,7 +354,9 @@ def load_overrides(path: str | os.PathLike[str] | None = None) -> dict[str, Any]
     Parameters
     ----------
     path : str or os.PathLike, optional
-        Override file to read; defaults to the packaged ``api_overrides.yaml``.
+        Override file to read; defaults to the packaged
+        ``config/manifest.yaml`` (v2-shaped ``apis`` block inside the v3
+        manifest; legacy ``discovery/api_overrides.yaml`` was retired).
 
     Returns
     -------
@@ -366,7 +368,7 @@ def load_overrides(path: str | os.PathLike[str] | None = None) -> dict[str, Any]
     >>> "apis" in load_overrides()
     True
     """
-    target = Path(path) if path else Path(__file__).with_name("api_overrides.yaml")
+    target = Path(path) if path else Path(__file__).resolve().parents[1] / "config" / "manifest.yaml"
     try:
         return yaml.safe_load(target.read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError):
@@ -382,7 +384,8 @@ def load_api_overrides(path: str | os.PathLike[str] | None = None) -> dict[str, 
     Parameters
     ----------
     path : str or os.PathLike, optional
-        Override file to read; defaults to the packaged ``api_overrides.yaml``.
+        Override file to read; defaults to the packaged
+        ``config/manifest.yaml`` (see :func:`load_overrides`).
 
     Returns
     -------
@@ -401,15 +404,16 @@ def load_api_overrides(path: str | os.PathLike[str] | None = None) -> dict[str, 
 def load_project_added(path: str | os.PathLike[str] | None = None) -> set[str]:
     """Return the ``module:name`` ids this project adds to the API.
 
-    Derived from the ``project: true`` flag in ``api_overrides.yaml``, so the
-    audited exposure record cannot drift from the aliases and notes that sit
-    next to it. :func:`build_index` marks every matching entry with
+    Derived from the ``project: true`` flag in ``config/manifest.yaml``, so
+    the audited exposure record cannot drift from the aliases and notes that
+    sit next to it. :func:`build_index` marks every matching entry with
     ``project_added=True`` so callers can tell project code from upstream.
 
     Parameters
     ----------
     path : str or os.PathLike, optional
-        Override file to read; defaults to the packaged ``api_overrides.yaml``.
+        Override file to read; defaults to the packaged
+        ``config/manifest.yaml`` (see :func:`load_overrides`).
 
     Returns
     -------
