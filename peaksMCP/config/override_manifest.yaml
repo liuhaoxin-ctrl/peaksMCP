@@ -235,6 +235,133 @@ apis:
       - 元数据校验
       - ARPES元数据检查
 
+  # --- task-level facades ---
+  convert_experiment:
+    module: peaksMCP.overrides.conversion
+    project: true
+    exposure: facade
+    category: ingestion
+    kind: converter
+    aliases:
+      - convert experiment
+      - convert scans
+      - convert file or folder
+      - convert experiment folder
+      - single or batch conversion
+      - PXT转换
+      - 转换实验
+      - 转换文件或目录
+    docstring_note: |
+      Unified conversion: one PXT file or a whole folder goes through the same
+      CPU-budgeted, failure-isolated path. Returns a ConversionReport with
+      per-item status, output_exists, errors and CPU statistics; outputs are
+      written atomically, sources are never modified. Idempotent per file
+      (skips an existing .nc unless force=True).
+  inspect_experiment:
+    module: peaksMCP.overrides.inspection
+    project: true
+    exposure: facade
+    category: metadata
+    kind: inspector
+    aliases:
+      - inspect experiment
+      - experiment summary
+      - list scans and kinds
+      - scan classification
+      - summarize experiment records
+      - 检查实验
+      - 实验概览
+      - 扫描分类
+    docstring_note: |
+      Structured summary of the experiment metadata document: per-record
+      ScanKind, dims (when the scans are supplied), energy window, theta
+      offset and polarisation, plus classification conflicts when the declared
+      Data format does not match the real shape (e.g. a 3-D cube labelled
+      sweep). Use it before choosing preprocess_cut vs preprocess_mapping.
+  fit_gold_reference:
+    module: peaksMCP.overrides.calibration
+    project: true
+    exposure: facade
+    category: calibration
+    kind: calibrator
+    aliases:
+      - fit gold reference
+      - calibrate fermi level
+      - gold calibration
+      - fermi edge fit
+      - EF calibration
+      - 金标定
+      - 费米边拟合标定
+      - 拟合金数据
+    docstring_note: |
+      Fit the Fermi edge of one finite gold scan through peaks' own fit
+      (runs exactly once). Returns a JSON-safe GoldCalibration carrying the
+      EF correction (float or c0..cN dict), quality, average resolution and
+      accuracy; the diagnostic figure renders inline for the user. Apply it
+      with preprocess_cut / preprocess_mapping — never re-fit per cut.
+  preprocess_cut:
+    module: peaksMCP.overrides.preprocess
+    project: true
+    exposure: facade
+    category: preprocessing
+    kind: transformer
+    aliases:
+      - preprocess cut
+      - flatten cut
+      - level cut
+      - process sweep
+      - cut to kx
+      - convert cut to k space
+      - 预处理切片
+      - 切片k空间转换
+      - 切片预处理
+    docstring_note: |
+      Flatten the Fermi edge of one 2-D (eV, theta_par) cut and convert it to
+      binding-energy (eV, kx). Accepts a GoldCalibration (or raw EF
+      correction) plus the high-symmetry theta_par offset; the input array is
+      never modified. 3-D data belongs to preprocess_mapping.
+  preprocess_mapping:
+    module: peaksMCP.overrides.preprocess
+    project: true
+    exposure: facade
+    category: preprocessing
+    kind: transformer
+    aliases:
+      - preprocess mapping
+      - process mapping cube
+      - mapping to k space
+      - kx ky conversion
+      - process 3d scan
+      - 预处理面图
+      - 面图k空间转换
+      - 三维扫描处理
+    docstring_note: |
+      Flatten the Fermi edge of a full 3-D mapping cube (never a centre
+      slice) and convert it with k_convert, producing eV/kx/ky dimensions.
+      Requires normal-emission reference angles and a GoldCalibration.
+      Result dims order varies by geometry — select by dimension name.
+  preprocess_batch:
+    module: peaksMCP.overrides.batch_preprocess
+    project: true
+    exposure: facade
+    category: batch
+    kind: batch
+    aliases:
+      - preprocess batch
+      - batch preprocess
+      - process many scans
+      - process folder of scans
+      - 批量预处理
+      - 批量处理切片
+      - 批量k空间转换
+    docstring_note: |
+      Path-driven batch preprocessing: each item loads, preprocesses (cut or
+      mapping) and atomically saves its NetCDF under the shared CPU budget,
+      one scan at a time — never the whole experiment in memory. Per-item
+      statuses survive worker crashes and CPU timeouts. The per-item writes
+      are batch-task outputs of a user-requested run (like conversion), not
+      model-initiated result saves.
+
   # --- batch execution ---
 
 project:
@@ -261,4 +388,76 @@ project:
     preconditions: "approve=True only after the preview was shown and the user agreed"
     errors: "target exists without overwrite; unsupported type"
     example: 'save_result(data, "out.nc")  # preview only'
+    stability: new
+  - name: convert_experiment
+    export: peaksMCP.overrides.convert_experiment
+    exposure: facade
+    category: ingestion
+    kind: converter
+    summary: Convert one PXT file or a whole folder to NetCDF with bounded CPU parallelism.
+    inputs: "source: file or directory; output_dir; metadata; match: str=''; force: bool=False; cpu_limit_percent: float=60"
+    returns: "ConversionReport (per-item status/output_exists/errors + cpu stats)"
+    preconditions: "source exists; metadata exists when given"
+    errors: "source not found; metadata file not found"
+    example: 'report = convert_experiment("raw/", match="BP_")'
+    stability: new
+  - name: inspect_experiment
+    export: peaksMCP.overrides.inspect_experiment
+    exposure: facade
+    category: metadata
+    kind: inspector
+    summary: Structured per-record summary of an experiment metadata document with conflicts.
+    inputs: "metadata: path/dict/DataArray; scans: optional dict index->DataArray"
+    returns: "ExperimentSummary (records with ScanKind/dims/windows + conflicts)"
+    preconditions: "metadata readable; scans keyed by record index"
+    errors: "unreadable metadata"
+    example: 'summary = inspect_experiment("experiment_metadata.json", scans=loaded)'
+    stability: new
+  - name: fit_gold_reference
+    export: peaksMCP.overrides.fit_gold_reference
+    exposure: facade
+    category: calibration
+    kind: calibrator
+    summary: Fit the Fermi edge of a finite gold scan once and return a JSON-safe calibration.
+    inputs: "gold: finite 1D/2D DataArray with eV; correction: str='poly4'; outlier_exclusion: bool=True; outlier_sigma: float=3.0; plot: bool=True"
+    returns: "GoldCalibration (correction, quality, resolution, rendered)"
+    preconditions: "finite values; eV dimension; ndim <= 2"
+    errors: "non-finite/empty data; unusable fit (no EF_correction)"
+    example: 'cal = fit_gold_reference(gold); preprocess_cut(cut, calibration=cal, theta_par_offset_deg=1.5)'
+    stability: new
+  - name: preprocess_cut
+    export: peaksMCP.overrides.preprocess_cut
+    exposure: facade
+    category: preprocessing
+    kind: transformer
+    summary: EF-flatten one 2-D (eV, theta_par) cut into binding-energy (eV, kx).
+    inputs: "cut: 2D (eV, theta_par); calibration: GoldCalibration/float/dict; theta_par_offset_deg: float; eV/kx: slice=None; quiet: bool=True"
+    returns: "ProcessingResult (data in notebook + JSON-safe ProcessingReport)"
+    preconditions: "2D with eV and theta_par; finite; calibration and offset given"
+    errors: "1D/3D input; missing eV/theta_par; non-finite; missing calibration/offset"
+    example: 'out = preprocess_cut(cut, calibration=cal, theta_par_offset_deg=1.5)'
+    stability: new
+  - name: preprocess_mapping
+    export: peaksMCP.overrides.preprocess_mapping
+    exposure: facade
+    category: preprocessing
+    kind: transformer
+    summary: EF-flatten a full 3-D mapping cube into eV/kx/ky (never a centre slice).
+    inputs: "mapping: 3D cube; calibration; normal_emission: dict; eV/kx/ky: slice=None; quiet: bool=True"
+    returns: "ProcessingResult (full converted cube + JSON-safe report)"
+    preconditions: "3D with eV; finite; calibration and normal_emission given"
+    errors: "non-3D input; missing eV; non-finite; missing calibration/normal_emission"
+    example: 'out = preprocess_mapping(cube, calibration=cal, normal_emission={"theta_par": 0.0, "polar": 0.0})'
+    stability: new
+  - name: preprocess_batch
+    export: peaksMCP.overrides.preprocess_batch
+    exposure: facade
+    category: batch
+    kind: batch
+    summary: Path-driven per-scan preprocessing with CPU budget and isolated failures.
+    inputs: "items: list[BatchPreprocessItem]; calibration; output_dir; cpu_limit_percent: float=60; force: bool=False"
+    returns: "BatchProcessingReport (per-item statuses + cpu stats)"
+    preconditions: "non-empty items; sources exist; calibration given"
+    errors: "empty items; missing source; invalid item kind"
+    example: 'report = preprocess_batch(items, calibration=cal, output_dir="proc/")'
     stability: new

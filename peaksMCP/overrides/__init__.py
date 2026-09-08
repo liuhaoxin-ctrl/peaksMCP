@@ -31,14 +31,39 @@ from peaksMCP.pxt_utils.metadata import (
 from peaksMCP.workflows.publication import validate_arpes_metadata
 from peaksMCP.workflows.slice_view import show_mapping_slice
 
+from .batch_preprocess import (
+    BatchPreprocessItem,
+    BatchProcessingReport,
+    preprocess_batch,
+)
+from .calibration import GoldCalibration, fit_gold_reference
+from .conversion import convert_experiment
+from .inspection import ExperimentSummary, ScanKind, ScanSummary, inspect_experiment
 from .load import load_data
 from .models import Report, report_dict, report_summary
+from .preprocess import ProcessingReport, ProcessingResult, preprocess_cut, preprocess_mapping
 from .save import save_result
 
 __all__ = [
     # loading and persistence facades
     "load_data",
     "save_result",
+    # task-level facades
+    "convert_experiment",
+    "inspect_experiment",
+    "fit_gold_reference",
+    "preprocess_cut",
+    "preprocess_mapping",
+    "preprocess_batch",
+    # facade result types
+    "GoldCalibration",
+    "ExperimentSummary",
+    "ScanSummary",
+    "ScanKind",
+    "ProcessingResult",
+    "ProcessingReport",
+    "BatchPreprocessItem",
+    "BatchProcessingReport",
     # conversion and metadata
     "convert_pxt",
     "convert_path",
