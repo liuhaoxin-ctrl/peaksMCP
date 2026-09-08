@@ -271,6 +271,29 @@ def test_savefig_not_flagged_for_benign_text(code):
 
 
 @pytest.mark.parametrize("code", [
+    "from peaksMCP.overrides import save_result\nsave_result(data, 'out.nc', approve=True)",
+    "from peaksMCP.overrides import save_result as sr\nsr(data, 'out.nc', approve=True)",
+    "import peaksMCP.overrides as o\napprove = True\no.save_result(data, 'out.nc', approve=approve)",
+])
+def test_save_result_approve_requires_explicit_consent(code):
+    """approve=True is the only save_result call that writes: it lands in
+    requires_explicit_consent so the user approves after seeing the preview."""
+    result = scan_code(code)
+    assert not result.blocked
+    assert any(issue.rule_id == "SAVE003" for issue in result.requires_explicit_consent)
+
+
+@pytest.mark.parametrize("code", [
+    # Preview-only calls never touch disk and must not pause for consent.
+    "from peaksMCP.overrides import save_result\nsave_result(data, 'out.nc')",
+    "from peaksMCP.overrides import save_result\nsave_result(data, 'out.nc', approve=False)",
+    "from peaksMCP.overrides import save_result as sr\nsr(data, 'out.nc', approve=None)",
+])
+def test_save_result_preview_needs_no_consent(code):
+    assert scan_code(code).requires_explicit_consent == []
+
+
+@pytest.mark.parametrize("code", [
     "data = data.sel(eV=slice(-1, 0))", "data.plot()", "import numpy as np\nx=np.arange(4)",
     "result = data.S.smooth({'eV': 2})", "print(data.dims)",
 ])

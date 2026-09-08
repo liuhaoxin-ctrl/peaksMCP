@@ -506,6 +506,28 @@ def _smuggling_rule_id(
 # --------------------------------------------------------------------------- #
 # Public API                                                                   #
 # --------------------------------------------------------------------------- #
+def _save_result_approval(node: ast.Call, aliases: _Aliases) -> bool:
+    """True when a ``save_result`` call may write to disk.
+
+    The facade's first call is a no-write preview; only ``approve=True`` (or a
+    non-constant approval flag) persists data, and that intent always requires
+    explicit frontend consent — the preview must have been shown first.  A
+    literal ``approve=False``/``None`` or a missing flag is the preview call
+    and needs no consent.
+    """
+    name = _call_name(node, aliases)
+    if name != "save_result" and not name.endswith(".save_result"):
+        return False
+    for keyword in node.keywords or []:
+        if keyword.arg != "approve":
+            continue
+        value = keyword.value
+        if isinstance(value, ast.Constant) and value.value in (False, None):
+            return False
+        return True
+    return False
+
+
 def _classify_call(
     node: ast.Call,
     name: str,
@@ -590,6 +612,8 @@ def _classify_call(
         issues.append(SecurityIssue("ENV001", _desc("env_mutation"), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
     elif _is_savefig(node, aliases):
         consent_issues.append(SecurityIssue("SAVE001", _desc("savefig_consent"), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+    elif _save_result_approval(node, aliases):
+        consent_issues.append(SecurityIssue("SAVE003", _desc("save_result_consent"), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
     elif name in _FILE_WRITERS or name.rsplit(".", 1)[-1] in _FILE_WRITE_METHOD_NAMES:
         consent_issues.append(SecurityIssue("SAVE002", _desc("file_write_consent", name=name), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
     target = _indirect_call_target(node, aliases)

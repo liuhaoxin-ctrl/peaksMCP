@@ -55,6 +55,7 @@ prompts:
     file_raw_write: "raw-descriptor file write via {name}"
     file_write_consent: "file write via {name}; approve only to write to disk"
     file_write_consent_indirect: "file write via indirect fetch of {target}; approve only to write to disk"
+    save_result_consent: "save_result(approve=True) writes to disk; approve only after the preview shown in the notebook has been reviewed"
     deserialize_unsafe: "unsafe deserialization via {name}"
     env_mutation: "process environment modification"
     env_mutation_aliased: "process environment modification through an aliased os.environ"
