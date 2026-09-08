@@ -78,7 +78,12 @@ def _index_from_stem(stem: str) -> int | None:
 
 
 def _single(path: Path, lazy: bool) -> tuple[Any, str]:
-    """Load one supported file into a DataArray (delegation seam for tests)."""
+    """Load one supported file into a DataArray (delegation seam for tests).
+
+    peaks.load prints a per-file Markdown line on the lazy path; it is
+    swallowed here so a folder load stays quiet (load_data prints its own
+    one-line summary). Loading itself is unaffected.
+    """
     suffix = path.suffix.lower()
     if suffix == ".pxt":
         from peaksMCP.pxt_utils.loader import load_pxt
@@ -87,7 +92,15 @@ def _single(path: Path, lazy: bool) -> tuple[Any, str]:
     _register_l112_once()
     from peaks import load
 
-    return load(str(path), lazy=lazy, quiet=True), "NetCDF"
+    if lazy:
+        import contextlib
+        import io
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            data = load(str(path), lazy=True, quiet=True)
+        return data, "NetCDF"
+    return load(str(path), lazy=False, quiet=True), "NetCDF"
 
 
 def _auto_datasheet_payload(directory: Path) -> dict[str, Any] | None:
