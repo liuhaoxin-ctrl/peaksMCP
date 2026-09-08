@@ -1,6 +1,5 @@
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
-const pretty = x => JSON.stringify(x, null, 2);
 
 function bind(selector, event, handler) {
   const el = $(selector);
@@ -90,21 +89,6 @@ function initResultToggles() {
       btn.textContent = isCollapsed ? '+' : '−';
     });
   });
-}
-
-function showResultPanel(id) {
-  const panel = document.getElementById(id);
-  if (!panel) return;
-  panel.style.display = 'flex';
-  panel.classList.remove('collapsed');
-  const btn = panel.querySelector('.result-toggle');
-  if (btn) btn.textContent = '−';
-}
-
-function hideResultPanel(id) {
-  const panel = document.getElementById(id);
-  if (!panel) return;
-  panel.style.display = 'none';
 }
 
 // =====================
@@ -296,135 +280,6 @@ bind('#stop-jupyter', 'click', () => postAction('/api/jupyter/stop', 'Stop Jupyt
 }));
 
 bind('#snapshot-button', 'click', () => postAction('/api/notebook/snapshot', 'Save snapshot'));
-
-// =====================
-// Conversion
-// =====================
-
-bind('#convert', 'submit', async e => {
-  e.preventDefault();
-  const btn = $('#convert button[type="submit"]');
-  const original = btn.innerHTML;
-  btn.innerHTML = '<span class="spinner"></span> Converting…';
-  btn.disabled = true;
-
-  showResultPanel('convert-result-panel');
-  $('#convert-result').textContent = 'Converting…';
-
-  try {
-    const body = { input: $('#pxt-input').value };
-    const resp = await fetch('/api/convert', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-    const r = await resp.json();
-
-    $('#convert-result').textContent = pretty(r);
-    if (!resp.ok) throw new Error(r.error || r.error_type || 'Conversion failed');
-
-    const loadable = Array.isArray(r.items) ? r.items.filter(x => x.output_exists) : [];
-    renderLoadControl(loadable);
-    const failures = Array.isArray(r.items) ? r.items.filter(x => x.status === 'failed').length : 0;
-    toast(
-      failures ? `Conversion completed with ${failures} failure(s)` : 'Conversion completed',
-      failures ? 'warning' : 'success'
-    );
-  } catch (e) {
-    $('#convert-result').textContent = String(e);
-    toast('Conversion failed', 'error');
-  } finally {
-    btn.innerHTML = original;
-    btn.disabled = false;
-  }
-});
-
-function renderLoadControl(items) {
-  const container = $('#load-actions');
-  container.innerHTML = '';
-  if (items.length === 0) return;
-  const panel = document.createElement('div');
-  panel.className = 'load-panel';
-  const title = document.createElement('div');
-  title.className = 'load-title';
-  title.textContent = 'Load files into the notebook';
-  const select = document.createElement('select');
-  select.id = 'load-select';
-  select.multiple = true;
-  select.size = Math.min(6, items.length);
-  items.forEach(item => {
-    const option = document.createElement('option');
-    option.value = String(item.output);
-    const label = String(item.output).split('/').pop();
-    option.textContent = item.status === 'skipped' ? `${label} (already on disk)` : label;
-    select.appendChild(option);
-  });
-  const buttons = document.createElement('div');
-  buttons.className = 'load-buttons';
-  const loadSelected = document.createElement('button');
-  loadSelected.type = 'button';
-  loadSelected.id = 'load-selected';
-  loadSelected.className = 'button';
-  loadSelected.textContent = 'Load selected';
-  const loadAll = document.createElement('button');
-  loadAll.type = 'button';
-  loadAll.id = 'load-all';
-  loadAll.className = 'button primary';
-  loadAll.textContent = 'Load all';
-  buttons.append(loadSelected, loadAll);
-  panel.append(title, select, buttons);
-  container.appendChild(panel);
-
-  const run = async (paths) => {
-    if (paths.length === 0) { toast('No files selected', 'warning'); return; }
-    $('#convert-result').textContent = 'Loading into notebook…';
-    try {
-      const resp = await fetch('/api/notebook/load', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ paths })
-      });
-      const lr = await resp.json();
-      $('#convert-result').textContent = pretty(lr);
-      const results = lr.results ? Object.values(lr.results) : [];
-      const failed = results.filter(v => !v).length;
-      toast(failed === 0 ? `Loaded ${results.length} file(s)` : `${failed} file(s) failed`, failed === 0 ? 'success' : 'error');
-    } catch (err) {
-      $('#convert-result').textContent = String(err);
-      toast('Load failed', 'error');
-    }
-  };
-  loadSelected.addEventListener('click', () =>
-    run([...select.selectedOptions].map(o => o.value)));
-  loadAll.addEventListener('click', () =>
-    run(items.map(item => item.output)));
-}
-
-bind('#pick-folder', 'click', async () => {
-  const b = $('#pick-folder');
-  const original = b.innerHTML;
-  b.disabled = true;
-  b.innerHTML = '<span class="spinner"></span> Selecting…';
-
-  try {
-    const r = await fetch('/api/choose-folder', { method: 'POST' }).then(x => x.json());
-    if (r.ok) {
-      $('#pxt-input').value = r.path;
-      toast('Folder selected', 'success');
-    } else {
-      showResultPanel('convert-result-panel');
-      $('#convert-result').textContent = pretty(r);
-      toast('Folder selection failed', 'error');
-    }
-  } catch (e) {
-    showResultPanel('convert-result-panel');
-    $('#convert-result').textContent = String(e);
-    toast('Folder selection failed', 'error');
-  } finally {
-    b.disabled = false;
-    b.innerHTML = original;
-  }
-});
 
 // =====================
 // Init

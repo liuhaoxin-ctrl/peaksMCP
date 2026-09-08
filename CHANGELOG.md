@@ -2,6 +2,99 @@
 
 ## [Unreleased] — 2026-09-08
 
+### Security mode removed; single `require_consent` switch (BREAKING)
+
+The `ExecutionMode` enum (`safe` / `unsafe` / `dangerous`) and the `mode` /
+`PEAKSMCP_MODE` plumbing are gone. All 14 tools are always exposed; consent for
+the two mutation tools is now governed solely by the `mcp.require_consent`
+master switch (profile, default **false**). There is no mode that relaxes it.
+
+- `backend/base.py`: deleted `ExecutionMode` and the `SharedState.mode` field.
+- `backend/notebook_unsafe.py`: `_authorize` gate collapsed to a single
+  `if self.state.require_consent:` check; removed the now-dead
+  `_PYTHON_EXECUTION_OPERATIONS` set.
+- `mcp_server.py`: removed `set_mode`; `jupyter_mcp_extension.py`: removed the
+  `%peaksMCP_safe` / `%peaksMCP_unsafe` / `%peaksMCP_dangerous` magics and the
+  `mode` field from every status dict.
+- `app/profiles.py`, `app/kernel.py`, `app/runtime.py`, `app/defaults/default.yaml`:
+  dropped the `mode` field, the `PEAKSMCP_MODE` env var and the `· safe`
+  kernelspec display suffix.
+- Behaviour change: with `require_consent: true`, append-only `notebook_add_cell`
+  now also prompts (previously `dangerous` auto-approved non-executing appends).
+  With `require_consent: false` (default) nothing changes.
+
+### Tool-name inventory now derived from one source (BREAKING-adjacent)
+
+`transport/stdio_proxy.py` no longer hand-lists the expected tool names.
+`config/metadata.py` exposes `tool_names()` (the `tools:` keys of
+`metadata_baseline.yaml`); both tool registration and the STDIO-proxy inventory
+guard read from it, so a renamed/added/removed tool needs a single edit. The
+`functions` dict in `core/tools.py` remains the registration map (name →
+callable) and is now the only other place a name is written.
+
+### Output-state cache field removed
+
+`SharedState.last_execution_cell_id` was write-only (never read); removed the
+field and its sole write in `active_cell_bridge.py`.
+
+Removed/updated tests: the `set_mode` / `ExecutionMode.DANGEROUS` security tests,
+the `mcp={"mode": ...}` profile fixtures, the `PEAKSMCP_MODE` env assertions and
+the `last_execution_cell_id` assertion. `test_tools.py` now asserts the exposed
+surface equals `metadata.tool_names()`.
+
+### Data operations now only run inside the notebook (BREAKING)
+
+Conversion / datasheet translation / loading a scan used to have three entry
+points (CLI, operator console, notebook). Only the notebook path applies the code
+scanner, the API check and the consent gate, so the other two are removed:
+
+- CLI: dropped `peaksMCP convert`, `peaksMCP metadata translate`, `peaksMCP load`.
+- Dashboard: dropped `POST /api/convert`, `/api/metadata/translate`,
+  `/api/notebook/load`, `/api/choose-folder` and the 270-line
+  `load_into_notebook` helper (it injected a `data = load(...)` cell through the
+  Comm bridge, bypassing every check). The console keeps process control and
+  snapshots only.
+- The webapp's conversion form (and its `pretty` / `showResultPanel` /
+  `hideResultPanel` helpers) is gone.
+- Tests for the removed paths deleted (`test_notebook_load.py`, 7 load tests in
+  `test_app_api.py`, 1 e2e load test): −902 lines of source, −24 tests.
+- `README.md` / `AGENTS.md` now state that data operations are notebook-only.
+
+Use `convert_pxt` / `convert_path` / `translate_datasheet` / `load_pxt` in a
+notebook cell instead.
+
+### Resources system, Inspector, frontend delete/patch removed and output normalised (BREAKING)
+
+Per the project intent (AI drives black-box functions through `search`/`get`, the
+notebook is the only execution surface, results are shown before any save), the
+following were removed:
+
+- **`mcp_list_resources` tool and the whole `resources:` block** (incl. the 6
+  inline matplotlib plot templates) deleted. The templates taught the model to
+  hand-write `pcolormesh` and bypass the `plot_batch` / `plot_validation_pair`
+  façades — the single biggest leak against the black-box intent. Figure styling
+  conventions now live in the always-on server instructions, and the plotting
+  façades (`plot_batch`, `plot_validation_pair`, `show_mapping_slice`,
+  `publication_grid`) are the documented path. Tool count: 15 → 14.
+- **Inspector removed**: `POST /api/mcp/tool` + `_INSPECTOR_ALLOWED` (8 read-only
+  tools) and the `Client` import gone from `app/api.py`; the dashboard is once
+  again console-only (process control + snapshots).
+- **Frontend dead handlers removed**: `delete_cell` / `apply_patch` comm handlers
+  in the JupyterLab extension (the notebook is strictly append-only anyway).
+- **Output normalisation (#4)**: `_output_content` now returns a summary *only*
+  when a figure or an error is present; plain text / `text/plain` / markdown
+  analysis boxes are no longer echoed to the model (re-stating them in the
+  notebook is review noise). A text-only cell returns an empty payload.
+- **Conversion is automatic and idempotent (#3)**: `convert_pxt` / `convert_path`
+  were clarified as the auto-prerequisite transform (not a saved result — no
+  consent needed) and already skip any `.nc` that already exists; the `load_pxt`
+  / `convert_*` override APIs now carry this guidance so the model converts as
+  the first step of any raw-scan workflow.
+
+Removed/updated tests: `test_plot_resources_exposed_and_templates_compile`,
+`test_inspector_whitelist_and_call`, two `read_plot_resources` gate tests, the
+frontend `delete_cell` tests, plus the tool-count assertions (15 → 14).
+
 Curated-presentation, prompt-governance & override-tier pass (`a58da6f` →
 `HEAD`).
 

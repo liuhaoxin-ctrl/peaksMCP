@@ -94,7 +94,7 @@ def supervisor(tmp_path_factory):
             "port": _free_port(),
             "kernel_name": kernel_name,
         },
-        mcp={"host": "127.0.0.1", "port": _free_port(), "mode": "safe"},
+        mcp={"host": "127.0.0.1", "port": _free_port()},
         dashboard={"host": "127.0.0.1", "port": _free_port()},
     )
     supervisor = RuntimeSupervisor(profile)
@@ -132,12 +132,9 @@ def test_plot_cell_image_flows_through_comm_to_mcp(supervisor):
     # Wait until the extension has loaded and the in-kernel MCP is serving.
     ready = supervisor.wait_ready(timeout=120, require_comm=False)
     assert ready["ready"], ready
-    # Dangerous mode still requires consent for Python execution: the AST scanner
-    # is an early rejection layer, not proof that arbitrary Python is safe.
-    supervisor.execute_kernel(
-        "from peaksMCP.server.jupyter_peaks.jupyter_mcp_extension import get_server as _g; _g().set_mode('dangerous')",
-        timeout=30,
-    )
+    # Consent is off by default in the e2e profile, so the image pipeline below
+    # runs without a frontend consent prompt; the AST scanner still hard-blocks
+    # known-dangerous patterns and every call is audit-logged.
     notebook_url = supervisor.status()["notebook_url"] + f"?token={supervisor.token}"
     with sync_playwright() as playwright:
         try:
@@ -215,91 +212,6 @@ def test_plot_cell_image_flows_through_comm_to_mcp(supervisor):
             browser.close()
 
 
-def test_load_cell_appears_runs_and_persists(supervisor):
-    """Real Load chain: a NetCDF on disk -> /api/notebook/load -> a visible
-    ``data = load(...)`` cell is inserted and executed -> the ``data`` variable
-    exists in the kernel -> the notebook file is saved with that cell."""
-    import concurrent.futures
-    import json
-    import os
-
-    import numpy as np
-    import xarray as xr
-    from playwright.sync_api import sync_playwright
-
-    def _tool_call_thread(name, arguments):
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            return executor.submit(_tool_call, supervisor, name, arguments).result(timeout=90)
-
-    ready = supervisor.wait_ready(timeout=120, require_comm=False)
-    assert ready["ready"], ready
-    supervisor.execute_kernel(
-        "from peaksMCP.server.jupyter_peaks.jupyter_mcp_extension import get_server as _g; _g().set_mode('dangerous')",
-        timeout=30,
-    )
-
-    # A real NetCDF to load (the e2e cwd is the isolated notebook directory).
-    nc_path = os.path.join(os.getcwd(), "test_load.nc")
-    xr.DataArray(
-        np.ones((3, 4)),
-        dims=("eV", "theta_par"),
-        coords={"eV": [0, 1, 2], "theta_par": [0, 1, 2, 3]},
-        attrs={"units": "counts"},
-    ).to_netcdf(nc_path)
-    assert os.path.exists(nc_path)
-
-    notebook_url = supervisor.status()["notebook_url"] + f"?token={supervisor.token}"
-    with sync_playwright() as playwright:
-        try:
-            browser = playwright.chromium.launch(
-                headless=True, channel="chrome",
-                args=["--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows", "--disable-gpu"],
-            )
-        except Exception as exc:  # pragma: no cover - environment dependent
-            pytest.skip(f"Chrome not launchable: {exc}")
-        page = browser.new_page()
-        page.goto(notebook_url, wait_until="domcontentloaded")
-        page.wait_for_selector(".jp-Notebook", timeout=90000)
-        try:
-            deadline = time.monotonic() + 90
-            while time.monotonic() < deadline:
-                status = _dashboard(supervisor, "/api/status")
-                if (status.get("components") or {}).get("comm", {}).get("state") == "ready":
-                    break
-                time.sleep(1)
-            # Call the Load endpoint (dashboard API) with the real NetCDF path.
-            response = httpx.post(
-                f"{supervisor.dashboard_url}/api/notebook/load",
-                headers={"Authorization": f"Bearer {supervisor.dashboard_token}"},
-                json={"path": nc_path},
-                timeout=120,
-            )
-            assert response.status_code == 200, response.text
-            assert response.json().get("loaded") is True, response.text
-            # The data variable must appear in the kernel namespace.
-            deadline = time.monotonic() + 30
-            names: list[str] = []
-            while time.monotonic() < deadline:
-                listing = _tool_call_thread("notebook_list_variables", {})
-                names = [item["name"] for item in listing.get("variables", [])]
-                if "data" in names:
-                    break
-                time.sleep(1)
-            assert "data" in names, f"data variable not found; vars={names}"
-            # The notebook file must have been saved with the load cell.
-            deadline = time.monotonic() + 15
-            sources: list[str] = []
-            while time.monotonic() < deadline:
-                nb = json.loads(open("peaksMCP-runtime.ipynb", encoding="utf-8").read())
-                sources = ["".join(c.get("source", [])) for c in nb.get("cells", [])]
-                if any("data = load(" in s for s in sources):
-                    break
-                time.sleep(1)
-            assert any("data = load(" in s for s in sources), f"load cell not persisted; sources={sources}"
-        finally:
-            browser.close()
-
-
 def test_bringup_reaches_ready(supervisor):
     result = supervisor.wait_ready(timeout=120, require_comm=False)
     assert result["ready"], result
@@ -315,9 +227,9 @@ def test_mcp_tool_surface_and_search(supervisor):
 
     health = asyncio.run(check_http_mcp_server(supervisor.profile.mcp.host, supervisor.profile.mcp.port))
     assert health["ok"]
-    assert health["tool_count"] == 15
+    assert health["tool_count"] == 14
     safe_tools = {
-        "peaks_search_api", "peaks_get_api", "askuserquestion", "mcp_list_resources",
+        "peaks_search_api", "peaks_get_api", "askuserquestion",
         "notebook_list_variables", "notebook_read_variable", "notebook_read_active_cell",
         "notebook_read_active_cell_output", "notebook_read_content", "notebook_move_cursor",
         "notebook_server_status", "notebook_kernel_status", "notebook_wait_for_kernel",

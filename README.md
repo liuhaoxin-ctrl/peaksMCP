@@ -74,7 +74,7 @@ plain HTTP on `127.0.0.1`.
 ```bash
 peaksMCP dash            # single entry: start the dashboard host if needed and open the operator console (alias: open)
 peaksMCP status          # expect host RUNNING + kernel_id once Jupyter is up
-peaksMCP mcp-ping        # expect ok: true, 15 tools (13 read-only/guidance + 2 append-only mutation)
+peaksMCP mcp-ping        # expect ok: true, 14 tools (12 read-only/guidance + 2 append-only mutation)
 ```
 
 The dashboard host must be running before Claude Desktop uses the tools (the STDIO
@@ -136,35 +136,16 @@ peaksMCP stdio-proxy [--profile NAME]                   # Claude Desktop STDIO p
 peaksMCP profiles list                                  # list profiles
 peaksMCP profiles show [NAME]
 peaksMCP profiles path [NAME]                           # print the profile file path
-
-# Data conversion
-peaksMCP metadata translate path/to/datasheet.csv [--output metadata.json]
-peaksMCP convert <pxt-file-or-folder> [--metadata metadata.json] [--out OUT]
-          [--filter SUBSTRING] [--cpu-limit PERCENT] [--force]
-peaksMCP load path/to/converted.nc     # load a NetCDF into the notebook as a
-                                        # visible data = load(...) cell (or use
-                                        # the dashboard Load button after convert)
 ```
 
 `peaksMCP dash` runs the dashboard host as a detached background process, so a
 terminal `Ctrl+C` does **not** stop it — use `peaksMCP stop`.
 
-Examples:
-
-```bash
-peaksMCP convert raw/ --filter BP_ --cpu-limit 60        # auto-translates raw/datasheet.csv
-peaksMCP convert raw/ --metadata experiment_metadata.json --filter BP_ --cpu-limit 60
-peaksMCP convert BP_0003.pxt --out converted/          # single file into a directory
-```
-
-When no `--metadata` is given, peaksMCP looks for a `datasheet.csv` in the same
-folder as the data (or its parent) and auto-translates it into
-`<output>/experiment_metadata.json` before converting — so a datasheet kept next
-to the raw data is used automatically. The dashboard panel is the same flow
-("CSV & PXT Conversion").
-
-After a conversion, the notebook kernel gets a `CONVERTED_DIR` variable set to
-the output directory, so the agent can load results directly without guessing
-paths, e.g. `pks.load(f'{CONVERTED_DIR}/BP_0005.nc')`.
+> **Data operations are deliberately not CLI commands.** PXT conversion,
+> datasheet translation and loading a scan run as **notebook cells** through the
+> MCP tools (`convert_path` / `convert_pxt` / `translate_datasheet` / `load_pxt`),
+> so the code scanner, the API check and the consent gate always apply. The CLI
+> and the operator console only control processes (Jupyter, kernel, MCP) and
+> snapshots.
 
 See `docs/ARCHITECTURE.md` for the compact architecture map.

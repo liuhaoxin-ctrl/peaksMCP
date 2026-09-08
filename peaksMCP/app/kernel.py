@@ -18,7 +18,6 @@ def kernel_profile_state(profile: Profile) -> dict[str, Any]:
     """Return every profile value baked into or inherited by the kernel."""
     return {
         "profile": profile.name,
-        "mode": profile.mcp.mode,
         "autostart": profile.mcp.autostart,
         "host": profile.mcp.host,
         "port": profile.mcp.port,
@@ -32,7 +31,6 @@ def _startup(profile: Profile) -> str:
     # quotes/newlines cannot break out of the generated startup source.
     host = json.dumps(profile.mcp.host)
     port = json.dumps(str(profile.mcp.port))
-    mode = json.dumps(profile.mcp.mode)
     allow_remote = json.dumps("true" if profile.mcp.allow_remote else "false")
     require_consent = json.dumps("true" if profile.mcp.require_consent else "false")
     autostart = json.dumps("true" if profile.mcp.autostart else "false")
@@ -45,7 +43,6 @@ def _peaksmcp_start():
     # on the MCP port.
     os.environ.setdefault("PEAKSMCP_HOST", {host})
     os.environ.setdefault("PEAKSMCP_PORT", {port})
-    os.environ.setdefault("PEAKSMCP_MODE", {mode})
     os.environ.setdefault("PEAKSMCP_ALLOW_REMOTE", {allow_remote})
     os.environ.setdefault("PEAKSMCP_REQUIRE_CONSENT", {require_consent})
     os.environ.setdefault("PEAKSMCP_AUTOSTART", {autostart})
@@ -69,7 +66,7 @@ def install_kernel(profile: Profile, replace: bool = True) -> Path:
         source = Path(temporary)
         kernel = {
             "argv": [sys.executable, "-m", "ipykernel_launcher", "-f", "{connection_file}", "--IPKernelApp.exec_files={resource_dir}/peaksmcp_startup.py"],
-            "display_name": f"Python (peaksMCP · {profile.mcp.mode})",
+            "display_name": "Python (peaksMCP)",
             "language": "python",
             "metadata": {
                 "peaksMCP": kernel_profile_state(profile)
@@ -112,5 +109,5 @@ def kernel_spec_state(name: str = "peaksmcp") -> dict[str, Any] | None:
         return None
     return {
         key: metadata.get(key)
-        for key in ("profile", "mode", "autostart", "host", "port", "allow_remote", "require_consent")
+        for key in ("profile", "autostart", "host", "port", "allow_remote", "require_consent")
     }

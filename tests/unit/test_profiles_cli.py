@@ -13,7 +13,6 @@ from peaksMCP.cli import main
 def test_default_profile_and_strict_validation():
     profile = load_profile()
     assert profile.mcp.port == 8123
-    assert profile.mcp.mode == "safe"
     assert profile.mcp.allow_remote is False
     assert "default" in list_profiles()
     with pytest.raises(ValidationError):

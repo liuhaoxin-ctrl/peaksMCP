@@ -6,7 +6,6 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from enum import StrEnum
 from typing import Any
 
 
@@ -33,19 +32,6 @@ def ensure_fresh_index(state: SharedState) -> Any:
     return state.api_index
 
 
-class ExecutionMode(StrEnum):
-    """Security mode selecting the consent policy for mutation tools.
-
-    The exposed tool surface is identical in every mode; the mode only changes
-    how strictly mutation tools ask for consent when the ``require_consent``
-    master switch is enabled (see :mod:`peaksMCP.server.jupyter_peaks`).
-    """
-
-    SAFE = "safe"
-    UNSAFE = "unsafe"
-    DANGEROUS = "dangerous"
-
-
 @dataclass(slots=True)
 class SharedState:
     """Mutable runtime state owned by one IPython kernel.
@@ -56,7 +42,6 @@ class SharedState:
     """
 
     ipython: Any
-    mode: ExecutionMode = ExecutionMode.SAFE
     require_consent: bool = False
     bridge: Any | None = None
     api_index: Any | None = None
@@ -65,12 +50,10 @@ class SharedState:
     active_cell: dict[str, Any] = field(default_factory=dict)
     active_cell_output: list[dict[str, Any]] = field(default_factory=list)
     cell_outputs: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
-    last_execution_cell_id: str | None = None
     lock: threading.RLock = field(default_factory=threading.RLock)
     started_at: float = field(default_factory=time.time)
     kernel_instance_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     mcp_instance_id: str | None = None
-    read_plot_resources: bool = False
     #: API names proven real by a successful ``peaks_get_api`` this session
     #: (canonical name plus search aliases).  Unknown write references that hit
     #: this set are unlocked instead of blocked.

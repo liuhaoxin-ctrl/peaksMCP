@@ -199,7 +199,6 @@ class NotebookBackend:
     def server_status(self) -> dict[str, Any]:
         return {
             "status": "ready",
-            "mode": self.state.mode.value,
             "uptime_s": round(time.time() - self.state.started_at, 3),
             "kernel_instance_id": self.state.kernel_instance_id,
             "mcp_instance_id": self.state.mcp_instance_id,

@@ -12,7 +12,7 @@ from peaksMCP import __version__
 from peaksMCP.config import prompts as _load_prompts
 from peaksMCP.discovery.index import build_index
 
-from .backend import ExecutionMode, NotebookBackend, SharedState, UnsafeNotebookBackend
+from .backend import NotebookBackend, SharedState, UnsafeNotebookBackend
 from .core import register_safe_tools, register_unsafe_tools
 from .security import AuditLogger, ConsentManager
 
@@ -60,54 +60,14 @@ class JupyterPeaksMCPServer:
         )
 
         register_safe_tools(mcp, self.state, self.notebook, self.audit)
-        # All tools are always exposed to the model. The security mode only
-        # controls whether ordinary execution/editing asks for in-notebook
-        # consent in every mode. The scanner rejects known-dangerous patterns
-        # before the consent request, but is not treated as a complete security
-        # boundary for arbitrary Python. Dangerous only relaxes non-executing,
-        # append-only mutations.
+        # All tools are always exposed to the model. Consent for the two mutation
+        # tools is governed solely by the ``require_consent`` master switch
+        # (profile ``mcp.require_consent``): when off, the scanner still
+        # hard-blocks known-dangerous patterns and every call is audit-logged,
+        # but no in-notebook consent is requested. The AST scanner is an early
+        # rejection layer, not a complete security boundary for arbitrary Python.
         register_unsafe_tools(mcp, self.unsafe, self.audit)
-        self._register_plot_resources(mcp)
         return mcp
-
-    def _register_plot_resources(self, mcp: FastMCP) -> None:
-        """Expose the canonical plotting-format templates as MCP resources.
-
-        The agent selects a format by id (``fermi_surface``, ``dispersion_grid``,
-        ...) and fetches it through ``resources/read``, then runs its ``template``
-        verbatim — so every figure follows a tested, publication-style contract.
-        Claude Desktop cannot fetch custom-scheme URIs, so ``mcp_list_resources``
-        also embeds each template inline; this registration serves MCP-native
-        clients that do support ``resources/read``.
-        """
-        from fastmcp.resources import TextResource
-
-        from peaksMCP.config.metadata import list_resources, resource_metadata
-
-        for resource_id in list_resources():
-            meta = resource_metadata(resource_id)
-            template = str(meta.get("template") or "")
-            if not template:
-                continue
-            text = (
-                f"# {meta.get('title') or resource_id}\n"
-                f"# When to use: {meta.get('when_to_use') or ''}\n"
-                f"# Styling contract: {meta.get('figure') or {}}\n\n"
-                f"{template}"
-            )
-            mcp.add_resource(
-                TextResource(
-                    uri=f"peaksmcp://plot/{resource_id}",
-                    name=resource_id,
-                    title=str(meta.get("title") or resource_id),
-                    description=str(meta.get("when_to_use") or ""),
-                    text=text,
-                )
-            )
-
-    def set_mode(self, mode: str | ExecutionMode) -> None:
-        """Switch the consent policy without changing the exposed tool set."""
-        self.state.mode = ExecutionMode(mode)
 
     def start(self) -> None:
         """Start the HTTP MCP server on a daemon thread."""

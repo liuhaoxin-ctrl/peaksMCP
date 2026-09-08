@@ -197,13 +197,11 @@ def test_alias_bypasses_are_rejected_before_kernel_execution(code):
     from unittest.mock import Mock
 
     from peaksMCP.server.jupyter_peaks.backend import (
-        ExecutionMode,
         SharedState,
         UnsafeNotebookBackend,
     )
 
     state = SharedState(Mock(user_ns={}))
-    state.mode = ExecutionMode.DANGEROUS
     state.bridge = Mock()
     state.bridge.request.return_value = {"id": "cell-1", "source": code}
     consent, audit = Mock(), Mock()
@@ -315,18 +313,16 @@ def test_notebook_is_append_only_no_delete_or_reorder():
     assert "position" not in inspect.signature(notebook.add_cell).parameters
 
 
-def test_execute_code_requires_explicit_consent_for_network_even_in_dangerous_mode():
-    """Explicit-consent findings are never bypassed by dangerous mode."""
+def test_execute_code_requires_explicit_consent_for_network_when_consent_enabled():
+    """Explicit-consent findings are never bypassed while consent is enabled."""
     from unittest.mock import Mock
 
     from peaksMCP.server.jupyter_peaks.backend import (
-        ExecutionMode,
         SharedState,
         UnsafeNotebookBackend,
     )
 
     state = SharedState(Mock(user_ns={}))
-    state.mode = ExecutionMode.DANGEROUS
     state.require_consent = True
     state.bridge = Mock()
     consent, audit = Mock(), Mock()
@@ -349,18 +345,16 @@ def test_execute_code_requires_explicit_consent_for_network_even_in_dangerous_mo
         "f = __builtins__.__dict__['exec']\nf('x = 1')",
     ],
 )
-def test_dangerous_mode_never_executes_unrecognised_python_without_consent(code):
+def test_consent_is_hard_boundary_for_unrecognised_python(code):
     """Scanner blind spots must still stop at the user-consent boundary."""
     from unittest.mock import Mock
 
     from peaksMCP.server.jupyter_peaks.backend import (
-        ExecutionMode,
         SharedState,
         UnsafeNotebookBackend,
     )
 
     state = SharedState(Mock(user_ns={}))
-    state.mode = ExecutionMode.DANGEROUS
     # Consent must be a hard boundary when it is enabled (the profile switch
     # ``mcp.require_consent`` re-enables it; the default is False).
     state.require_consent = True
@@ -414,78 +408,6 @@ def test_write_without_exploration_runs_but_invented_apis_still_block(tmp_path):
     blocked = nb.write_with_api_check("da.correct_EF()", timeout=5)
     assert blocked["blocked"] is True
     assert "correct_EF" in str(blocked.get("unknown_refs"))
-
-
-def test_plotting_code_requires_reading_resources_first(tmp_path):
-    """Guarantee the model reads mcp_list_resources before writing plotting code."""
-    from unittest.mock import Mock
-
-    from peaksMCP.discovery.index import build_index
-    from peaksMCP.server.jupyter_peaks.backend import (
-        SharedState,
-        UnsafeNotebookBackend,
-    )
-    from peaksMCP.server.jupyter_peaks.security import AuditLogger, ConsentManager
-
-    state = SharedState(Mock(user_ns={}))
-    state.require_consent = False
-    state.api_index = build_index()
-    state.bridge = Mock()
-    state.bridge.request.return_value = {"ok": True}
-    nb = UnsafeNotebookBackend(state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl"))
-
-    # Plotting code without ever reading the resources -> blocked with a steer.
-    assert state.read_plot_resources is False
-    blocked = nb.write_with_api_check("plt.plot(np.arange(3))", timeout=5)
-    assert blocked["blocked"] is True
-    assert "mcp_list_resources" in blocked["message"]
-
-    # Once the resource has been read, plotting code runs freely (not forced).
-    state.read_plot_resources = True
-    assert not nb.write_with_api_check("plt.plot(np.arange(3))", timeout=5).get("blocked")
-
-    # Non-plotting code is never gated by the resource-read requirement.
-    state2 = SharedState(Mock(user_ns={}))
-    state2.require_consent = False
-    state2.api_index = build_index()
-    state2.bridge = Mock()
-    state2.bridge.request.return_value = {"ok": True}
-    nb2 = UnsafeNotebookBackend(state2, ConsentManager(), AuditLogger(tmp_path / "t2.jsonl"))
-    assert not nb2.write_with_api_check("x = np.arange(3) + 1", timeout=5).get("blocked")
-
-
-def test_plot_guard_is_ast_based_not_substring(tmp_path):
-    """Only real plotting calls trip the resource gate — comments, strings and
-    bare imports (no calls) never do."""
-    from unittest.mock import Mock
-
-    from peaksMCP.discovery.index import build_index
-    from peaksMCP.server.jupyter_peaks.backend import (
-        SharedState,
-        UnsafeNotebookBackend,
-    )
-    from peaksMCP.server.jupyter_peaks.security import AuditLogger, ConsentManager
-
-    state = SharedState(Mock(user_ns={}))
-    state.require_consent = False
-    state.api_index = build_index()
-    state.bridge = Mock()
-    state.bridge.request.return_value = {"ok": True}
-    nb = UnsafeNotebookBackend(state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl"))
-
-    for code in (
-        "x = 1  # plt.subplots would need the templates",
-        'print("matplotlib is not a drawing call")',
-        "import matplotlib.pyplot as plt",
-    ):
-        assert not nb.write_with_api_check(code, timeout=5).get("blocked"), code
-
-    # Aliased pyplot calls ARE plotting intent (canonicalised through the AST).
-    blocked = nb.write_with_api_check(
-        "import matplotlib.pyplot as plt\nfig, ax = plt.subplots()", timeout=5
-    )
-    assert blocked["blocked"] is True
-    assert "mcp_list_resources" in blocked["message"]
 
 
 def test_unknown_api_first_advisory_then_same_name_hard(tmp_path):
@@ -587,7 +509,6 @@ def test_savefig_is_permanently_blocked(tmp_path):
     state.api_index = build_index()
     state.bridge = Mock()
     state.bridge.request.return_value = {"ok": True}
-    state.read_plot_resources = True  # resources already read; only the save rule is tested
     nb = UnsafeNotebookBackend(state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl"))
 
     blocked = nb.write_with_api_check("import matplotlib.pyplot as plt\nplt.savefig('x.png')", timeout=5)
@@ -613,7 +534,6 @@ def test_write_with_api_check_classifies_generic_and_verified_calls(tmp_path):
     state.bridge = Mock()
     state.bridge.request.return_value = {"ok": True}
     nb = UnsafeNotebookBackend(state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl"))
-    state.read_plot_resources = True  # classification test, not the resource gate
 
     # Builtins and generic-library calls (including module-member chains like
     # np.linalg.svd / scipy.signal.savgol_filter) never block.
@@ -660,7 +580,6 @@ def test_write_with_api_check_receiver_aware_and_scope_aware(monkeypatch, tmp_pa
         state.api_index = build_index()
         state.bridge = Mock()
         state.bridge.request.return_value = {"ok": True}
-        state.read_plot_resources = True  # classification test, not the resource gate
         return UnsafeNotebookBackend(state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl"))
 
     nb = make_backend()

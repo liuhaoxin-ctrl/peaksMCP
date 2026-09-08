@@ -277,30 +277,6 @@ async function handle(panel: NotebookPanel, comm: Kernel.IComm, data: any): Prom
         };
         break;
       }
-      case 'delete_cell': {
-        const index = data.index ?? notebook.activeCellIndex;
-        if (!Number.isInteger(index) || index < 0 || index >= notebook.widgets.length) {
-          throw new Error('cell index is out of range');
-        }
-        const target = notebook.widgets[index];
-        if (target.model.getMetadata('deletable') === false) {
-          throw new Error('target cell is not deletable');
-        }
-        const targetId = target.model.id;
-        if (typeof data.expected_id === 'string' && targetId !== data.expected_id) {
-          throw new Error('target cell changed since authorisation — please re-run');
-        }
-        notebook.activeCellIndex = index;
-        // deleteCells() deletes every selected cell, not just activeCellIndex.
-        notebook.deselectAll();
-        NotebookActions.deleteCells(notebook);
-        result = {deleted: true, id: targetId, active_index: notebook.activeCellIndex};
-        break;
-      }
-      case 'apply_patch':
-        // Removed: patching an existing cell would overwrite its source, which
-        // violates the append-only write guarantee. Use execute_code / add_cell.
-        throw new Error('apply_patch is no longer supported (append-only writes)');
       case 'restart_kernel':
         // Frontend-initiated restart so JupyterLab reconnects the session and the
         // extension re-opens the Comm (a REST restart would leave the UI detached).
@@ -308,11 +284,11 @@ async function handle(panel: NotebookPanel, comm: Kernel.IComm, data: any): Prom
         result = {restarted: true, kernel: panel.sessionContext.session?.kernel?.id}; break;
       default: throw new Error(`Unsupported frontend operation: ${data.operation}`);
     }
-    // Persist notebook mutations (executed / inserted / deleted / patched cells)
-    // to disk so the analysis history survives a supervisor or JupyterLab restart.
+    // Persist notebook mutations (executed / inserted cells) to disk so the
+    // analysis history survives a supervisor or JupyterLab restart.
     // A failed save is reported to the caller instead of being silently swallowed:
     // "executed" and "persisted" are distinct outcomes.
-    if (['execute_code', 'add_cell', 'delete_cell'].includes(data.operation)) {
+    if (['execute_code', 'add_cell'].includes(data.operation)) {
       try {
         await panel.context.save();
         result.saved = true;

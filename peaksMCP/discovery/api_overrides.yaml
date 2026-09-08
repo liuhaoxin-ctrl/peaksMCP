@@ -149,6 +149,11 @@ apis:
       - 加载PXT
       - 读取PXT
       - 打开PXT
+    docstring_note: |
+      Reads a raw PXT experiment as an xarray DataArray. To analyse a raw scan,
+      convert it first with convert_pxt (idempotent: skips if the .nc already
+      exists), then load the produced .nc — do not feed the raw PXT to peaks
+      workflows directly.
   register_l112_loader:
     module: peaksMCP.pxt_utils.loader
     project: true
@@ -170,6 +175,11 @@ apis:
       - 转换PXT
       - PXT转NetCDF
       - 单文件转换
+    docstring_note: |
+      Converts a raw PXT to NetCDF. Idempotent: if the target .nc already
+      exists it is skipped automatically (force=True overwrites). Always run this
+      as the first step before analysis of a raw scan — it is a prerequisite
+      transform, NOT a saved result, so it does not require save consent.
   convert_path:
     module: peaksMCP.pxt_utils.converter
     project: true
@@ -181,6 +191,11 @@ apis:
       - 批量转换
       - 目录转换
       - 文件夹转换
+    docstring_note: |
+      Batch PXT -> NetCDF conversion with bounded CPU parallelism. Each file is
+      converted idempotently (skips any .nc that already exists). Run this once
+      before processing a folder of raw scans; it is a prerequisite transform,
+      not a saved result.
   default_output_dir:
     module: peaksMCP.pxt_utils.converter
     project: true

@@ -12,7 +12,6 @@ def test_prompts_yaml_exposes_all_runtime_groups():
     for group in (
         "server_instructions",
         "interactive_omitted_note",
-        "list_resources_guidance",
         "notebook_unsafe",
         "scanner",
         "ipython",
@@ -22,7 +21,6 @@ def test_prompts_yaml_exposes_all_runtime_groups():
     unsafe = doc["notebook_unsafe"]
     for key in (
         "index_build_failed",
-        "plot_templates_not_read",
         "savefig_forbidden",
         "unknown_api_first",
         "unknown_api_retry",
@@ -30,12 +28,6 @@ def test_prompts_yaml_exposes_all_runtime_groups():
     ):
         assert unsafe[key], f"missing notebook_unsafe prompt {key!r}"
     assert "override" in unsafe["api_check_rule"].lower()
-
-    guidance = doc["list_resources_guidance"]
-    assert guidance["resources_vs_tools"]["resources"]
-    assert guidance["resources_vs_tools"]["tools"]
-    assert len(guidance["when_to_use_resources"]) == 3
-    assert guidance["first_use"]
 
 
 # (snippet, expected rule, prompt key, formatting values) — ties the wording
@@ -77,4 +69,3 @@ def test_interactive_and_block_copy_are_not_empty_strings():
     doc = prompts()
     assert len(doc["interactive_omitted_note"]) > 20
     assert len(doc["notebook_unsafe"]["savefig_forbidden"]) > 50
-    assert len(doc["notebook_unsafe"]["plot_templates_not_read"]) > 100

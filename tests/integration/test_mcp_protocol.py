@@ -19,7 +19,7 @@ async def test_initialize_list_and_safe_tool_calls():
     server = JupyterPeaksMCPServer(SharedState(FakeIPython()))
     async with Client(server.mcp) as client:
         tools = await client.list_tools()
-        assert len(tools) == 15
+        assert len(tools) == 14
         names = {tool.name for tool in tools}
         assert "notebook_execute_active_cell" not in names
         assert "notebook_delete_cell" not in names

@@ -84,36 +84,16 @@
       <div id="components" class="components-grid"></div>
     </section>
 
-    <!-- Conversion Input -->
-    <section class="card conversion-input">
-      <h2>PXT Conversion</h2>
-      <p class="subtitle">Translate the sibling datasheet.csv to metadata, then convert PXT to NetCDF.</p>
-      <form id="convert">
-        <div class="form-row">
-          <input id="pxt-input" placeholder="PXT file or folder path" required>
-          <button type="button" id="pick-folder" class="button">
-            <span class="btn-icon">▣</span> Browse
-          </button>
-        </div>
-        <button type="submit" class="primary full">
-          <span class="btn-icon">▶</span> Start Conversion
-        </button>
-      </form>
-    </section>
-
-    <!-- Conversion Output -->
-    <section class="card conversion-output">
-      <h2>Output</h2>
-      <div class="result-panel" id="convert-result-panel" style="display:none;">
-        <div class="result-bar">
-          <span class="result-label">Result</span>
-          <button type="button" class="result-toggle" data-target="convert-result-panel" aria-label="Toggle">−</button>
-        </div>
-        <div class="result-body">
-          <pre id="convert-result"></pre>
-        </div>
-      </div>
-      <div id="load-actions"></div>
+    <!-- Conversion and data loading intentionally have no console form: they
+         run as notebook cells through the MCP tools, where the scanner, the
+         API check and the consent gate apply. -->
+    <section class="card wide">
+      <h2>Analysis</h2>
+      <p class="subtitle">
+        Data operations (PXT conversion, datasheet translation, loading a scan)
+        happen in the notebook through the agent — the console only controls
+        processes and snapshots.
+      </p>
     </section>
   </main>
 

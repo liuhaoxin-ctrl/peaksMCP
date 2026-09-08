@@ -98,7 +98,6 @@ def test_delayed_execution_output_does_not_replace_the_active_cell(bridge):
 
     assert bridge.state.active_cell["id"] == "active"
     assert bridge.state.active_cell_output[0]["text"] == "current"
-    assert bridge.state.last_execution_cell_id == "executed"
     assert bridge.state.cell_outputs["executed"][0]["output_type"] == "display_data"
 
 

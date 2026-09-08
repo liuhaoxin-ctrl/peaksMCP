@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
@@ -22,17 +21,17 @@ class MCPConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     host: str = "127.0.0.1"
     port: int = Field(8123, ge=1, le=65535)
-    mode: Literal["safe", "unsafe", "dangerous"] = "safe"
     autostart: bool = True
     # Master switch for in-notebook consent dialogs on every mutation
     # (execute / add / delete cell).  When False (default) no consent is asked
     # and the security scanner + audit log remain the only guards; set True to
-    # re-enable consent prompts for writes/execution.
+    # re-enable consent prompts for writes/execution.  This is the single
+    # consent control; there is no security mode that relaxes it.
     require_consent: bool = False
     # The in-kernel MCP listener has no authentication.  Binding to anything
-    # other than loopback exposes notebook contents and (in dangerous mode)
-    # code execution to the network; this requires an explicit opt-in and the
-    # operator is responsible for adding auth/TLS in front of the listener.
+    # other than loopback exposes notebook contents and code execution to the
+    # network; this requires an explicit opt-in and the operator is responsible
+    # for adding auth/TLS in front of the listener.
     allow_remote: bool = False
 
 

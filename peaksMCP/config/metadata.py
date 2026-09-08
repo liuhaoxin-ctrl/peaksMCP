@@ -32,8 +32,7 @@ def prompts() -> dict[str, Any]:
     -------
     dict
         Nested prompt groups: ``interactive_omitted_note``,
-        ``list_resources_guidance``, ``notebook_unsafe``, ``scanner``,
-        ``ipython``.
+        ``notebook_unsafe``, ``scanner``, ``ipython``.
 
     Examples
     --------
@@ -65,37 +64,22 @@ def tool_metadata(name: str) -> dict[str, str]:
     return {"title": str(item.get("title") or name), "description": str(item.get("description") or "")}
 
 
-def list_resources() -> list[str]:
-    """Return the canonical plotting-format resource ids.
+def tool_names() -> frozenset[str]:
+    """Return the canonical set of MCP tool names.
 
-    Examples
-    --------
-    >>> "dispersion_grid" in list_resources()
-    True
-    """
-    return sorted((_document().get("resources") or {}).keys())
-
-
-def resource_metadata(resource_id: str) -> dict[str, Any]:
-    """Return one canonical plotting-format template.
-
-    Parameters
-    ----------
-    resource_id : str
-        Resource id from :func:`list_resources`.
+    The ``tools:`` block in ``metadata_baseline.yaml`` is the single source of
+    truth for which tools exist and how they are presented.  Registration
+    (``core/tools.py``) and the STDIO-proxy inventory guard both derive their
+    tool-name set from here so a renamed/added/removed tool only needs one edit.
 
     Returns
     -------
-    dict
-        ``title``, ``when_to_use``, ``figure`` styling contract and the
-        ``template`` code snippet to run verbatim.
+    frozenset of str
+        Stable MCP tool names declared in the baseline.
 
-    Raises
-    ------
-    KeyError
-        If the resource id is unknown.
+    Examples
+    --------
+    >>> "peaks_search_api" in tool_names()
+    True
     """
-    item = (_document().get("resources") or {}).get(resource_id)
-    if item is None:
-        raise KeyError(f"unknown resource {resource_id!r}; known: {list_resources()}")
-    return item
+    return frozenset((_document().get("tools") or {}).keys())

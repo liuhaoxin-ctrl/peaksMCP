@@ -39,21 +39,6 @@ def _clean_output_text(value: Any) -> str:
     return _ANSI_ESCAPE.sub("", text)
 
 
-def _markdown_to_text(payload: Any) -> str:
-    """Extract readable text from a Jupyter ``text/markdown`` payload.
-
-    Colored analysis boxes (peaks' ``analysis_warning``) are rendered as
-    markdown/HTML and carry no ``text/plain``, so without this the model reads
-    nothing from them.  Strip tags and unescape entities to plain text.
-    """
-    import html
-
-    text = "".join(payload) if isinstance(payload, list) else str(payload)
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = html.unescape(text)
-    return re.sub(r"\s+", " ", text).strip()
-
-
 def _require_index(state: SharedState):
     """Return the live index, hot-rebuilding it in the kernel when stale."""
     return ensure_fresh_index(state)
@@ -131,19 +116,24 @@ def _register(mcp: FastMCP, name: str, function: Any, audit: AuditLogger) -> Non
 def _output_content(notebook: NotebookBackend) -> list[TextContent]:
     """Convert Jupyter cell outputs to the text the model may read.
 
-    Rules (keep the model's view simple):
-    - image pixels are never sent; each output that rendered one counts toward
-      a single closing "figure rendered in the notebook" line;
-    - ``text/markdown`` boxes (peaks' colored analysis boxes) are converted to
-      plain text so the model can read the numbers inside them;
-    - interactive widgets stay as short markers (frontend-only);
-    - errors and stream/text output pass through unchanged.
+    Output is normalised so the model is not flooded with review noise:
+    - errors are returned (the model must see why execution failed);
+    - each rendered figure counts toward a single closing "figure rendered in
+      the notebook" line; image pixels and interactive widgets stay as short
+      markers (frontend-only);
+    - plain text, ``text/plain`` reprs and markdown boxes are **not** echoed to
+      the model — they are the analysis result the user reads in the notebook,
+      not something to be re-stated inline.  Returning nothing for a text-only
+      cell is the intended behaviour, not a missing output.
     """
     blocks: list[TextContent] = []
     rendered_images = 0
+    has_error = False
+    saw_output = False
     for output in notebook.active_cell_output().get("outputs", []):
         if not isinstance(output, dict):
             continue
+        saw_output = True
         if output.get("output_type") == "error":
             traceback_lines = output.get("traceback") or []
             if not isinstance(traceback_lines, list):
@@ -160,41 +150,26 @@ def _output_content(notebook: NotebookBackend) -> list[TextContent]:
                     text=json.dumps(error, ensure_ascii=False),
                 )
             )
+            has_error = True
             continue
         data = output.get("data", {})
         if not isinstance(data, dict):
             data = {}
-        markdown = data.get("text/markdown")
-        if markdown:
-            readable = _markdown_to_text(markdown)
-            if readable:
-                blocks.append(TextContent(type="text", text=readable))
-        interactive_mime = next(
-            (mime for mime in _INTERACTIVE_MIMES if data.get(mime)), None
-        )
-        if interactive_mime is not None:
-            blocks.append(_interactive_omitted_content(interactive_mime))
-        text = output.get("text")
-        if text:
-            blocks.append(
-                TextContent(
-                    type="text",
-                    text="".join(text) if isinstance(text, list) else str(text),
-                )
-            )
         has_image = any(data.get(mime) for mime in _IMAGE_MIMES) or bool(
             data.get(_OMITTED_IMAGE_MIME)
         )
+        interactive_mime = next(
+            (mime for mime in _INTERACTIVE_MIMES if data.get(mime)), None
+        )
+        # Plain text / text/plain / markdown boxes are intentionally NOT echoed.
+        if interactive_mime is not None:
+            blocks.append(_interactive_omitted_content(interactive_mime))
+            rendered_images += 1
         if has_image:
             rendered_images += 1
-        plain = data.get("text/plain")
-        if plain and not has_image and interactive_mime is None:
-            blocks.append(
-                TextContent(
-                    type="text",
-                    text="".join(plain) if isinstance(plain, list) else str(plain),
-                )
-            )
+    # An error always wins: the model needs to see it regardless of figures.
+    if has_error:
+        return blocks
     if rendered_images:
         blocks.append(
             TextContent(
@@ -207,11 +182,15 @@ def _output_content(notebook: NotebookBackend) -> list[TextContent]:
                 ),
             )
         )
-    return blocks or [TextContent(type="text", text="No active-cell output.")]
+        return blocks
+    if not saw_output:
+        return [TextContent(type="text", text="No active-cell output.")]
+    # Output was text-only: suppressed by design (the user reads it in the notebook).
+    return []
 
 
 def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBackend, audit: AuditLogger) -> None:
-    """Register the twelve read-only and guidance tools.
+    """Register the eleven read-only and guidance tools.
 
     Parameters
     ----------
@@ -250,52 +229,10 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
     def askuserquestion(prompt: str, hint: str | None = None, options: list[str] | None = None) -> dict[str, Any]:
         return {"status": "needs_input", "prompt": prompt, "hint": hint, "options": options or []}
 
-    def mcp_list_resources() -> dict[str, Any]:
-        """Discover the canonical publication plotting formats.
-
-        Returns every resource (uri, when-to-use, example, figure contract and the
-        full ``template`` inline) plus guidance.  Templates are embedded directly
-        because some clients (Claude Desktop) reject custom-scheme resource URIs
-        like ``peaksmcp://plot/<id>``, so the model can run the template from the
-        tool output without a client-side resource fetch.  Call this FIRST
-        whenever a figure is needed — ``notebook_write_with_api_check`` requires
-        it to have been read before any plotting code is executed.
-        """
-        from peaksMCP.config.metadata import list_resources, resource_metadata
-
-        state.read_plot_resources = True
-
-        resources = [
-            {
-                "uri": f"peaksmcp://plot/{resource_id}",
-                "name": resource_id,
-                "use_when": str(meta.get("when_to_use") or ""),
-                "example": str(meta.get("example") or ""),
-                "figure": str(meta.get("figure") or {}),
-                "template": str(meta.get("template") or ""),
-            }
-            for resource_id in list_resources()
-            for meta in [resource_metadata(resource_id)]
-        ]
-        guidance = _PROMPTS["list_resources_guidance"]
-        return {
-            "total_resources": len(resources),
-            "resources": resources,
-            "guidance": {
-                "resources_vs_tools": {
-                    "resources": guidance["resources_vs_tools"]["resources"],
-                    "tools": guidance["resources_vs_tools"]["tools"],
-                },
-                "when_to_use_resources": list(guidance.get("when_to_use_resources") or []),
-                "first_use": guidance.get("first_use") or "",
-            },
-        }
-
     functions = {
         "peaks_search_api": peaks_search_api,
         "peaks_get_api": peaks_get_api,
         "askuserquestion": askuserquestion,
-        "mcp_list_resources": mcp_list_resources,
         "notebook_list_variables": notebook.list_variables,
         "notebook_read_variable": notebook.read_variable,
         "notebook_read_active_cell": notebook.active_cell,

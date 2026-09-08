@@ -214,7 +214,7 @@ def test_ef_correction_handoff_notes_match_real_signatures():
 
 
 def test_stale_index_is_hot_rebuilt_by_search_and_get(monkeypatch, tmp_path):
-    from peaksMCP.server.jupyter_peaks.backend.base import ExecutionMode, SharedState
+    from peaksMCP.server.jupyter_peaks.backend.base import SharedState
     from peaksMCP.server.jupyter_peaks.core.tools import register_safe_tools
 
     class FakeMCP:
@@ -228,7 +228,6 @@ def test_stale_index_is_hot_rebuilt_by_search_and_get(monkeypatch, tmp_path):
             return wrap
 
     state = SharedState(ipython=object())
-    state.mode = ExecutionMode.SAFE
     state.api_index = build_index()
     state.api_index.fingerprint = "changed-after-build"  # simulate stale
     mcp = FakeMCP()

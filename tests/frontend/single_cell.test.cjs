@@ -160,31 +160,3 @@ test('execute_code reports the executed cell even if the active cell changes', a
   assert.equal(reply.result.id, 'inserted');
   assert.equal(h.notebook.activeCell.model.id, 'inserted');
 });
-
-for (const [index, expected] of [[1, 'b'], [null, 'a']]) {
-  test(`delete_cell deletes only its target (${index}) despite a multi-selection`, async () => {
-    const h = harness();
-    const reply = await h.request('delete_cell', { index });
-    assert.equal(reply.ok, true);
-    assert.equal(reply.result.id, expected);
-    assert.deepEqual(h.deleted, [expected]);
-    assert.equal(h.notebook.widgets.length, 2);
-    assert.equal(h.saves, 1);
-  });
-}
-
-for (const index of [-1, 3, 0.5, '1']) {
-  test(`delete_cell rejects invalid index ${JSON.stringify(index)} without deleting`, async () => {
-    const h = harness();
-    assert.equal((await h.request('delete_cell', { index })).ok, false);
-    assert.deepEqual(h.deleted, []);
-    assert.equal(h.saves, 0);
-  });
-}
-
-test('delete_cell respects the target cell deletable metadata', async () => {
-  const h = harness();
-  h.notebook.widgets[0] = makeCell('a', 'print(1)', false);
-  assert.equal((await h.request('delete_cell', { index: 0 })).ok, false);
-  assert.deepEqual(h.deleted, []);
-});

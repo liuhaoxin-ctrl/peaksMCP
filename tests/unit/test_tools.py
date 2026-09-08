@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
+from peaksMCP.config.metadata import tool_names
 from peaksMCP.server.jupyter_peaks.backend import SharedState
 from peaksMCP.server.jupyter_peaks.mcp_server import JupyterPeaksMCPServer
 
@@ -14,33 +15,29 @@ def names(server):
     return asyncio.run(server.tool_names())
 
 
-def test_exact_tool_surface_all_exposed():
+def test_tool_surface_matches_metadata_baseline():
+    """The exposed tool set is exactly the ``tools:`` block of metadata_baseline.yaml.
+
+    Registration and the STDIO-proxy inventory guard both derive their tool-name
+    set from that single source, so this is the only place the literal list lives.
+    """
     server = JupyterPeaksMCPServer(SharedState(FakeIPython()))
-    assert names(server) == sorted([
-        "peaks_search_api", "peaks_get_api", "askuserquestion", "mcp_list_resources", "notebook_list_variables",
-        "notebook_read_variable", "notebook_read_active_cell", "notebook_read_active_cell_output",
-        "notebook_read_content", "notebook_move_cursor", "notebook_server_status",
-        "notebook_kernel_status", "notebook_wait_for_kernel",
-        "notebook_write_with_api_check", "notebook_add_cell",
-    ])
+    assert names(server) == sorted(tool_names())
 
 
-def test_mode_changes_consent_policy_not_tool_surface():
+def test_removed_tools_stay_removed():
+    """Regression guards for tool-surface reductions already shipped."""
     server = JupyterPeaksMCPServer(SharedState(FakeIPython()))
-    assert len(names(server)) == 15
-    for mode in ("unsafe", "dangerous", "safe"):
-        server.set_mode(mode)
-        assert len(names(server)) == 15
-        assert {"notebook_write_with_api_check",
-                "notebook_add_cell"} <= set(names(server))
-        # The old model-generated code entry points are no longer exposed.
-        assert "notebook_execute_code" not in names(server)
-        assert "notebook_execute_with_api_check" not in names(server)
-        assert "notebook_execute_active_cell" not in names(server)
-        # delete_cell was removed: the notebook is a strictly append-only log.
-        assert "notebook_delete_cell" not in names(server)
-        # apply_patch was removed: patching an existing cell would overwrite it.
-        assert "notebook_apply_patch" not in names(server)
+    exposed = set(names(server))
+    assert {"notebook_write_with_api_check", "notebook_add_cell"} <= exposed
+    # The old model-generated code entry points are no longer exposed.
+    assert "notebook_execute_code" not in exposed
+    assert "notebook_execute_with_api_check" not in exposed
+    assert "notebook_execute_active_cell" not in exposed
+    # delete_cell / apply_patch were removed: the notebook is a strictly
+    # append-only log and patching an existing cell would overwrite it.
+    assert "notebook_delete_cell" not in exposed
+    assert "notebook_apply_patch" not in exposed
 
 
 def test_tool_metadata_is_nonempty():
@@ -49,7 +46,7 @@ def test_tool_metadata_is_nonempty():
     assert all(tool.title and tool.description for tool in tools)
 
 
-def test_output_content_keeps_plain_text_after_an_earlier_image():
+def test_output_content_suppresses_plain_text_even_after_an_image():
     from peaksMCP.server.jupyter_peaks.core.tools import _output_content
 
     class Notebook:
@@ -63,11 +60,11 @@ def test_output_content_keeps_plain_text_after_an_earlier_image():
 
     blocks = _output_content(Notebook())
     # One closing line reports the rendered figure; the duplicate "<Figure>"
-    # repr is suppressed; later plain text still reaches the model.
+    # repr is suppressed; plain text after the figure is NOT echoed.
     text = "\n".join(getattr(block, "text", "") for block in blocks)
     assert "Inline figure rendered" in text and "(1 image(s))" in text
     assert "<Figure>" not in text
-    assert "later text" in text
+    assert "later text" not in text
 
 
 def test_output_content_reports_interactive_widget_as_text():
@@ -164,9 +161,10 @@ def test_output_content_reports_inline_images_without_payloads():
     assert "pixels are not sent to the model" in marker.text
 
 
-def test_output_content_reads_markdown_boxes_as_plain_text():
-    """peaks' colored analysis boxes are text/markdown only (no text/plain);
-    the model must still read the numbers inside them."""
+def test_output_content_suppresses_markdown_boxes_without_figure_or_error():
+    """peaks' colored analysis boxes are text/markdown only (no figure, no error);
+    under output normalisation they are NOT echoed — the user reads them in the
+    notebook, so they must not be re-stated inline as model review noise."""
     from peaksMCP.server.jupyter_peaks.core.tools import _output_content
 
     class Notebook:
@@ -188,9 +186,8 @@ def test_output_content_reads_markdown_boxes_as_plain_text():
 
     blocks = _output_content(Notebook())
     readable = "\n".join(getattr(block, "text", "") for block in blocks)
-    assert "Au fitting results:" in readable
-    assert "Resolution (1st fit) 9.08 meV" in readable
-    assert "accuracy_by_2nd_fitting 9.08 meV" in readable
+    assert "Au fitting results:" not in readable
+    assert "Resolution (1st fit) 9.08 meV" not in readable
     assert "<div>" not in readable and "<b>" not in readable
 
 
@@ -251,15 +248,3 @@ def test_server_status_exposes_index_stale():
     status = notebook.server_status()
     assert status["index_stale"] is False
     assert status["api_count"] == 1
-
-
-def test_plot_resources_exposed_and_templates_compile():
-    from peaksMCP.config.metadata import list_resources, resource_metadata
-
-    resources = list_resources()
-    assert resources
-    for resource_id in resources:
-        meta = resource_metadata(resource_id)
-        assert meta["title"] and meta["template"]
-        compile(meta["template"], f"<{resource_id}>", "exec")
-    assert {"fermi_surface", "dispersion_grid"} <= set(resources)

@@ -591,57 +591,6 @@ def command_ping(args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
 
-def command_translate(args: argparse.Namespace) -> None:
-    from .pxt_utils import convert_path, translate_datasheet
-    output = args.output or str(Path(args.csv).with_name("experiment_metadata.json"))
-    result = translate_datasheet(args.csv, output)
-    payload = {"output": output, "records": len(result.records), "warnings": result.warnings}
-    if args.pxt_dir:
-        # --pxt-dir: immediately convert the folder with the freshly translated
-        # metadata (default sibling <folder>_netcdf output).
-        report = convert_path(args.pxt_dir, metadata_path=output)
-        payload["converted"] = {
-            "matched": len(report.items),
-            "converted": report.converted,
-            "failed": report.failed,
-        }
-    _json(payload)
-
-
-def command_convert(args: argparse.Namespace) -> None:
-    from .pxt_utils import convert_path
-    report = convert_path(args.input, args.out, metadata_path=args.metadata, substring=args.filter, force=args.force, cpu_limit_percent=args.cpu_limit)
-    _json(report.model_dump(mode="json"))
-    if report.failed:
-        raise SystemExit(1)
-
-
-def command_load(args: argparse.Namespace) -> None:
-    """Explicitly load a converted NetCDF into the notebook as a visible cell.
-
-    Asks the dashboard to insert and run ``from peaks import load; data = load(...)``
-    in the live notebook (requires the supervisor / frontend Comm to be online).
-    """
-    data = _runfile()
-    # Resolve the path against the CLI's cwd so a relative path does not get
-    # interpreted inside the dashboard/supervisor process (different cwd).
-    path = str(Path(args.input).expanduser().resolve())
-    try:
-        response = httpx.post(
-            f"{data['dashboard_url']}/api/notebook/load",
-            headers=_dashboard_headers(data),
-            json={"path": path},
-            timeout=120,
-        )
-        response.raise_for_status()
-    except httpx.HTTPError as exc:
-        raise SystemExit(f"load failed: {exc}") from exc
-    payload = response.json()
-    _json(payload)
-    if payload.get("loaded") is not True:
-        raise SystemExit("load was not confirmed by the notebook")
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="peaksMCP", description="Claude Desktop bridge for Peaks ARPES analysis")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -697,24 +646,10 @@ def build_parser() -> argparse.ArgumentParser:
     ping = sub.add_parser("mcp-ping")
     ping.add_argument("--profile", default="default")
     ping.set_defaults(func=command_ping)
-    metadata = sub.add_parser("metadata")
-    metadata_sub = metadata.add_subparsers(dest="metadata_command", required=True)
-    translate = metadata_sub.add_parser("translate")
-    translate.add_argument("csv")
-    translate.add_argument("--pxt-dir")
-    translate.add_argument("--output")
-    translate.set_defaults(func=command_translate)
-    convert = sub.add_parser("convert")
-    convert.add_argument("input")
-    convert.add_argument("--metadata")
-    convert.add_argument("--out")
-    convert.add_argument("--filter", default="")
-    convert.add_argument("--cpu-limit", type=float, default=60)
-    convert.add_argument("--force", action="store_true")
-    convert.set_defaults(func=command_convert)
-    load_cmd = sub.add_parser("load", help="load a converted NetCDF into the notebook as a visible cell")
-    load_cmd.add_argument("input", help="path to the .nc file to load")
-    load_cmd.set_defaults(func=command_load)
+    # Data operations (PXT conversion, datasheet translation, loading a scan
+    # into the notebook) are deliberately NOT exposed here: they must run as
+    # notebook cells through the MCP tools, where the code scanner, the API
+    # check and the consent gate apply. A CLI shortcut would bypass all three.
     return parser
 
 

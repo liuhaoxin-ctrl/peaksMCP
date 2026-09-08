@@ -8,15 +8,11 @@ from typing import Any
 from fastmcp import Client, FastMCP
 from fastmcp.server.providers.proxy import ProxyClient
 
-EXPECTED_TOOL_NAMES = frozenset({
-    "peaks_search_api", "peaks_get_api", "askuserquestion", "mcp_list_resources",
-    "notebook_list_variables", "notebook_read_variable",
-    "notebook_read_active_cell", "notebook_read_active_cell_output",
-    "notebook_read_content", "notebook_move_cursor", "notebook_server_status",
-    "notebook_kernel_status", "notebook_wait_for_kernel",
-    "notebook_write_with_api_check",
-    "notebook_add_cell",
-})
+from peaksMCP.config.metadata import tool_names
+
+#: Single source of truth is the ``tools:`` block in metadata_baseline.yaml; the
+#: proxy only verifies the live kernel server exposes exactly that set.
+EXPECTED_TOOL_NAMES = tool_names()
 
 
 def endpoint(host: str = "127.0.0.1", port: int = 8123) -> str:

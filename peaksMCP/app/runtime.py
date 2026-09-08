@@ -286,7 +286,6 @@ class RuntimeSupervisor:
         # present (avoids port collisions between profiles/tests).
         environment["PEAKSMCP_HOST"] = self.profile.mcp.host
         environment["PEAKSMCP_PORT"] = str(self.profile.mcp.port)
-        environment["PEAKSMCP_MODE"] = self.profile.mcp.mode
         environment["PEAKSMCP_AUTOSTART"] = (
             "true" if self.profile.mcp.autostart else "false"
         )
@@ -329,7 +328,7 @@ class RuntimeSupervisor:
             "type": "notebook", "format": "json",
             "content": {
                 "cells": [{"cell_type": "markdown", "metadata": {}, "source": "# peaksMCP ARPES workspace", "id": "peaksmcp-welcome"}],
-                "metadata": {"kernelspec": {"name": self.profile.jupyter.kernel_name, "display_name": f"Python (peaksMCP · {self.profile.mcp.mode})", "language": "python"}},
+                "metadata": {"kernelspec": {"name": self.profile.jupyter.kernel_name, "display_name": "Python (peaksMCP)", "language": "python"}},
                 "nbformat": 4, "nbformat_minor": 5,
             },
         }

@@ -121,7 +121,6 @@ class CommBridge:
             outputs = data.get("outputs")
             if isinstance(cell_id, str) and isinstance(outputs, list):
                 self._cache_cell_outputs(cell_id, outputs)
-                self.state.last_execution_cell_id = cell_id
                 if self.state.active_cell.get("id") == cell_id:
                     self.state.active_cell_output = list(outputs)
 

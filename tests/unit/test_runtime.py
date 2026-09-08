@@ -161,7 +161,7 @@ def test_kernelspec_state_matches_profile_including_require_consent(monkeypatch,
     from peaksMCP.app.kernel import kernel_profile_state, kernel_spec_state
     from peaksMCP.app.profiles import Profile
 
-    profile = Profile(mcp={"mode": "safe", "require_consent": True})
+    profile = Profile(mcp={"require_consent": True})
     resource = tmp_path / "spec"
     resource.mkdir()
     (resource / "kernel.json").write_text(
@@ -182,7 +182,7 @@ def test_kernelspec_reinstalled_when_remote_permission_changes(monkeypatch, tmp_
 
     from peaksMCP.app.kernel import kernel_profile_state
 
-    supervisor = RuntimeSupervisor(Profile(mcp={"mode": "safe"}))
+    supervisor = RuntimeSupervisor(Profile(mcp={}))
     supervisor.kernel_id = "kernel-1"
     calls: list[str] = []
 
@@ -228,7 +228,6 @@ def test_kernelspec_reinstalled_when_remote_permission_changes(monkeypatch, tmp_
     assert environment["JUPYTER_CONFIG_DIR"] == str(tmp_path / "runtime/jupyter")
     assert environment["PEAKSMCP_HOST"] == "127.0.0.1"
     assert environment["PEAKSMCP_PORT"] == "8123"
-    assert environment["PEAKSMCP_MODE"] == "safe"
     assert environment["PEAKSMCP_AUTOSTART"] == "true"
     assert environment["PEAKSMCP_ALLOW_REMOTE"] == "false"
 
@@ -501,12 +500,11 @@ def test_startup_script_honors_authoritative_environment_defaults():
 
     from peaksMCP.app.kernel import _startup
 
-    off = Profile(mcp={"mode": "dangerous", "autostart": False, "allow_remote": False})
+    off = Profile(mcp={"autostart": False, "allow_remote": False})
     src = _startup(off)
     ast.parse(src)  # generated script must compile
     assert "peaksMCP_start" not in src
     assert "peaksMCP_dangerous" not in src
-    assert 'setdefault("PEAKSMCP_MODE", "dangerous")' in src
     assert 'setdefault("PEAKSMCP_AUTOSTART", "false")' in src
     assert 'setdefault("PEAKSMCP_ALLOW_REMOTE", "false")' in src
     assert "load_ext" in src  # magics remain available

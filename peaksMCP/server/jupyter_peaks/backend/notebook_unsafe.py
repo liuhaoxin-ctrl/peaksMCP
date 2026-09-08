@@ -9,32 +9,10 @@ from peaksMCP.config import prompts as _load_prompts
 from ..security import AuditLogger, ConsentManager, call_names, scan_code
 from ..security.api_allowlists import BUILTIN_NAMES, GENERIC_METHODS, GENERIC_MODULES
 from ..security.api_provenance import CallTarget, analyze_provenance, extract_call_targets
-from .base import ExecutionMode, SharedState, ensure_fresh_index
+from .base import SharedState, ensure_fresh_index
 
 #: Curated hard-block reply text (config/prompts.yaml), read once at import.
 _PROMPTS = _load_prompts().get("notebook_unsafe") or {}
-
-#: Callable leaves that draw or store a figure, matched against alias-resolved
-#: canonical call names (AST, so comments/strings never trip the guard).
-_PLOT_LEAVES = frozenset(
-    {"pcolormesh", "imshow", "subplots", "plot_batch", "plot_validation_pair", "savefig"}
-)
-
-
-def _plot_intent(names: list[str]) -> bool:
-    """Whether the parsed cell draws a figure.
-
-    Any ``matplotlib.pyplot`` / bare ``plt.`` usage, or a call whose leaf is a
-    known plotting or saving API (``fig.savefig``, ``ax.pcolormesh``,
-    ``plot_batch``...).
-    """
-    return any(
-        name.startswith("matplotlib.pyplot")
-        or name.startswith("plt.")
-        or name.rsplit(".", 1)[-1] in _PLOT_LEAVES
-        for name in names
-    )
-
 
 def _saves_figure(names: list[str]) -> bool:
     """Whether the parsed cell writes a figure to disk (``*.savefig``)."""
@@ -48,10 +26,6 @@ def _refused(message: str) -> dict[str, Any]:
 
 class UnsafeNotebookBackend:
     """Execute or mutate notebook cells after security checks and consent."""
-
-    _PYTHON_EXECUTION_OPERATIONS = {
-        "notebook_write_with_api_check",
-    }
 
     def __init__(self, state: SharedState, consent: ConsentManager, audit: AuditLogger) -> None:
         self.state = state
@@ -71,25 +45,15 @@ class UnsafeNotebookBackend:
             raise PermissionError(scan.block_reason or "code was blocked by security scanner")
         # AST scanning is a useful early rejection layer, but it cannot prove
         # arbitrary Python safe: reflection, import side effects and higher-order
-        # calls can hide behavior from static name matching.  Therefore every
-        # operation that actually executes Python normally requires informed
-        # consent, and dangerous only relaxes consent for non-executing,
-        # append-only mutations such as adding a cell.
+        # calls can hide behavior from static name matching.  Every operation
+        # that actually executes Python is therefore gated by informed consent.
         #
         # ``state.require_consent`` (profile ``mcp.require_consent``) is the
-        # global master switch: when False (default) no mutation asks for consent
+        # single master switch: when False (default) no mutation asks for consent
         # at all (the scanner still hard-blocks dangerous code and every call is
-        # audit-logged); the operator can flip it back to True to re-enable
-        # consent for every write/execute.
-        executes_python = operation in self._PYTHON_EXECUTION_OPERATIONS
-        requires_consent = (
-            executes_python
-            or force_consent
-            or bool(scan and scan.requires_explicit_consent)
-        )
-        if self.state.require_consent and (
-            self.state.mode is not ExecutionMode.DANGEROUS or requires_consent
-        ):
+        # audit-logged); the operator can flip it to True to re-enable consent
+        # for every write/execute.  There is no mode that relaxes this policy.
+        if self.state.require_consent:
             details: dict[str, Any] = {"code": code[:4000], "scan": scan.to_dict() if scan else None}
             if cell is not None:
                 details["cell"] = cell
@@ -173,12 +137,6 @@ class UnsafeNotebookBackend:
 
         The live API index is hot-rebuilt in the kernel when the source changed, so
         no kernel restart is needed.
-
-        Plotting code additionally requires ``mcp_list_resources()`` to have been
-        read once this session: that tool returns every canonical plotting
-        template inline, so the model always has the tested formats available
-        before it draws a figure.  The requirement is satisfied by a single call
-        and does not force the model to use any template.
         """
         try:
             index = ensure_fresh_index(self.state)
@@ -186,12 +144,6 @@ class UnsafeNotebookBackend:
             return _refused(_PROMPTS["index_build_failed"])
 
         names = call_names(code)
-        if not getattr(self.state, "read_plot_resources", False) and _plot_intent(names):
-            self.audit.write(
-                "notebook_write_with_api_check", "blocked", {"reason": "plot_resources_not_read"}
-            )
-            return _refused(_PROMPTS["plot_templates_not_read"])
-
         if _saves_figure(names):
             self.audit.write(
                 "notebook_write_with_api_check", "blocked", {"reason": "savefig_forbidden"}

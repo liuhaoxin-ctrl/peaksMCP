@@ -9,7 +9,7 @@ from typing import Any
 from IPython.core.magic import Magics, line_magic, magics_class
 
 from .active_cell_bridge import register_comm_target
-from .backend import ExecutionMode, SharedState
+from .backend import SharedState
 from .mcp_server import JupyterPeaksMCPServer
 
 _server: JupyterPeaksMCPServer | None = None
@@ -25,7 +25,6 @@ def _start(ipython: Any, host: str | None = None, port: int | None = None) -> Ju
     global _server, _state
     if _state is None:
         _state = SharedState(ipython=ipython)
-        _state.mode = ExecutionMode(os.environ.get("PEAKSMCP_MODE", "safe"))
         _state.require_consent = (
             os.environ.get("PEAKSMCP_REQUIRE_CONSENT", "false").lower() == "true"
         )
@@ -62,14 +61,14 @@ def _start(ipython: Any, host: str | None = None, port: int | None = None) -> Ju
 
 @magics_class
 class PeaksMCPMagics(Magics):
-    """Lifecycle and security-mode magics for interactive recovery."""
+    """Lifecycle magics for interactive recovery."""
 
     @line_magic
     def peaksMCP_start(self, line: str = "") -> dict[str, Any]:
         parts = line.split()
         port = int(parts[0]) if parts else None
         server = _start(self.shell, port=port)
-        return {"running": server.is_running(), "host": server.host, "port": server.port, "mode": server.state.mode.value}
+        return {"running": server.is_running(), "host": server.host, "port": server.port}
 
     @line_magic
     def peaksMCP_stop(self, _line: str = "") -> dict[str, Any]:
@@ -81,14 +80,13 @@ class PeaksMCPMagics(Magics):
     def peaksMCP_restart(self, _line: str = "") -> dict[str, Any]:
         global _server
         if _server:
-            host, port, mode, allow_remote = (
-                _server.host, _server.port, _server.state.mode, _server.allow_remote
+            host, port, allow_remote = (
+                _server.host, _server.port, _server.allow_remote
             )
             _server.stop()
             _server = JupyterPeaksMCPServer(
                 _state, host=host, port=port, allow_remote=allow_remote
             )
-            _server.state.mode = mode
         return self.peaksMCP_start("")
 
     @line_magic
@@ -96,26 +94,8 @@ class PeaksMCPMagics(Magics):
         return {
             "loaded": _state is not None,
             "running": bool(_server and _server.is_running()),
-            "mode": _state.mode.value if _state else None,
             "comm_connected": bool(_state and _state.bridge and _state.bridge.connected),
         }
-
-    def _mode(self, mode: str) -> dict[str, Any]:
-        server = _start(self.shell)
-        server.set_mode(ExecutionMode(mode))
-        return {"mode": server.state.mode.value}
-
-    @line_magic
-    def peaksMCP_safe(self, _line: str = "") -> dict[str, Any]:
-        return self._mode("safe")
-
-    @line_magic
-    def peaksMCP_unsafe(self, _line: str = "") -> dict[str, Any]:
-        return self._mode("unsafe")
-
-    @line_magic
-    def peaksMCP_dangerous(self, _line: str = "") -> dict[str, Any]:
-        return self._mode("dangerous")
 
 
 def _ensure_matplotlib_inline(ipython: Any) -> None:

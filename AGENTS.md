@@ -151,7 +151,7 @@ When adding, removing or renaming an MCP tool, update **all** of these:
 - [ ] Run `ruff check peaksMCP tests tools` and the unit tests
 
 Tool metadata lives in YAML, not hardcoded in Python. `config/metadata.py` loads
-`metadata_baseline.yaml` (15 tools) as the single source of truth for titles and
+`metadata_baseline.yaml` (14 tools) as the single source of truth for titles and
 descriptions, and `prompts.yaml` for the runtime prompt text that tools,
 `notebook_unsafe.py` and the code scanners show the model/user.
 
@@ -159,27 +159,24 @@ descriptions, and `prompts.yaml` for the runtime prompt text that tools,
 
 ## 6. Security modes and consent
 
-All 15 tools (13 read-only/guidance + 2 mutation) are **always exposed** in every
+All 14 tools (12 read-only/guidance + 2 mutation) are **always exposed** in every
 mode; the mode only changes how strictly the 2 mutation tools
 (`notebook_write_with_api_check`, `notebook_add_cell`) ask for frontend consent
 **when consent is enabled**.
 
 The notebook is a **strictly append-only log**: both mutation tools only append
 a new cell at the END and can never edit, delete or reorder an existing cell, so
-the agent's full work history is preserved top-to-bottom. `notebook_delete_cell`
-was removed for exactly this reason.
+the agent's full work history is preserved top-to-bottom. `notebook_delete_cell`,
+the frontend `delete_cell`/`apply_patch` handlers and the `mcp_list_resources`
+resources system were all removed for exactly this reason (see changelog).
 
 The consent master switch is `mcp.require_consent` in the active profile
 (default **false**; the supervisor also exposes `PEAKSMCP_REQUIRE_CONSENT`).
-With consent **disabled** (the default) no frontend prompt is shown in any mode:
-the AST code scanner (always-on hard block) and the audit log are the only
-guards. With consent **enabled**:
-
-- **safe** / **unsafe** (identical tool surface): every mutation tool asks for
-  explicit frontend consent shown in the notebook.
-- **dangerous**: Python execution and destructive edits still require explicit
-  frontend consent; only non-executing, append-only mutations (adding a cell)
-  may be auto-approved.
+With consent **disabled** (the default) no frontend prompt is shown for any
+mutation: the AST code scanner (always-on hard block) and the audit log are the
+only guards. With consent **enabled**, every mutation tool asks for explicit
+frontend consent shown in the notebook. There is no mode that relaxes this
+policy — the single switch is the only consent control.
 
 The scanner (`security/code_scanner.py`) is AST-semantic (alias-aware,
 attribute-chain matching) and an early rejection layer, **not a complete
@@ -202,24 +199,35 @@ Consent decisions and every tool call are written to the audit log
 %peaksMCP_stop           # stop it
 %peaksMCP_restart        # restart (rebuild MCP)
 %peaksMCP_status         # show status
-%peaksMCP_safe           # switch to safe mode
-%peaksMCP_unsafe         # switch to unsafe mode
-%peaksMCP_dangerous      # relax only non-executing append operations
 ```
+
+There is **no security mode**. Consent for the two mutation tools
+(`notebook_write_with_api_check`, `notebook_add_cell`) is governed solely by the
+single `require_consent` master switch (profile `mcp.require_consent`, default
+**false**). When off, the AST scanner still hard-blocks dangerous code and every
+call is audit-logged, but no in-notebook consent prompt appears; flip it on to
+require explicit consent for every write/execute.
 
 ---
 
 ## 8. Data conversion
 
-- `peaksMCP convert <pxt-file-or-folder> [--out OUT] [--metadata meta.json]
-  [--filter SUBSTRING] [--cpu-limit PERCENT] [--force]`
+**Conversion runs in the notebook, not from a shortcut.** There is deliberately
+no `peaksMCP convert` / `metadata translate` / `load` CLI command and no
+dashboard conversion endpoint: every data operation runs as a notebook cell
+written through `notebook_write_with_api_check`, so the code scanner, the API
+check and the consent gate always apply.
+
+- `convert_pxt` (single file) / `convert_path` (directory) — the CLI and console
+  equivalents were removed; the semantics below still hold.
 - A **folder** conversion defaults to a **sibling `<folder>_netcdf/`** directory
-  (created on demand); an explicit `--out` is honoured as-is.
-- A **single file** defaults to `<stem>.nc` next to the source; an `--out` directory
-  receives `<stem>.nc` inside it.
-- `peaksMCP metadata translate datasheet.csv` produces `experiment_metadata.json`
+  (created on demand); an explicit output path is honoured as-is.
+- A **single file** defaults to `<stem>.nc` next to the source.
+- `translate_datasheet(datasheet.csv)` produces `experiment_metadata.json`
   (records keyed by `Index`, source `sha256` embedded).
 - Conversion never modifies the source and never aborts a batch on one bad file.
+- The operator console only controls processes (Jupyter, kernel, MCP) and
+  snapshots; it has no data endpoints.
 
 ---
 
