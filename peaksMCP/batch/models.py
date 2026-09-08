@@ -5,9 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from peaksMCP.overrides.models import Report
+
 
 @dataclass(slots=True)
-class BatchItemResult:
+class BatchItemResult(Report):
     """Result of processing one batch input."""
 
     index: int
@@ -20,7 +22,7 @@ class BatchItemResult:
 
 
 @dataclass(slots=True)
-class BatchResult:
+class BatchResult(Report):
     """Aggregate result and resource statistics for a batch."""
 
     items: list[BatchItemResult] = field(default_factory=list)

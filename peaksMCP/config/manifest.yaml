@@ -1,0 +1,34 @@
+version: 3
+# Single-source contract manifest for the curated project surface.
+#
+# Migration state:
+# - `project` below registers the overrides facade set (strict contract).
+# - The legacy `discovery/api_overrides.yaml` (aliases/docstring notes for
+#   native peaks + project_added registry) is still read by the discovery
+#   loader; retiring it and switching discovery to this file is the next
+#   wiring step (AGENTS.md §11, Contract subsystem).
+project:
+  - name: load_data
+    export: peaksMCP.overrides.load_data
+    exposure: facade
+    category: ingestion
+    kind: loader
+    summary: Open one PXT or NetCDF file as a peaks DataArray.
+    inputs: "source: path; lazy: bool=True; metadata: optional path/dict"
+    returns: "peaks DataArray"
+    preconditions: "one file; file exists; suffix .pxt or .nc"
+    errors: "missing file; directory passed; unsupported suffix"
+    example: 'data = load_data("BP_0020.nc")'
+    stability: new
+  - name: save_result
+    export: peaksMCP.overrides.save_result
+    exposure: facade
+    category: persistence
+    kind: serializer
+    summary: Preview, then atomically save a result with user approval.
+    inputs: "data; path; overwrite: bool=False; approve: bool=False"
+    returns: "SaveReport (awaiting_consent by default; saved after approve=True)"
+    preconditions: "approve=True only after the preview was shown and the user agreed"
+    errors: "target exists without overwrite; unsupported type"
+    example: 'save_result(data, "out.nc")  # preview only'
+    stability: new
