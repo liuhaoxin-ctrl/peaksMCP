@@ -59,21 +59,27 @@ def _clean_output_text(value: Any) -> str:
 def _normalize_outputs(outputs: list[dict[str, Any]]) -> list[TextContent]:
     """Convert Jupyter cell outputs to the text the model may read.
 
-    Output is normalised so the model is not flooded with review noise:
+    Output is normalised so the model is not flooded with review noise, while
+    the notebook stays the shared context for the user AND the agent:
     - errors are returned (the model must see why execution failed);
     - each rendered figure counts toward a single closing "figure rendered in
       the notebook" line; image pixels and interactive widgets stay as short
       markers (frontend-only);
-    - plain text, ``text/plain`` reprs and markdown boxes are **not** echoed to
-      the model — they are the analysis result the user reads in the notebook,
-      not something to be re-stated inline.  Returning nothing for a text-only
-      cell is the intended behaviour, not a missing output.
+    - stdout text is echoed ONLY as a short summary: at most three non-empty
+      lines of at most 200 chars each, appearing before the first figure.
+      That is exactly the shape of the facades' one-line summaries (and of an
+      agent's own brief prints), so the agent knows what it did, what was
+      produced and where the variables are. Longer text, ``text/plain`` reprs
+      and markdown boxes stay in the notebook for the user and are not
+      re-stated to the model.
     """
     blocks: list[TextContent] = []
     rendered_images = 0
     has_error = False
     saw_output = False
-    for output in outputs:
+    first_media_order: int | None = None
+    text_events: list[tuple[int, str]] = []
+    for order, output in enumerate(outputs):
         if not isinstance(output, dict):
             continue
         saw_output = True
@@ -95,6 +101,13 @@ def _normalize_outputs(outputs: list[dict[str, Any]]) -> list[TextContent]:
             )
             has_error = True
             continue
+        if output.get("output_type") == "stream" and output.get("name") == "stdout":
+            raw = output.get("text", "")
+            text = _clean_output_text(raw)
+            for line in text.splitlines():
+                if line.strip():
+                    text_events.append((order, line.rstrip()))
+            continue
         data = output.get("data", {})
         if not isinstance(data, dict):
             data = {}
@@ -104,12 +117,19 @@ def _normalize_outputs(outputs: list[dict[str, Any]]) -> list[TextContent]:
         interactive_mime = next(
             (mime for mime in _INTERACTIVE_MIMES if data.get(mime)), None
         )
-        # Plain text / text/plain / markdown boxes are intentionally NOT echoed.
+        # text/plain reprs and markdown boxes are intentionally NOT echoed.
         if interactive_mime is not None:
+            if first_media_order is None:
+                first_media_order = order
             blocks.append(_interactive_omitted_content(interactive_mime))
             rendered_images += 1
         if has_image:
+            if first_media_order is None:
+                first_media_order = order
             rendered_images += 1
+    summary = _stdout_summary(text_events, first_media_order)
+    if summary is not None:
+        blocks.append(TextContent(type="text", text=summary))
     # An error always wins: the model needs to see it regardless of figures.
     if has_error:
         return blocks
@@ -128,8 +148,44 @@ def _normalize_outputs(outputs: list[dict[str, Any]]) -> list[TextContent]:
         return blocks
     if not saw_output:
         return [TextContent(type="text", text="No active-cell output.")]
-    # Output was text-only: suppressed by design (the user reads it in the notebook).
+    if summary is not None:
+        return blocks
+    # Text-only output that is long or figure-interleaved: it stays in the
+    # notebook (shared context) but is not re-stated to the model.
     return []
+
+
+#: Max lines / chars of stdout text echoed to the model as a cell summary.
+_SUMMARY_MAX_LINES = 3
+_SUMMARY_MAX_LINE_LENGTH = 200
+
+
+def _stdout_summary(
+    text_events: list[tuple[int, str]],
+    first_media_order: int | None,
+) -> str | None:
+    """Return a short stdout summary for the model, or None.
+
+    Only text printed BEFORE the first figure counts: figures are the
+    deliverable of plotting cells and trailing prints are usually noise.
+    At most :data:`_SUMMARY_MAX_LINES` non-empty lines of at most
+    :data:`_SUMMARY_MAX_LINE_LENGTH` chars are echoed; anything longer stays
+    in the notebook as the archive for the user.
+    """
+    if not text_events:
+        return None
+    before_figure = [
+        line
+        for order, line in text_events
+        if first_media_order is None or order < first_media_order
+    ]
+    if not before_figure:
+        return None
+    if len(before_figure) > _SUMMARY_MAX_LINES:
+        return None
+    if any(len(line) > _SUMMARY_MAX_LINE_LENGTH for line in before_figure):
+        return None
+    return "\n".join(before_figure)
 
 
 def _text_blocks(outputs: list[dict[str, Any]]) -> list[str]:

@@ -44,7 +44,7 @@ class LoadReport(Report):
     def summary_line(self) -> str:
         dims = self.dims or {}
         size = ", ".join(f"{k}={v}" for k, v in dims.items())
-        return f"load_data: {self.path} ({self.kind}) dims [{size}]"
+        return f"load_data: {self.path} ({self.kind}) dims [{size}]; result in the cell variable"
 
 
 def _register_l112_once() -> None:
@@ -262,10 +262,44 @@ def _load_many(
             + "; ".join(failed[:5])
         )
     where = directory or ("sequence" if len(paths) > 1 else str(paths[0]))
+    names = sorted(loaded)
+    if len(names) <= 12:
+        keys_text = "{" + ", ".join(names) + "}"
+    else:
+        keys_text = (
+            "{" + ", ".join(names[:5]) + ", ..., " + names[-1]
+            + f"}} ({len(names)} keys)"
+        )
+    # First line = the agent's cognition channel (short, echoed to the model):
+    # what was loaded, where, and where the mapping lives.
     print(
         f"load_data: {len(loaded)} file(s) loaded from {where} "
-        f"({pxt_count} pxt, {nc_count} netcdf)"
+        f"({pxt_count} pxt, {nc_count} netcdf); returned dict {keys_text}"
     )
+    # Following rows = the notebook archive for the user (per-file identities).
+    for path in paths:
+        data = loaded.get(path.stem)
+        if data is None:
+            continue
+        kind = "pxt" if path.suffix.lower() == ".pxt" else "netcdf"
+        shape = ", ".join(f"{dim}×{size}" for dim, size in data.sizes.items())
+        note = _identity_note(payload, _index_from_stem(path.stem))
+        print(f"  {path.stem:<16s} {kind:<7s} ({shape}){note}")
     if failed:
         print(f"load_data: skipped {len(failed)} file(s): {'; '.join(failed[:3])}")
     return loaded
+
+
+def _identity_note(payload: dict[str, Any] | None, index: int | None) -> str:
+    """Datasheet identity for one file's archive row (index, data format)."""
+    if payload is None or index is None:
+        return ""
+    try:
+        record = (payload.get("records") or {}).get(str(index))
+        data_format = str(((record or {}).get("experiment") or {}).get("data_format") or "")
+    except Exception:
+        return ""
+    parts = [f"index={index}"]
+    if data_format:
+        parts.append(data_format)
+    return "  " + "  ".join(parts)

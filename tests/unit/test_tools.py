@@ -218,3 +218,53 @@ def test_server_status_exposes_index_stale():
     status = notebook.server_status()
     assert status["index_stale"] is False
     assert status["api_count"] == 1
+
+
+def test_normalize_outputs_echoes_short_stdout_summary():
+    """Short stdout before any figure is the agent's first-hand knowledge of
+    what the cell did (e.g. a facade summary) and IS echoed."""
+    from peaksMCP.server.jupyter_peaks.core.tools import _normalize_outputs
+
+    outputs = [
+        {"output_type": "stream", "name": "stdout",
+         "text": "load_data: BP_0020.nc (NetCDF) dims [eV=168, theta_par=902]\n"},
+    ]
+    blocks = _normalize_outputs(outputs)
+    text = "\n".join(getattr(b, "text", "") for b in blocks)
+    assert "load_data: BP_0020.nc" in text
+
+
+def test_normalize_outputs_suppresses_long_stdout():
+    """Long listings (e.g. per-file archive rows) stay in the notebook for the
+    user and are NOT re-stated to the model."""
+    from peaksMCP.server.jupyter_peaks.core.tools import _normalize_outputs
+
+    lines = "\n".join(f"  BP_{i:04d}   netcdf (eV x168, theta_par x902)" for i in range(8))
+    outputs = [{"output_type": "stream", "name": "stdout", "text": "header\n" + lines + "\n"}]
+    blocks = _normalize_outputs(outputs)
+    assert blocks == []
+
+
+def test_normalize_outputs_echoes_summary_before_figure_only():
+    """A facade summary printed before the figure is echoed; text printed
+    after the figure is not (it is archive for the user)."""
+    from peaksMCP.server.jupyter_peaks.core.tools import _normalize_outputs
+
+    outputs = [
+        {"output_type": "stream", "name": "stdout",
+         "text": "fit_gold_reference: c0=2.659 eV, rendered\n"},
+        {"data": {"image/png": "aW1hZ2U="}},
+        {"output_type": "stream", "name": "stdout", "text": "trailing debug\n"},
+    ]
+    text = "\n".join(getattr(b, "text", "") for b in _normalize_outputs(outputs))
+    assert "fit_gold_reference:" in text
+    assert "trailing debug" not in text
+    assert "Inline figure rendered" in text
+
+
+def test_normalize_outputs_oversized_summary_line_is_suppressed():
+    from peaksMCP.server.jupyter_peaks.core.tools import _normalize_outputs
+
+    long = "x" * 250
+    outputs = [{"output_type": "stream", "name": "stdout", "text": long + "\n"}]
+    assert _normalize_outputs(outputs) == []

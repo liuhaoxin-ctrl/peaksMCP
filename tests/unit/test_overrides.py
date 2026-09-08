@@ -200,6 +200,8 @@ def test_load_data_folder_returns_stem_mapping_with_datasheet(monkeypatch, tmp_p
     assert doc["records"]["20"]["experiment"]["data_format"] == "Au sweep"
     out = capsys.readouterr().out
     assert "2 file(s) loaded" in out and "2 pxt" in out
+    assert "returned dict {BP_0005, BP_0020}" in out  # agent's key guidance
+    assert "index=20  Au sweep" in out  # user's archive identity row
 
 
 def test_load_data_sequence_of_files(monkeypatch, tmp_path, capsys):
