@@ -24,6 +24,13 @@ apis:
     aliases:
       - load data
       - load dataset
+      - load folder
+      - load directory
+      - load experiment
+      - load files
+      - 加载目录
+      - 加载文件夹
+      - 批量加载
       - read dataset
       - open dataset
       - open data
@@ -46,9 +53,11 @@ apis:
       - 读取PXT
       - 打开PXT
     docstring_note: |
-      Unified loading entry: opens one data file as a DataArray — a NetCDF
-      (converted from PXT, full peaks geometry) or a raw PXT read for
-      inspection. Returns the array in the variable; it never writes to disk.
+      Unified loading entry for ANY data: one file returns a DataArray
+      (NetCDF keeps full peaks geometry; raw PXT loads for inspection), a
+      folder or a path list returns a {stem: DataArray} mapping — data/ and
+      data_netcdf/ load in one call. A sibling datasheet.csv is translated
+      and attached to raw PXT arrays. Never writes to disk.
   save_result:
     module: peaksMCP.overrides.save
     project: true
@@ -383,12 +392,12 @@ project:
     exposure: facade
     category: ingestion
     kind: loader
-    summary: Open one PXT or NetCDF file as a peaks DataArray.
-    inputs: "source: path; lazy: bool=True; metadata: optional path/dict"
-    returns: "peaks DataArray"
-    preconditions: "one file; file exists; suffix .pxt or .nc"
-    errors: "missing file; directory passed; unsupported suffix"
-    example: 'data = load_data("BP_0020.nc")'
+    summary: Load any data for the agent - one file, a list, or a whole folder.
+    inputs: "source: one file (.pxt/.nc), a folder, or a sequence of paths; lazy: bool=True; metadata: optional path/dict"
+    returns: "peaks DataArray (one file) or {stem: DataArray} (folder/sequence)"
+    preconditions: "path(s) exist; folder contains supported files"
+    errors: "missing path; unsupported suffix; empty folder/sequence"
+    example: 'scans = load_data("data/")   # {stem: DataArray}'
     stability: new
   - name: save_result
     export: peaksMCP.overrides.save_result

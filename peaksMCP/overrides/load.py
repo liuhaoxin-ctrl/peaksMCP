@@ -1,22 +1,31 @@
 """Unified data loading facade.
 
-Single entry for opening one data file in the notebook:
+One entry for the agent to load ANY data — any number of files, any
+supported type — from a notebook:
 
-    data = load_data("BP_0020.nc")
-    data = load_data("BP_0020.nc", metadata="experiment_metadata.json")
-    data = load_data("raw.pxt")
+    data       = load_data("BP_0020.nc")            # one NetCDF -> DataArray
+    raw        = load_data("raw/BP_0020.pxt")       # one PXT    -> DataArray
+    scans      = load_data("data/")                 # folder     -> {stem: DataArray}
+    scans      = load_data("data_netcdf/")          # already-converted folder
+    subset     = load_data(["a.nc", "b.nc"])        # explicit list -> same mapping
 
 Rules:
-- One file per call. Directories are handled by conversion/batch facades.
-- PXT input is read through the internal PXT reader; NetCDF through peaks.load.
-- Optional ``metadata`` (path or dict) is embedded into
-  ``attrs["experiment_metadata_json"]`` for later per-record lookups.
-- Returns the DataArray unchanged in the variable; the original file is never
-  modified.
+- Single file returns a DataArray; a folder or a list returns a
+  ``{stem: DataArray}`` mapping (sorted, so data/ and data_netcdf/ load in
+  one call). NetCDF stays lazy by default.
+- A sibling ``datasheet.csv`` in a folder is translated automatically and
+  attached to raw PXT arrays; arrays that already carry converted metadata
+  are left untouched.
+- PXT input is read through the internal PXT reader; NetCDF through
+  ``peaks.load`` (L112 geometry registered).
+- Optional explicit ``metadata`` (path or dict) is embedded into
+  ``attrs["experiment_metadata_json"]``.
+- The original files are never modified.
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -59,60 +68,191 @@ def _attach_metadata(data: Any, metadata: Any) -> None:
     data.attrs["experiment_metadata_json"] = payload
 
 
-def load_data(
-    source: str | Path,
-    *,
-    lazy: bool = True,
-    metadata: str | Path | dict[str, Any] | None = None,
-) -> Any:
-    """Open one PXT or NetCDF data file and return it as a peaks DataArray.
+_SUPPORTED_SUFFIXES = {".pxt", ".nc"}
 
-    Parameters
-    ----------
-    source : str or Path
-        Path to one file (``.pxt`` PXT export or ``.nc`` NetCDF).
-    lazy : bool, default True
-        Passed to the underlying reader (NetCDF keeps chunks lazy).
-    metadata : str, Path or dict, optional
-        Experiment metadata (``experiment_metadata.json``) embedded into
-        ``attrs["experiment_metadata_json"]``.
 
-    Returns
-    -------
-    peaks DataArray (also used as xarray.DataArray)
+def _index_from_stem(stem: str) -> int | None:
+    """Parse a trailing index out of a filename stem (``BP_0020`` -> 20)."""
+    match = re.search(r"(?:^|_|-)(\d+)\s*$", stem)
+    return int(match.group(1)) if match else None
 
-    Raises
-    ------
-    ValueError
-        For missing files or directories (load_data takes exactly one file).
-    """
-    path = Path(source).expanduser()
-    if not path.exists():
-        raise ValueError(
-            f"load_data: file not found: {path}. Check the path before retrying."
-        )
-    if path.is_dir():
-        raise ValueError(
-            f"load_data: {path} is a directory; load_data opens one file. "
-            "Use convert/experiment facades for directories."
-        )
+
+def _single(path: Path, lazy: bool) -> tuple[Any, str]:
+    """Load one supported file into a DataArray (delegation seam for tests)."""
     suffix = path.suffix.lower()
     if suffix == ".pxt":
         from peaksMCP.pxt_utils.loader import load_pxt
 
-        data = load_pxt(str(path))
-        kind = "PXT"
-    elif suffix == ".nc":
-        _register_l112_once()
-        from peaks import load
+        return load_pxt(str(path)), "PXT"
+    _register_l112_once()
+    from peaks import load
 
-        data = load(str(path), lazy=lazy)
-        kind = "NetCDF"
-    else:
+    return load(str(path), lazy=lazy, quiet=True), "NetCDF"
+
+
+def _auto_datasheet_payload(directory: Path) -> dict[str, Any] | None:
+    """Translate a sibling ``datasheet.csv`` once for a directory load.
+
+    Mirrors the converter's sibling-datasheet discovery so a raw experiment
+    folder loads with its record table attached before any conversion ran.
+    """
+    for name in ("datasheet.csv", "Datasheet.csv"):
+        datasheet = directory / name
+        if not datasheet.exists():
+            continue
+        try:
+            from peaksMCP.pxt_utils.csv_translator import translate_datasheet
+
+            return translate_datasheet(datasheet).model_dump(mode="python")
+        except Exception:
+            return None
+    return None
+
+
+def _attach_to(data: Any, payload: dict[str, Any] | None, index: int | None) -> None:
+    """Embed the experiment metadata document onto a loaded DataArray.
+
+    Arrays that already carry converted metadata (NetCDF loaded from a
+    conversion) are left untouched; raw PXT arrays get the document and,
+    when the index is known, an ``experiment_index`` attribute.
+    """
+    if payload is None:
+        return
+    try:
+        if "experiment_metadata_json" in data.attrs:
+            return
+        data.attrs["experiment_metadata_json"] = payload
+        if index is not None:
+            data.attrs["experiment_index"] = index
+    except Exception:
+        pass  # object without attrs: metadata simply not embedded
+
+
+def load_data(
+    source: str | Path | list[str | Path] | tuple[str | Path, ...],
+    *,
+    lazy: bool = True,
+    metadata: str | Path | dict[str, Any] | None = None,
+) -> Any:
+    """Load data for the agent: one file, many files, or a whole folder.
+
+    Unified loading entry that accepts any number of supported inputs and
+    returns what matches the shape of the request:
+
+    - one ``.pxt`` / ``.nc`` file  -> a single peaks DataArray;
+    - a folder                    -> ``{stem: DataArray, ...}`` for every
+      ``.pxt`` / ``.nc`` inside it (sorted, so a directory like ``data/`` or
+      ``data_netcdf/`` loads in one call); a sibling ``datasheet.csv`` is
+      translated automatically and attached to raw PXT arrays (arrays that
+      already carry converted metadata are left untouched);
+    - a list/tuple of paths       -> same mapping as the folder case.
+
+    Parameters
+    ----------
+    source : str, Path, list or tuple
+        One file, one directory, or an explicit sequence of files.
+    lazy : bool, default True
+        Passed to the underlying reader (NetCDF keeps chunks lazy).
+    metadata : str, Path or dict, optional
+        Explicit experiment metadata (``experiment_metadata.json``) embedded
+        into ``attrs["experiment_metadata_json"]`` for every loaded array.
+
+    Returns
+    -------
+    peaks DataArray or dict of DataArray
+        A single DataArray for one file; a ``{stem: DataArray}`` mapping for
+        a folder or a sequence of files.
+
+    Raises
+    ------
+    ValueError
+        For missing paths, empty sequences, folders without supported files,
+        or an unsupported file type.
+    """
+    if isinstance(source, (list, tuple)):
+        paths = [Path(item).expanduser() for item in source]
+        if not paths:
+            raise ValueError("load_data: no paths given (empty sequence).")
+        return _load_many(paths, lazy=lazy, metadata=metadata)
+
+    path = Path(source).expanduser()
+    if not path.exists():
+        raise ValueError(
+            f"load_data: path not found: {path}. Check the path before retrying."
+        )
+    if path.is_dir():
+        return _load_many(
+            sorted(
+                item for item in path.iterdir()
+                if item.is_file() and item.suffix.lower() in _SUPPORTED_SUFFIXES
+            ),
+            lazy=lazy,
+            metadata=metadata,
+            directory=path,
+        )
+    suffix = path.suffix.lower()
+    if suffix not in _SUPPORTED_SUFFIXES:
         raise ValueError(
             f"load_data: unsupported file type {suffix!r}; supported: .pxt, .nc"
         )
+    data, kind = _single(path, lazy)
     _attach_metadata(data, metadata)
     report = LoadReport(path=str(path), kind=kind, dims=dict(data.sizes))
     print(report.summary_line())
     return data
+
+
+def _load_many(
+    paths: list[Path],
+    *,
+    lazy: bool,
+    metadata: Any,
+    directory: Path | None = None,
+) -> dict[str, Any]:
+    """Load a set of paths into a ``{stem: DataArray}`` mapping."""
+    if not paths:
+        where = f" in {directory}" if directory is not None else ""
+        raise ValueError(
+            f"load_data: no supported data files (.pxt, .nc){where}."
+        )
+    payload = metadata
+    if payload is not None and not isinstance(payload, dict):
+        try:
+            from peaksMCP.pxt_utils.metadata import _load_metadata
+
+            payload = _load_metadata(payload)
+        except Exception:
+            payload = None
+    elif payload is None and directory is not None:
+        payload = _auto_datasheet_payload(directory)
+
+    loaded: dict[str, Any] = {}
+    pxt_count = nc_count = 0
+    failed: list[str] = []
+    for path in paths:
+        try:
+            data, kind = _single(path, lazy)
+        except Exception as exc:
+            failed.append(f"{path.name} ({type(exc).__name__}: {exc})")
+            continue
+        if kind == "PXT":
+            pxt_count += 1
+            index = _index_from_stem(path.stem)
+            _attach_to(data, payload, index)
+        else:
+            nc_count += 1
+            _attach_to(data, payload, _index_from_stem(path.stem))
+        loaded[path.stem] = data
+    if not loaded:
+        raise ValueError(
+            "load_data: none of the requested files could be loaded: "
+            + "; ".join(failed[:5])
+        )
+    where = directory or ("sequence" if len(paths) > 1 else str(paths[0]))
+    print(
+        f"load_data: {len(loaded)} file(s) loaded from {where} "
+        f"({pxt_count} pxt, {nc_count} netcdf)"
+    )
+    if failed:
+        print(f"load_data: skipped {len(failed)} file(s): {'; '.join(failed[:3])}")
+    return loaded
