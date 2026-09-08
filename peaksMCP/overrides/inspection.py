@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -148,9 +149,19 @@ def _conflict_for(
 
 
 def _digests(metadata: Any, scans: dict[int | str, Any] | None) -> dict[str, Any]:
-    """Run the single metadata digest implementation (read_meta)."""
+    """Run the single metadata digest implementation (read_meta).
+
+    A ``datasheet.csv`` path is translated first through the datasheet
+    translator, so the standard experiment folder (raw PXT + sibling
+    ``datasheet.csv``) can be inspected before any conversion ran.
+    """
     from peaksMCP.pxt_utils.metadata import read_meta
 
+    if isinstance(metadata, (str, os.PathLike)) and str(metadata).lower().endswith(".csv"):
+        from peaksMCP.pxt_utils.csv_translator import translate_datasheet
+
+        translated = translate_datasheet(Path(metadata))
+        metadata = translated.model_dump(mode="python")
     return read_meta(metadata, data=scans)
 
 

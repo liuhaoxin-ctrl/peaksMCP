@@ -391,3 +391,23 @@ def test_preprocess_batch_run_item_skip_and_fail(tmp_path, monkeypatch):
     assert result2.status == "failed"
     assert result2.error_type == "FileNotFoundError"
     assert not out.exists()
+
+
+def test_inspect_experiment_accepts_datasheet_csv(tmp_path):
+    """The standard experiment folder carries datasheet.csv next to the PXT:
+    inspect_experiment translates it on the fly before summarizing."""
+    csv_path = tmp_path / "datasheet.csv"
+    csv_path.write_text(
+        "Experiment title,,,,\n"
+        "Index,Theta,Polarization,Temperture,Ei,Central Energy,Ef,slit,"
+        "Pass E.,Data format,Comment,,AI请看的Note：Cut theta_offset=1.5\n"
+        "5,430,S,9.4,2.2,,2.7,400,5,sweep,,,,\n"
+        "20,430,S,9.4,2.2,,2.7,400,5,Au sweep,Au,,\n",
+        encoding="utf-8",
+    )
+    summary = inspect_experiment(csv_path)
+    by_index = {row.index: row for row in summary.records}
+    assert by_index[5].kind == ScanKind.CUT
+    assert by_index[20].kind == ScanKind.GOLD
+    assert summary.gold == [20]
+    assert summary.notes and any("theta_offset=1.5" in note for note in summary.notes)
