@@ -10,6 +10,7 @@ def test_prompts_yaml_exposes_all_runtime_groups():
     """config/prompts.yaml must carry every runtime prompt group the code reads."""
     doc = prompts()
     for group in (
+        "server_instructions",
         "interactive_omitted_note",
         "list_resources_guidance",
         "notebook_unsafe",
@@ -57,6 +58,16 @@ def test_scanner_descriptions_render_from_prompts_yaml(code, rule, key, values):
     assert matching, f"{rule} not reported for {code!r}"
     template = prompts()["scanner" if key != "ipy_shell" else "ipython"][key]
     assert matching[0].description == (template.format(**values) if values else template)
+
+
+def test_server_instructions_are_delivered_from_prompts_yaml():
+    """The always-on FastMCP server instructions must come from the YAML."""
+    from peaksMCP.server.jupyter_peaks.mcp_server import _SERVER_INSTRUCTIONS
+
+    template = prompts()["server_instructions"]
+    assert _SERVER_INSTRUCTIONS == template
+    assert template.startswith("Work through peaksMCP tools only.")
+    assert "preserve units in every figure" in template
 
 
 def test_interactive_and_block_copy_are_not_empty_strings():

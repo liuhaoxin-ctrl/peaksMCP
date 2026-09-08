@@ -9,11 +9,17 @@ import uvicorn
 from fastmcp import FastMCP
 
 from peaksMCP import __version__
+from peaksMCP.config import prompts as _load_prompts
 from peaksMCP.discovery.index import build_index
 
 from .backend import ExecutionMode, NotebookBackend, SharedState, UnsafeNotebookBackend
 from .core import register_safe_tools, register_unsafe_tools
 from .security import AuditLogger, ConsentManager
+
+#: Always-on server instruction prompt, delivered on every session through the
+#: FastMCP server instructions. Wording lives in config/prompts.yaml
+#: (``server_instructions``); edit it there, not here.
+_SERVER_INSTRUCTIONS = _load_prompts()["server_instructions"]
 
 
 class JupyterPeaksMCPServer:
@@ -49,20 +55,7 @@ class JupyterPeaksMCPServer:
         mcp = FastMCP(
             "peaksMCP Jupyter Kernel",
             version=__version__,
-            instructions=(
-                "Work through peaksMCP tools only. "
-                "Query peaks_search_api and peaks_get_api before writing unfamiliar Peaks code. "
-                "Write model-generated Peaks analysis code through notebook_write_with_api_check, "
-                "which verifies every Peaks API reference against the live API index before "
-                "appending and executing a new cell. "
-                "Inspect xarray variables before analysis and preserve units in every figure. "
-                "Figures render inline in the notebook for the user; a rendered cell "
-                "returns an 'Inline figure rendered ...' line. "
-                "Describe a figure's type (matplotlib vs bokeh/holoviews) and options only from "
-                "what the output actually shows. "
-                "Executing or adding notebook cells appends at the end of the notebook; "
-                "existing cells remain unchanged."
-            ),
+            instructions=_SERVER_INSTRUCTIONS,
             strict_input_validation=True,
         )
 

@@ -6,16 +6,22 @@
 # semantic; rule ids / audit reasons stay in code.
 #
 # Consumers:
-#   tools.py                       -> prompts.interactive_omitted_note,
+#   mcp_server.py                    -> prompts.server_instructions
+#   tools.py                         -> prompts.interactive_omitted_note,
 #                                      prompts.list_resources_guidance
-#   backend/notebook_unsafe.py     -> prompts.notebook_unsafe
-#   security/code_scanner.py       -> prompts.scanner
-#   security/ipython_scanner.py    -> prompts.ipython
+#   backend/notebook_unsafe.py       -> prompts.notebook_unsafe
+#   security/code_scanner.py         -> prompts.scanner
+#   security/ipython_scanner.py      -> prompts.ipython
 #
 # Keep every value byte-identical to the wording it replaces unless a wording
 # change is the actual intent; several regression tests compare rendered text.
 version: 1
 prompts:
+  # ---------------------------------------------- server-level instructions
+  # Delivered on every session through FastMCP server instructions (the most
+  # globally visible prompt in the system).
+  server_instructions: "Work through peaksMCP tools only. Query peaks_search_api and peaks_get_api before writing unfamiliar Peaks code. Write model-generated Peaks analysis code through notebook_write_with_api_check, which verifies every Peaks API reference against the live API index before appending and executing a new cell. Inspect xarray variables before analysis and preserve units in every figure. Figures render inline in the notebook for the user; a rendered cell returns an 'Inline figure rendered ...' line. Describe a figure's type (matplotlib vs bokeh/holoviews) and options only from what the output actually shows. Executing or adding notebook cells appends at the end of the notebook; existing cells remain unchanged."
+
   # ------------------------------------------------------------------ tools
   interactive_omitted_note: "Interactive panel/widget rendered in the notebook for the user; it cannot be embedded here. Consider it done and describe the figure to the user."
 
