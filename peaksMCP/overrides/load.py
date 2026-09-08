@@ -50,16 +50,13 @@ def _register_l112_once() -> None:
 def _attach_metadata(data: Any, metadata: Any) -> None:
     if metadata is None:
         return
-    try:
-        from peaksMCP.pxt_utils.metadata import load_metadata
+    # The metadata reader is the internal _load_metadata helper (the public
+    # digest entry is read_meta); import errors are NOT swallowed here so a
+    # future rename fails loudly instead of silently dropping metadata.
+    from peaksMCP.pxt_utils.metadata import _load_metadata
 
-        payload = load_metadata(metadata)
-    except Exception:
-        payload = metadata if isinstance(metadata, dict) else {}
-    try:
-        data.attrs["experiment_metadata_json"] = payload
-    except Exception:
-        pass  # object without attrs: metadata simply not embedded
+    payload = _load_metadata(metadata)
+    data.attrs["experiment_metadata_json"] = payload
 
 
 def load_data(
