@@ -273,7 +273,9 @@ New private helpers (underscore, not indexed): `_fit_gold_2d_from_center`, `_fit
 ruff check peaksMCP tests tools        → All checks passed
 pytest -m 'not e2e'                    → 405 passed locally, 9 deselected
                                          (401 + 4 real-data tests; CI without
-                                          the L112 raw-PXT folder skips them)
+                                          the L112 raw-PXT folder skips them;
+                                          +2 live-kernel tests when
+                                          PEAKSMCP_LIVE_KERNEL=1)
 ```
 (405 includes the five discovery regression tests from the v2 rewrite, eight prompts-config tests in `tests/unit/test_prompts_config.py` (incl. the server-instructions guard), seven override-tier / black-box tests in `tests/unit/test_override_tier.py`, two end-to-end override-workflow tests in `tests/unit/test_override_workflow.py`, and four raw-PXT acceptance tests in `tests/integration/test_override_realdata_cut_preprocessing.py` that run against the L112 `data` folder (raw .pxt → override `convert_pxt` → in-memory EF/offset/`k_convert` → inline figure; nothing but the final .nc on disk); discovery-only run: 14 passed.)
 

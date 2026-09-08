@@ -75,6 +75,13 @@ Curated-presentation, prompt-governance & override-tier pass (`a58da6f` →
   are inline `Figure` objects, no image files), asserts a second NetCDF is
   written only when `kd.save(...)` is explicitly requested, and keeps
   `experiment_metadata.json` consumable by the override `load_metadata`.
+- Live-kernel (no browser) acceptance (`tests/integration/
+  test_kernel_inline_cut_figure.py`): boots a real IPython kernel and runs the
+  same raw-PXT -> convert -> EF/offset -> `k_convert` -> figure session inside
+  it with the inline backend, asserting an `image/png` `display_data` arrives
+  (the skill's "figure really rendered" criterion) and that nothing but the
+  final `.nc` is written. Enabled with `PEAKSMCP_LIVE_KERNEL=1`; skipped in
+  the default suite so no kernel is ever booted there.
 - Non-e2e suite: **405 passed locally** (401 + 4 real-data tests; CI without
   the data folder skips those four), 9 deselected ·
   `ruff check peaksMCP tests tools`: all checks passed.
