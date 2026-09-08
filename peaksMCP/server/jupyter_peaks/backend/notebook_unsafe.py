@@ -282,8 +282,7 @@ class UnsafeNotebookBackend:
             "suggestions": {
                 u["name"]: u["suggested"] for u in unknown if u["suggested"]
             },
-            "rule": "Only use non-Peaks functions when Peaks has no corresponding API; "
-            "unrecognised method names block execution.",
+            "rule": _PROMPTS["api_check_rule"],
         }
         if unknown:
             # Escalation: an unverifiable name must be proven with a successful

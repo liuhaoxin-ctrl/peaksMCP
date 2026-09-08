@@ -43,6 +43,7 @@ prompts:
     savefig_forbidden: "This cell saves a figure to disk (savefig), which is permanently disabled: figures are rendered inline in the notebook. Remove the savefig call — there is no user-confirmation path for saving figures."
     unknown_api_first: "Execution blocked: unverifiable API reference(s) {names}. None of these resolve to a Peaks API by exact name. Use peaks_search_api to find the correct API (candidates: {suggestions}) or fix the typo. If the receiver is complex (e.g. a function return value), assign it to an intermediate variable first. This name must be fetched with peaks_get_api before it can be used."
     unknown_api_retry: "Execution blocked: these names were already reported as unverifiable this session ({names}) and no successful peaks_get_api has followed. Call peaks_search_api, then peaks_get_api(<canonical id>) once for each name, then resubmit the cell."
+    api_check_rule: "Prefer a peaksMCP override API whenever one fits the user's intent; use the native peaks API only when no override applies, and non-Peaks functions only when Peaks has no corresponding API. Unrecognised method names block execution."
 
   # --------------------------------------------------------- code scanner
   scanner:

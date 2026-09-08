@@ -26,8 +26,10 @@ def test_prompts_yaml_exposes_all_runtime_groups():
         "savefig_forbidden",
         "unknown_api_first",
         "unknown_api_retry",
+        "api_check_rule",
     ):
         assert unsafe[key], f"missing notebook_unsafe prompt {key!r}"
+    assert "override" in unsafe["api_check_rule"].lower()
 
     guidance = doc["list_resources_guidance"]
     assert guidance["resources_vs_tools"]["resources"]

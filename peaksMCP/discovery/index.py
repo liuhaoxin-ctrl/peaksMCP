@@ -37,6 +37,20 @@ _ADAPTER_SOURCES = (
 #: intent resolves to the native Qt viewer ``disp`` instead.
 _HIDDEN_MODULES = frozenset({"peaks.core.GUI.iplot.hvplot"})
 
+#: Presentation tiers inside one index: ``override`` marks the peaksMCP
+#: project-added APIs (black-box tier, preferred by search); everything else
+#: is the native ``peaks`` tier.
+TIER_OVERRIDE = "override"
+TIER_NATIVE = "native"
+
+#: Minimum relevance that qualifies a stage-1 override hit in the two-tier
+#: search (exact alias tier, 900, and above — i.e. the query equals an
+#: override's canonical name or one of its aliases).  Weaker partial matches
+#: (name/alias substrings, 650-800) intentionally fall through to the native
+#: search so short generic names like ``plot`` are not hijacked by
+#: ``plot_batch``.
+OVERRIDE_MIN_SCORE = 900
+
 
 class IndexStaleError(RuntimeError):
     """Raised when the cached API index no longer matches the source tree.
@@ -487,47 +501,34 @@ def build_index() -> ApiIndex:
         item["aliases"] = sorted(set([*item.get("aliases", []), *item_aliases]))
         if f"{item.get('module')}:{item.get('name')}" in project_added:
             item["project_added"] = True
+        # Override tier = this project's black-box APIs; everything else native.
+        item["tier"] = TIER_OVERRIDE if item.get("project_added") else TIER_NATIVE
     fingerprint = source_fingerprint()
     entries = [item for item in entries if item.get("module") not in _HIDDEN_MODULES]
     return ApiIndex(entries=entries, peaks_version=getattr(peaks, "__version__", "?"), fingerprint=fingerprint)
 
 
-def search_index(
-    entries: list[dict[str, Any]], query: str, scope: str = "all", limit: int = 5
-) -> list[dict[str, Any]]:
-    """Rank API entries using deterministic field-aware lexical matching.
+def _rank_entries(
+    entries: list[dict[str, Any]],
+    query: str,
+    scope: str,
+    tier: str = "all",
+) -> list[tuple[int, str, dict[str, Any]]]:
+    """Score entries for one query with deterministic lexical ranking.
 
-    Parameters
-    ----------
-    entries : list of dict
-        Dynamic API records to rank.
-    query : str
-        API name, module fragment, alias or natural-language phrase.
-    scope : str, default "all"
-        Optional DataArray, Dataset, DataTree or top-level scope filter.
-    limit : int, default 5
-        Maximum number of unique results, clamped to 1 through 20.
-
-    Returns
-    -------
-    list of dict
-        Best matching API records in descending relevance order.
-
-    Examples
-    --------
-    >>> search_index([{"id": "top:peaks:plot", "name": "plot", "scope": "top", "module": "peaks"}], "plot")[0]["name"]
-    'plot'
+    Scores mirror the search contract: exact name 1000, exact alias 900,
+    name-prefix 800, name-substring 700, alias-substring 650, then the
+    token-overlap fallback. ``tier`` restricts the candidate set to ``all`` /
+    :data:`TIER_OVERRIDE` / :data:`TIER_NATIVE`.
     """
-    if scope not in _SCOPES:
-        raise ValueError(f"invalid scope {scope!r}; expected one of {sorted(_SCOPES)}")
-    query = query.strip().lower()
-    limit = max(1, min(int(limit), 20))
-    if not query:
-        return [entry for entry in entries if scope == "all" or entry["scope"] == scope][:limit]
     qtokens = _tokens(query)
     scored: list[tuple[int, str, dict[str, Any]]] = []
     for item in entries:
         if scope != "all" and item["scope"] != scope:
+            continue
+        if tier == TIER_OVERRIDE and not item.get("project_added"):
+            continue
+        if tier == TIER_NATIVE and item.get("project_added"):
             continue
         name = str(item.get("name", "")).lower()
         module = str(item.get("module", "")).lower()
@@ -567,9 +568,16 @@ def search_index(
         if score:
             scored.append((score, str(item["id"]), item))
     scored.sort(key=lambda row: (-row[0], row[1]))
+    return scored
+
+
+def _trim_rows(
+    rows: list[tuple[int, str, dict[str, Any]]], limit: int
+) -> list[dict[str, Any]]:
+    """Deduplicate ranked rows by (module, name) and cap to ``limit``."""
     seen: set[tuple[str, str]] = set()
     output: list[dict[str, Any]] = []
-    for _, _, item in scored:
+    for _, _, item in rows:
         key = (str(item.get("module", "")), str(item.get("name", "")))
         if key in seen:
             continue
@@ -578,6 +586,98 @@ def search_index(
         if len(output) == limit:
             break
     return output
+
+
+def _filter_entries(
+    entries: list[dict[str, Any]], scope: str, tier: str
+) -> list[dict[str, Any]]:
+    """Scope/tier filter used by the empty-query listing path."""
+
+    def keep(entry: dict[str, Any]) -> bool:
+        if scope != "all" and entry["scope"] != scope:
+            return False
+        if tier == TIER_OVERRIDE:
+            return bool(entry.get("project_added"))
+        if tier == TIER_NATIVE:
+            return not entry.get("project_added")
+        return True
+
+    return [entry for entry in entries if keep(entry)]
+
+
+def search_index(
+    entries: list[dict[str, Any]],
+    query: str,
+    scope: str = "all",
+    limit: int = 5,
+    tier: str = "all",
+) -> list[dict[str, Any]]:
+    """Rank API entries using deterministic field-aware lexical matching.
+
+    Parameters
+    ----------
+    entries : list of dict
+        Dynamic API records to rank.
+    query : str
+        API name, module fragment, alias or natural-language phrase.
+    scope : str, default "all"
+        Optional DataArray, Dataset, DataTree or top-level scope filter.
+    limit : int, default 5
+        Maximum number of unique results, clamped to 1 through 20.
+    tier : str, default "all"
+        Optional ``"all"`` / ``"override"`` / ``"native"`` candidate filter.
+        The model-facing two-stage behaviour lives in
+        :func:`search_index_tiered`.
+
+    Returns
+    -------
+    list of dict
+        Best matching API records in descending relevance order.
+
+    Examples
+    --------
+    >>> search_index([{"id": "top:peaks:plot", "name": "plot", "scope": "top", "module": "peaks"}], "plot")[0]["name"]
+    'plot'
+    """
+    if scope not in _SCOPES:
+        raise ValueError(f"invalid scope {scope!r}; expected one of {sorted(_SCOPES)}")
+    query = query.strip().lower()
+    limit = max(1, min(int(limit), 20))
+    if not query:
+        return _filter_entries(entries, scope, tier)[:limit]
+    return _trim_rows(_rank_entries(entries, query, scope, tier), limit)
+
+
+def search_index_tiered(
+    entries: list[dict[str, Any]],
+    query: str,
+    scope: str = "all",
+    limit: int = 5,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Two-stage override-first search used by the MCP search tool.
+
+    Stage 1 ranks only the override tier. If its best hit reaches
+    :data:`OVERRIDE_MIN_SCORE` (the query equals an override's canonical name
+    or one of its aliases), the override matches are returned alone under tier
+    ``override``. Otherwise the search falls back to the full index under tier
+    ``native``, so native ``peaks`` APIs — and weakly matched overrides — stay
+    reachable. An empty query lists the whole index under tier ``all``.
+
+    Returns
+    -------
+    tuple of (str, list of dict)
+        Searched tier label followed by the best matching records.
+    """
+    if scope not in _SCOPES:
+        raise ValueError(f"invalid scope {scope!r}; expected one of {sorted(_SCOPES)}")
+    query = query.strip().lower()
+    limit = max(1, min(int(limit), 20))
+    if not query:
+        return "all", _filter_entries(entries, scope, "all")[:limit]
+    override_rows = _rank_entries(entries, query, scope, TIER_OVERRIDE)
+    if override_rows and override_rows[0][0] >= OVERRIDE_MIN_SCORE:
+        return TIER_OVERRIDE, _trim_rows(override_rows, limit)
+    return TIER_NATIVE, _trim_rows(_rank_entries(entries, query, scope, "all"), limit)
 
 
 @dataclass(slots=True)
@@ -589,8 +689,22 @@ class ApiIndex:
     fingerprint: str
 
     def search(self, query: str, scope: str = "all", limit: int = 5) -> list[dict[str, Any]]:
-        """Search the index and return compact entries."""
-        return search_index(self.entries, query, scope, limit)
+        """Two-tier override-first search; returns compact entries only.
+
+        Override (peaksMCP project) APIs win whenever the query exactly matches
+        one of their names or aliases; otherwise the full index is searched.
+        See :meth:`search_tiered` for the tier label.
+        """
+        return search_index_tiered(self.entries, query, scope, limit)[1]
+
+    def search_tiered(self, query: str, scope: str = "all", limit: int = 5) -> tuple[str, list[dict[str, Any]]]:
+        """Two-tier override-first search with the searched-tier label.
+
+        Returns a ``(searched_tier, matches)`` pair where ``searched_tier`` is
+        ``"override"`` (query hit an override name/alias exactly), ``"native"``
+        (fell back to the full index) or ``"all"`` (empty query).
+        """
+        return search_index_tiered(self.entries, query, scope, limit)
 
     def get(self, canonical_id: str) -> dict[str, Any] | None:
         """Return one canonical entry.

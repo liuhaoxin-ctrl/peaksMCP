@@ -1,7 +1,7 @@
 # peaksMCP Prompt & API Injection Inventory
 
 - **Snapshot**: 2026-09-08 · committed on top of `main` @ `a58da6f` (covers the v2 rewrite of the curated API-presentation document, the move of L3 runtime prompt text into `config/prompts.yaml`, and the always-on server-instructions follow-up) · all counts below verified by actually running `build_index()` / `load_api_overrides()` / `load_project_added()` / `prompts()` plus `ruff` and `pytest`.
-- **Totals**: 15 MCP tool descriptions · 7 plot-resource templates · **45 curated runtime prompt strings in `config/prompts.yaml`** (1 server-instruction paragraph + 1 interactive note + 6 `mcp_list_resources` guidance strings + 5 `notebook_unsafe` hard-block replies + 30 code-scanner + 2 IPython-scanner issue templates) · 2 skill/command files · 50 curated API entries (262 alias terms — 145 pure-ASCII, 117 containing CJK — and 5 `docstring_note`s) · a few frontend UI strings.
+- **Totals**: 15 MCP tool descriptions · 7 plot-resource templates · **46 curated runtime prompt strings in `config/prompts.yaml`** (1 server-instruction paragraph + 1 interactive note + 6 `mcp_list_resources` guidance strings + 6 `notebook_unsafe` texts = 5 hard-block replies + 1 api-check rule + 30 code-scanner + 2 IPython-scanner issue templates) · 2 skill/command files · 50 curated API entries (262 alias terms — 145 pure-ASCII, 117 containing CJK — and 5 `docstring_note`s) · a few frontend UI strings.
 - **One-line conclusion**: every model-visible **copy** that used to be hardcoded in Python now lives in YAML — L1/L2 in `config/metadata_baseline.yaml`, L3 in `config/prompts.yaml` (new; wording no longer requires editing Python), L5 in `discovery/api_overrides.yaml`. L4 stays Markdown (skills), L6 ships as UI text in the JupyterLab build. Only mechanisms (docstring-note prepend, search ranking, audit keys) and small operational strings remain in code.
 - This English edition **replaces the earlier Chinese-language edition** of the same date. Figures in that edition described the pre-rewrite v1 state (e.g. “13 of 18 project functions have no aliases”, a 91-line YAML) and are now stale: the current tree consolidated `api_overrides.yaml` into one entry per API, gave every project function aliases, and moved the L3 copy out of Python.
 
@@ -17,7 +17,7 @@ delivered**, and **where the wording lives**:
 |---|---|---|---|---|
 | L1 | 15 MCP tool descriptions (`title` + `description`) | `config/metadata_baseline.yaml` (`tools:`) | every tool-list broadcast | model |
 | L2 | 7 plotting-format templates (run verbatim) | `config/metadata_baseline.yaml` (`resources:`) | each `mcp_list_resources` call | model |
-| L3 | 45 runtime prompt strings: always-on server instructions, interactive note, list-resources guidance (6), hard-block replies (5), scanner/IPython issue templates (32) | `config/prompts.yaml` | per session / per call / on refusal / consent dialog | model |
+| L3 | 46 runtime prompt strings: always-on server instructions, interactive note, list-resources guidance (6), notebook replies + api-check rule (6), scanner/IPython issue templates (32) | `config/prompts.yaml` | per session / per call / on refusal / consent dialog | model |
 | L4 | skill + slash command | `claude_plugin/skills/cut-preprocessing/SKILL.md`, `.claude/commands/test_helper.md` | loaded on demand | model |
 | L5 | per-API search aliases + docstring notes (50 curated entries) | `discovery/api_overrides.yaml` | injected into index entries / docstrings | model |
 | L6 | frontend consent copy (Chinese UI text) | `peaksMCP/extensions/jupyterlab/src/index.ts` | JupyterLab dialog | human user |
@@ -34,8 +34,8 @@ the index and Part III the findings and fix status.
 
 | Tool | Intent |
 |---|---|
-| `peaks_search_api` | MUST precede any Peaks analysis code; search the live index for the user's intent and write code from the returned canonical entries. |
-| `peaks_get_api` | After searching, fetch exact signature / parameters / source-backed docs for one canonical API ID before writing code. |
+| `peaks_search_api` | MUST precede any Peaks analysis code; **two-tier override-first search** — when the query hits a peaksMCP override API by exact name or alias it returns override matches alone (`searched_tier: override`); otherwise it falls back to the native peaks index (`searched_tier: native`). |
+| `peaks_get_api` | After searching, fetch exact signature / parameters / docstring for one canonical ID. Override (peaksMCP) APIs are black-box interfaces — curated name/aliases/module/docs, no internal implementation paths; native peaks APIs keep source-backed docs. |
 | `mcp_list_resources` | Call FIRST when a figure is needed; returns every plotting format with uri, when-to-use, figure contract and the full template inline. |
 | `askuserquestion` | Report missing experimental information; return `{"status":"needs_input",…}` and let the caller ask. `options` must be plain strings; never invent Fermi level / angle / polarization / temperature. |
 | `notebook_list_variables` | List useful kernel variables without reading array values. |
@@ -68,7 +68,7 @@ the index and Part III the findings and fix status.
 
 ## L3 — Runtime prompt text (now YAML-curated in `config/prompts.yaml`)
 
-This used to be the hidden hardcoded layer. After the 2026-09-08 refactor the wording lives in **`peaksMCP/config/prompts.yaml`** (45 strings: server instructions, interactive note, guidance, block replies and scanner/IPython templates), read once at import by `config/metadata.py` (`prompts()`) and `mcp_server.py`; Python only formats the `{placeholders}`. Editing copy no longer touches Python. Rule ids, risk levels and audit `reason` keys intentionally stay in code.
+This used to be the hidden hardcoded layer. After the 2026-09-08 refactor the wording lives in **`peaksMCP/config/prompts.yaml`** (46 strings: server instructions, interactive note, guidance, notebook replies + api-check rule, and scanner/IPython templates), read once at import by `config/metadata.py` (`prompts()`) and `mcp_server.py`; Python only formats the `{placeholders}`. Editing copy no longer touches Python. Rule ids, risk levels and audit `reason` keys intentionally stay in code.
 
 ### 3.1 Server-level instructions (always delivered) — `prompts.yaml` → `server_instructions`
 Formatted at `mcp_server.py:54-60` (`_build_mcp`; module constant `_SERVER_INSTRUCTIONS` read from YAML at import, `:22`). FastMCP exposes server instructions to the client, so this paragraph accompanies **every session** — the most globally visible prompt in the system. It deliberately restates L1 rules (`peaks_search_api` / `peaks_get_api` first, analysis code through `notebook_write_with_api_check`, append-only cells) and adds rules that exist nowhere else: *inspect xarray variables before analysis and preserve units in every figure* and *describe a figure's type and options only from what the output actually shows*.
@@ -95,8 +95,8 @@ embedded here. Consider it done and describe the figure to the user.
 ### 3.3 `mcp_list_resources` guidance block (6 strings) — `prompts.yaml` → `list_resources_guidance`
 Merged into the resources payload at `core/tools.py:272-285`. Keys: `resources_vs_tools.resources` (templates are reference data — run verbatim), `resources_vs_tools.tools` (search APIs first, write cells via `notebook_write_with_api_check`), `when_to_use_resources[0..2]` (pick a format before drawing; verbatim run; many cuts → `dispersion_grid`, one → `dispersion_single`, EF slice → `fermi_surface`), `first_use` (“Call mcp_list_resources() BEFORE plotting…”).
 
-### 3.4 Hard-block replies (5) — `prompts.yaml` → `notebook_unsafe`
-Formatted in `backend/notebook_unsafe.py` (`_PROMPTS`); these receipts steer the model's next action.
+### 3.4 `notebook_unsafe` replies & api-check rule (6) — `prompts.yaml` → `notebook_unsafe`
+Formatted in `backend/notebook_unsafe.py` (`_PROMPTS`); five are the hard-block receipts that steer the model's next action, one (`api_check_rule`) is the priority rule returned inside every `write_with_api_check` response.
 
 | Key | Used at | Message (verbatim) |
 |---|---|---|
@@ -105,6 +105,7 @@ Formatted in `backend/notebook_unsafe.py` (`_PROMPTS`); these receipts steer the
 | `savefig_forbidden` | `:199` | “This cell saves a figure to disk (savefig), which is permanently disabled: figures are rendered inline in the notebook. Remove the savefig call — there is no user-confirmation path for saving figures.” |
 | `unknown_api_first` | `:327` | “Execution blocked: unverifiable API reference(s) {names}. None of these resolve to a Peaks API by exact name. Use peaks_search_api to find the correct API (candidates: {suggestions}) or fix the typo. If the receiver is complex (e.g. a function return value), assign it to an intermediate variable first. This name must be fetched with peaks_get_api before it can be used.” |
 | `unknown_api_retry` | `:310` | “Execution blocked: these names were already reported as unverifiable this session ({names}) and no successful peaks_get_api has followed. Call peaks_search_api, then peaks_get_api(<canonical id>) once for each name, then resubmit the cell.” |
+| `api_check_rule` | `:285` | “Prefer a peaksMCP override API whenever one fits the user's intent; use the native peaks API only when no override applies, and non-Peaks functions only when Peaks has no corresponding API. Unrecognised method names block execution.” |
 
 ### 3.5 Scanner & IPython issue templates (32) — `prompts.yaml` → `scanner` + `ipython`
 Shown to the model on a block and surfaced as `issue.description` in the consent dialog. Formatted via `_desc()` in `security/code_scanner.py:33` (`_SCANNER_TEXT` at `:30`) and `_IPYTHON_TEXT` in `security/ipython_scanner.py:17`.
@@ -149,7 +150,9 @@ Aliases therefore outrank summary/docstring text and are the main lever for natu
 
 ## L5 — Curated per-API presentation (`api_overrides.yaml`)
 
-**Where**: `peaksMCP/discovery/api_overrides.yaml` (v2, 50 entries, 350 lines) — the consolidated single source. **Consumed by**: `discovery/index.py` — `load_overrides()` / `load_api_overrides()` return per-API entries; `load_project_added()` derives the audited project set from the `project: true` flag (no second list to keep in sync); `build_index()` merges each entry's `aliases` into the item, attaches `docstring_note`, and flags `project_added=True`; `signatures.py:161-164` prepends the note to the live docstring.
+**Where**: `peaksMCP/discovery/api_overrides.yaml` (v2, 50 entries, 350 lines) — the consolidated single source. **Consumed by**: `discovery/index.py` — `load_overrides()` / `load_api_overrides()` return per-API entries; `load_project_added()` derives the audited project set from the `project: true` flag (no second list to keep in sync); `build_index()` merges each entry's `aliases` into the item, attaches `docstring_note`, flags `project_added=True` and tags **`tier`** (`"override"` for the 18 project APIs, `"native"` for the rest); `signatures.py:161-164` prepends the note to the live docstring.
+
+**Override-first discovery** (model-facing): `peaks_search_api` uses the two-tier `ApiIndex.search_tiered()` — stage 1 ranks only the override tier and returns its matches alone when the query equals an override name or alias (score ≥ 900, i.e. never hijacked by partial names like `plot` → `plot_batch`); otherwise the search falls back over the full index and reports `searched_tier: native`. Every response reports `searched_tier`. `peaks_get_api` renders override entries as **black-box interfaces**: `describe_api()` drops `source_path` for `project_added` entries (module/name/signature/docstring remain, so the caller can still import and call them), while native peaks entries keep their source-backed docs. The priority is re-stated in the L1 tool copy and in the `api_check_rule` prompt (see 3.4).
 
 The whole curated record therefore reads as **one table** (full alias text lives in the YAML; counts verified live):
 
@@ -263,15 +266,16 @@ New private helpers (underscore, not indexed): `_fit_gold_2d_from_center`, `_fit
 | 6 | low | hand-written `docstring_note`s had no automatic drift protection vs the `peaks` side | `api_overrides.yaml` | ✅ fixed (signature-contract test) |
 | 7 | medium | L3 runtime prompt text (guidance, block replies, scanner issue copy) was hardcoded across four Python files — the layer most likely to drift silently | `tools.py`, `notebook_unsafe.py`, `code_scanner.py`, `ipython_scanner.py` | ✅ fixed (moved to `config/prompts.yaml`; code only formats placeholders) |
 | 8 | low | audit gap: the always-on FastMCP server `instructions` (the single most visible prompt) was still hardcoded in `mcp_server.py` and undocumented; L6 line list was partial; no explicit non-goals list | `mcp_server.py` / `index.ts` / this doc | ✅ fixed (instructions moved to `prompts.yaml` → `server_instructions`; this doc lists L6 copy in full and declares non-goals) |
+| 9 | medium | discovery gave override and native APIs equal footing and `peaks_get_api` leaked internal source paths for override functions; the model had no override-first guidance | `index.py` / `signatures.py` / `tools.py` / L1 copy | ✅ fixed (entries tagged `tier`; strict two-stage override-first search with `searched_tier`; override entries are black-box in `describe_api`; L1 copy + `api_check_rule` prompt encode override → native priority) |
 
 **Gate (clean interpreter, current tree)**:
 ```
 ruff check peaksMCP tests tools        → All checks passed
-pytest -m 'not e2e'                    → 392 passed, 9 deselected
+pytest -m 'not e2e'                    → 399 passed, 9 deselected
 ```
-(392 includes the five discovery regression tests from the v2 rewrite and the eight prompts-config tests in `tests/unit/test_prompts_config.py` (incl. the server-instructions guard); discovery-only run: 14 passed.)
+(399 includes the five discovery regression tests from the v2 rewrite, eight prompts-config tests in `tests/unit/test_prompts_config.py` (incl. the server-instructions guard), and seven override-tier / black-box tests in `tests/unit/test_override_tier.py`; discovery-only run: 14 passed.)
 
-**Fix log — 2026-09-08** (see also the repo memory file): #1/#2 removed dangling SKILL references and corrected the accessor wording after confirming `hasattr(peaks, "save") is False`; #3 closed the alias gap by consolidating the curated record to one entry per API, so all 18 project functions became searchable; #4 made the exposure audit bidirectional via the `project: true` flag driving `load_project_added()`; #5 re-indented the block-scalar comments 12→6 spaces; #6 added the EF-handoff signature-contract test; **#7 moved the L3 copy into `config/prompts.yaml`** — `prompts()` in `config/metadata.py` loads it, `tools.py`/`notebook_unsafe.py`/`code_scanner.py`/`ipython_scanner.py` read it once at import and only format `{placeholders}`; **#8 moved the FastMCP `instructions` block into the same file** (`server_instructions`, read by `mcp_server.py`), completed the L6 line list and added the declared non-goals. Wording was preserved byte-for-byte (regression tests in `test_prompts_config.py` tie scanner output and the server instructions back to the YAML templates); rule ids, risk levels and audit `reason` keys stayed in code. Negative checks were run (e.g. injecting a ghost project entry turns the tests red) so the assertions are not vacuous.
+**Fix log — 2026-09-08** (see also the repo memory file): #1/#2 removed dangling SKILL references and corrected the accessor wording after confirming `hasattr(peaks, "save") is False`; #3 closed the alias gap by consolidating the curated record to one entry per API, so all 18 project functions became searchable; #4 made the exposure audit bidirectional via the `project: true` flag driving `load_project_added()`; #5 re-indented the block-scalar comments 12→6 spaces; #6 added the EF-handoff signature-contract test; **#7 moved the L3 copy into `config/prompts.yaml`** — `prompts()` in `config/metadata.py` loads it, `tools.py`/`notebook_unsafe.py`/`code_scanner.py`/`ipython_scanner.py` read it once at import and only format `{placeholders}`; **#8 moved the FastMCP `instructions` block into the same file** (`server_instructions`, read by `mcp_server.py`), completed the L6 line list and added the declared non-goals; **#9 black-boxed the override tier** — every index entry is tagged `tier`, `ApiIndex.search_tiered()` runs a strict two-stage override-first search (exact name/alias hits ≥ 900 win stage one; anything weaker falls back to the full index so short names like `plot` are never hijacked by `plot_batch`), `peaks_search_api` reports `searched_tier`, `describe_api` hides `source_path` for override entries, and the L1 copy + `api_check_rule` prompt restate the override → native priority. Wording was preserved byte-for-byte (regression tests in `test_prompts_config.py` tie scanner output and the server instructions back to the YAML templates); rule ids, risk levels and audit `reason` keys stayed in code. Negative checks were run (e.g. injecting a ghost project entry turns the tests red) so the assertions are not vacuous.
 
 ---
 

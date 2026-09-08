@@ -163,7 +163,7 @@ def describe_api(entry: dict[str, Any], package_dir: str | None = None) -> dict[
         doc = details.get("docstring") or ""
         details["docstring"] = f"{note}\n\n{doc}".strip()
     signature = details.get("signature") or entry.get("signature")
-    return {
+    result = {
         **entry,
         **details,
         "signature": signature,
@@ -171,3 +171,9 @@ def describe_api(entry: dict[str, Any], package_dir: str | None = None) -> dict[
             signature, name, str(entry.get("scope") or "")
         ),
     }
+    if entry.get("project_added"):
+        # Override APIs are black-box interfaces: never leak the internal
+        # implementation path; module/name/signature stay so the caller can
+        # import and call the API.
+        result.pop("source_path", None)
+    return result

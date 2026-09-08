@@ -228,8 +228,16 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
     """
     def peaks_search_api(query: str, scope: str = "all", limit: int = 5) -> dict[str, Any]:
         index = _require_index(state)
-        matches = index.search(query, scope, limit)
-        return {"query": query, "scope": scope, "count": len(matches), "peaks_version": index.peaks_version, "fingerprint": index.fingerprint, "matches": matches}
+        searched_tier, matches = index.search_tiered(query, scope, limit)
+        return {
+            "query": query,
+            "scope": scope,
+            "searched_tier": searched_tier,
+            "count": len(matches),
+            "peaks_version": index.peaks_version,
+            "fingerprint": index.fingerprint,
+            "matches": matches,
+        }
 
     def peaks_get_api(canonical_id: str) -> dict[str, Any]:
         index = _require_index(state)

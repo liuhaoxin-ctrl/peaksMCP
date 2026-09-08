@@ -3,16 +3,24 @@ tools:
   peaks_search_api:
     title: Search Peaks API
     description: >
-      MUST be called before writing any Peaks analysis code. Search the live Peaks
-      API index for the user's intent, then write Peaks code from the returned
-      canonical entries. Returns canonical API ids, names and
+      MUST be called before writing any Peaks analysis code. Search is
+      two-tier and override-first: the peaksMCP override APIs (this project's
+      high-level verbs) are searched first and returned alone whenever the
+      query hits one of them by exact name or alias; only when no override
+      fits does search fall back to the native peaks API index. Each response
+      reports searched_tier ("override" | "native"); prefer override matches,
+      then native peaks APIs. Returns canonical API ids, names, tier and
       one-line summaries.
   peaks_get_api:
     title: Get Peaks API
     description: >
-      Get the exact signature, parameters, return-value conventions and source-backed
-      documentation for one canonical API ID returned by peaks_search_api. Call this
-      after searching and before writing code, to confirm the correct usage.
+      Get the exact signature, parameters, return-value conventions and
+      docstring for one canonical API ID returned by peaks_search_api.
+      Override (peaksMCP) APIs are black-box interfaces: they return the
+      curated name, aliases, import module and usage documentation without
+      internal implementation paths; native peaks APIs include source-backed
+      documentation. Call this after searching and before writing code, to
+      confirm the correct usage.
   mcp_list_resources:
     title: List Plot Resources
     description: >
