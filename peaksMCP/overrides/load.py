@@ -137,9 +137,9 @@ class ScanEntry:
     #: Dimensions read from the file header (PXT wave header / NetCDF
     #: metadata) without materialising any data block; None when unreadable.
     sizes: dict[str, int] | None = None
-    #: True for preprocessing products (``<stem>_processed.nc`` /
-    #: ``<stem>_proc.nc``): they index as their own entry, tagged processed,
-    #: and inherit the datasheet identity of the raw stem.
+    #: True for preprocessing products (``<stem>_processed.nc``, the single
+    #: preprocess_batch output naming): they index as their own entry, tagged
+    #: processed, and inherit the datasheet identity of the raw stem.
     processed: bool = False
     #: None = unknown (e.g. explicit list); True = NetCDF present; False =
     #: raw PXT without its converted sibling (still needs conversion).
@@ -604,9 +604,9 @@ def _index_paths(
         stem = path.stem
         file_kind = "netcdf" if path.suffix.lower() == ".nc" else "pxt"
         processed = bool(
-            file_kind == "netcdf" and re.search(r"_(?:processed|proc)$", stem)
+            file_kind == "netcdf" and stem.endswith("_processed")
         )
-        identity_stem = re.sub(r"_(?:processed|proc)$", "", stem) if processed else stem
+        identity_stem = stem[: -len("_processed")] if processed else stem
         index = _index_from_stem(identity_stem)
         record = _record_of(payload, index)
         converted: bool | None

@@ -98,3 +98,36 @@ def test_read_active_cell_keeps_cursor_metadata_output_free():
     # Fallback path when the bridge is absent returns whatever was last stored.
     state.bridge = None
     assert backend.active_cell()["id"] == "cell-7"
+
+
+def test_loaded_scans_is_first_class_in_variable_tools():
+    """A LoadedScans index in the notebook must be visible and readable: the
+    notebook is the shared context and the agent needs programmatic
+    situation awareness (is the required data already loaded?)."""
+    from peaksMCP.overrides import LoadedScans, ScanEntry
+
+    exp = LoadedScans(
+        [
+            ScanEntry(stem="BP_0020", path="/d/BP_0020.nc", file_kind="netcdf",
+                      index=20, data_format="Au sweep", is_gold=True,
+                      scan_kind="gold", sizes={"eV": 168, "theta_par": 902}),
+            ScanEntry(stem="BP_0015", path="/d/BP_0015.nc", file_kind="netcdf",
+                      index=15, data_format="sweep", scan_kind="cut",
+                      sizes={"eV": 168, "theta_par": 902}),
+        ],
+        source="BP260623/data_netcdf",
+    )
+    backend = NotebookBackend(SharedState(FakeIPython({"exp": exp, "scan": xr.DataArray([1])})))
+
+    listed = backend.list_variables()["variables"]
+    row = next(item for item in listed if item["name"] == "exp")
+    assert row["type"].endswith("LoadedScans")
+    assert row["indexed"] == {"n": 2, "gold": ["BP_0020"], "cuts": 1,
+                              "mappings": 0, "processed": 0, "needs_conversion": []}
+
+    detail = backend.read_variable("exp")
+    assert detail["name"] == "exp"
+    assert detail["n_files"] == 2
+    assert detail["gold"] == ["BP_0020"]
+    assert detail["cuts"] == ["BP_0015"]
+    assert detail["summary"].startswith("load_data:")

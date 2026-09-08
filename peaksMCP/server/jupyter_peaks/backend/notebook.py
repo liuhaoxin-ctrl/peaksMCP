@@ -119,6 +119,32 @@ def summarize_xarray(value: xr.DataArray | xr.Dataset | xr.DataTree) -> dict[str
     }
 
 
+def summarize_loaded_scans(value: Any) -> dict[str, Any]:
+    """Describe a LoadedScans index for the agent's situation awareness.
+
+    The notebook is the shared context for the user and the agent: a loaded
+    experiment index is a first-class citizen that list/read_variable must
+    surface (file count, decision sets, conversion state) so the agent can
+    tell at a glance whether the data it needs is already in context.
+    """
+    from peaksMCP.overrides import LoadedScans
+
+    if not isinstance(value, LoadedScans):
+        raise TypeError(f"expected a LoadedScans index, got {type(value).__name__}")
+    return {
+        "type": "peaksMCP.overrides.LoadedScans",
+        "source": value.source,
+        "n_files": len(value),
+        "gold": value.gold,
+        "cuts": value.cuts,
+        "mappings": value.mappings,
+        "processed": value.processed,
+        "needs_conversion": value.needs_conversion,
+        "stems": value.stems,
+        "summary": value.summary_line(),
+    }
+
+
 class NotebookBackend:
     """Read notebook state and live variables from a shared IPython namespace."""
 
@@ -135,6 +161,23 @@ class NotebookBackend:
                 item.update({"dims": list(value.dims) if not isinstance(value, xr.DataTree) else None, "sizes": dict(value.sizes) if not isinstance(value, xr.DataTree) else None})
             elif isinstance(value, np.ndarray):
                 item.update({"shape": list(value.shape), "dtype": str(value.dtype)})
+            else:
+                try:
+                    from peaksMCP.overrides import LoadedScans
+
+                    if isinstance(value, LoadedScans):
+                        item.update({
+                            "indexed": {
+                                "n": len(value),
+                                "gold": value.gold,
+                                "cuts": len(value.cuts),
+                                "mappings": len(value.mappings),
+                                "processed": len(value.processed),
+                                "needs_conversion": value.needs_conversion,
+                            }
+                        })
+                except Exception:
+                    pass
             variables.append(item)
         return {"variables": variables, "count": len(variables)}
 
@@ -146,6 +189,13 @@ class NotebookBackend:
             return {"name": name, **summarize_xarray(value)}
         if isinstance(value, np.ndarray):
             return {"name": name, "type": "numpy.ndarray", "shape": list(value.shape), "dtype": str(value.dtype), "size": int(value.size)}
+        try:
+            from peaksMCP.overrides import LoadedScans
+
+            if isinstance(value, LoadedScans):
+                return {"name": name, **summarize_loaded_scans(value)}
+        except Exception:
+            pass
         return {"name": name, "type": f"{type(value).__module__}.{type(value).__name__}", "repr": repr(value)[:4000]}
 
     def active_cell(self) -> dict[str, Any]:

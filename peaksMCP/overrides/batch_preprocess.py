@@ -180,7 +180,7 @@ def _run_item(
 
 def _default_output_name(item: BatchPreprocessItem, output_dir: Path) -> str:
     stem = Path(item.source).stem
-    return str(output_dir / f"{stem}_proc.nc")
+    return str(output_dir / f"{stem}_processed.nc")
 
 
 def preprocess_batch(
@@ -203,7 +203,7 @@ def preprocess_batch(
         applied to every item.
     output_dir : str or Path
         Destination directory for the processed NetCDF files
-        (``<stem>_proc.nc`` per item; override per item via ``output``).
+        (``<stem>_processed.nc`` per item; override per item via ``output``).
     cpu_limit_percent : float, default 60
         System CPU threshold above which no new work is submitted.
     force : bool, default False

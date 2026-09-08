@@ -369,7 +369,7 @@ def test_preprocess_batch_run_item_skip_and_fail(tmp_path, monkeypatch):
         _run_item,
     )
 
-    existing = tmp_path / "a_proc.nc"
+    existing = tmp_path / "a_processed.nc"
     existing.write_bytes(b"old")
     item = BatchPreprocessItem(index=1, source=str(tmp_path / "a.nc"), kind="cut",
                                output=str(existing))
@@ -384,7 +384,7 @@ def test_preprocess_batch_run_item_skip_and_fail(tmp_path, monkeypatch):
     import peaksMCP.overrides.batch_preprocess as batch
 
     monkeypatch.setattr(batch, "_load_array", boom)
-    out = tmp_path / "b_proc.nc"
+    out = tmp_path / "b_processed.nc"
     item2 = BatchPreprocessItem(index=2, source=str(tmp_path / "b.nc"), kind="cut",
                                 theta_par_offset_deg=1.5, output=str(out))
     result2 = _run_item(item2, 2.6)
