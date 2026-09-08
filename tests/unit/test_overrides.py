@@ -290,9 +290,31 @@ def test_load_data_index_uses_embedded_netcdf_metadata(monkeypatch, tmp_path, ca
     assert isinstance(loaded, LoadedScans)
     assert loaded.gold == ["BP_0020"] and loaded.cuts == ["BP_0015"]
     assert loaded.entries[0].energy_window_eV == (2.2, 2.7)
+    assert loaded.entries[0].sizes == {"eV": 3, "theta_par": 4}
     assert loaded.entries[0].converted is True
     out = capsys.readouterr().out
     assert "metadata=embedded" in out
     # The data layer goes through the same single-file reader.
     data = loaded["BP_0015"]
     assert data.attrs["experiment_index"] == 15
+
+
+def test_load_data_index_reports_pxt_dims_from_header(tmp_path, capsys):
+    """A raw PXT folder indexes with per-file dims read from the wave header
+    (no data materialised) - identical to what load_pxt reports."""
+    from pathlib import Path as _Path
+
+    from peaksMCP.overrides import LoadedScans, load_data
+    from peaksMCP.pxt_utils.loader import load_pxt
+
+    fixture = _Path(__file__).parents[1] / "fixtures" / "pxt" / "synthetic_2d_nested.pxt"
+    folder = tmp_path / "data"
+    folder.mkdir()
+    (folder / "BP_0009.pxt").write_bytes(fixture.read_bytes())
+    loaded = load_data(str(folder))
+    assert isinstance(loaded, LoadedScans)
+    entry = loaded.entries[0]
+    expected = dict(load_pxt(fixture).sizes)
+    assert entry.sizes == expected, (entry.sizes, expected)
+    assert entry.file_kind == "pxt"
+    assert loaded.entries[0].index == 9

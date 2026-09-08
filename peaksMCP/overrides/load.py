@@ -134,6 +134,9 @@ class ScanEntry:
     scan_kind: str = "unknown"
     theta_offset_deg: float | None = None
     energy_window_eV: tuple[float, float] | None = None
+    #: Dimensions read from the file header (PXT wave header / NetCDF
+    #: metadata) without materialising any data block; None when unreadable.
+    sizes: dict[str, int] | None = None
     #: None = unknown (e.g. explicit list); True = NetCDF present; False =
     #: raw PXT without its converted sibling (still needs conversion).
     converted: bool | None = None
@@ -149,6 +152,7 @@ class ScanEntry:
             "scan_kind": self.scan_kind,
             "theta_offset_deg": self.theta_offset_deg,
             "energy_window_eV": self.energy_window_eV,
+            "sizes": self.sizes,
             "converted": self.converted,
         }
 
@@ -202,25 +206,38 @@ def _auto_datasheet_payload(directory: Path) -> dict[str, Any] | None:
     return None
 
 
-def _embedded_record(path: Path) -> tuple[int | None, Any]:
-    """Read the metadata record embedded in a converted NetCDF (header only).
+def _scan_nc_header(path: Path) -> tuple[int | None, Any, dict[str, int] | None]:
+    """Read a converted NetCDF's header: sizes, index and embedded record.
 
-    NetCDF arrays already carry ``experiment_index`` and
-    ``experiment_metadata_json`` from the conversion; reading the header is
-    cheap and never loads the data blocks.
+    NetCDF arrays carry ``sizes`` plus the converted ``experiment_index`` /
+    ``experiment_metadata_json`` attributes; reading the header is cheap and
+    never loads the data blocks.
     """
     try:
         data, _ = _single(path, lazy=True)
     except Exception:
-        return None, None
+        return None, None, None
     try:
+        sizes = dict(data.sizes) if data.sizes else None
         index = data.attrs.get("experiment_index")
         raw = data.attrs.get("experiment_metadata_json")
         payload = json.loads(raw) if isinstance(raw, str) else (raw or {})
         records = payload.get("records") or {}
-        return index, records.get(str(index))
+        return index, records.get(str(index)), sizes
     except Exception:
-        return None, None
+        return None, None, None
+
+
+def _scan_pxt_header_sizes(path: Path) -> dict[str, int] | None:
+    """Read a raw PXT's wave header: dimension sizes without materialising
+    the data payload (matches load_pxt dims exactly)."""
+    try:
+        from peaksMCP.pxt_utils.loader import _scan_pxt_header
+
+        sizes, _units = _scan_pxt_header(path)
+        return sizes
+    except Exception:
+        return None
 
 
 def _record_of(payload: dict[str, Any] | None, index: int | None) -> Any:
@@ -485,18 +502,25 @@ def _index_paths(
             converted = (sibling / f"{stem}.nc").exists()
         else:
             converted = None
+        sizes: dict[str, int] | None = None
+        if file_kind == "netcdf":
+            header_index, embedded, header_sizes = _scan_nc_header(path)
+            sizes = header_sizes
+            if record is None and embedded is not None:
+                index = header_index if header_index is not None else index
+                record = embedded
+        else:
+            sizes = _scan_pxt_header_sizes(path)
         entry = ScanEntry(
             stem=stem,
             path=str(path),
             file_kind=file_kind,
+            index=index,
+            sizes=sizes,
             converted=converted,
         )
         if record is not None:
             entry = _fill_from_record(entry, index, record)
-        elif file_kind == "netcdf" and record is None:
-            embedded_index, embedded = _embedded_record(path)
-            if embedded is not None:
-                entry = _fill_from_record(entry, embedded_index, embedded)
         entries.append(entry)
     shown_source = directory.name if directory is not None else "sequence"
     scans = LoadedScans(entries, source=shown_source, lazy=lazy, payload=payload)

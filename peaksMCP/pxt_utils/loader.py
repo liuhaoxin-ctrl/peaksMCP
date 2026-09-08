@@ -118,6 +118,51 @@ def _extract_wave(
     )
 
 
+def _scan_pxt_header(path: str | os.PathLike[str]) -> tuple[dict[str, int], dict[str, str]]:
+    """Read only the wave header of a PXT: dimension sizes and units.
+
+    The wave header records the shape and axis descriptions up front, so an
+    index can report a raw PXT's dims without assembling the DataArray.
+    igor2 still walks the whole record stream, but the data payload is not
+    materialised into an ndarray here.
+
+    Returns
+    -------
+    tuple of (dict of str to int, dict of str to str)
+        ``{dimension: size}`` in dimension order, and ``{dimension: unit}``.
+
+    Raises
+    ------
+    ValueError
+        For unreadable files, missing data waves or header/shape mismatches.
+    """
+    records, filesystem = _load_packed(path)
+    _ = records
+    found: dict[str, Any] = {}
+
+    def collect(dirpath: list[bytes], key: bytes, value: Any) -> None:
+        if not isinstance(value, WaveRecord):
+            return
+        if any(_decode_text(part).lower() == "da_infowaves" for part in dirpath):
+            return
+        try:
+            wave = value.wave["wave"]
+            ndim = int(np.asarray(wave["wave_header"]["nDim"], dtype=int).size)
+            found["shape"] = np.asarray(wave["wave_header"]["nDim"], dtype=int)
+            found["description"] = _dimension_description(wave, ndim)
+        except Exception:
+            return
+
+    packed.walk(filesystem["root"], collect)
+    if "shape" not in found:
+        raise ValueError(f"{path}: no readable wave record")
+    shape = np.asarray(found["shape"], dtype=int)
+    sizes = [int(size) for size in shape if size > 0]
+    ndim = len(sizes)
+    dimensions, units = _dimensions(found["description"], ndim)
+    return dict(zip(dimensions, sizes, strict=False)), units
+
+
 def _dimensions(description: str, ndim: int) -> tuple[list[str], dict[str, str]]:
     parts = re.split(r"(?<=\])(?=[A-Za-z])", description) if description else []
     dimensions: list[str] = []
@@ -127,6 +172,7 @@ def _dimensions(description: str, ndim: int) -> tuple[list[str], dict[str, str]]
             name, unit = "eV", "eV"
         else:
             label = parts[position].lower() if position < len(parts) else ""
+
             if "thetax" in label or "y-scale" in label or "y_scale" in label:
                 name, unit = "theta_par", "deg"
             elif "thetay" in label:
