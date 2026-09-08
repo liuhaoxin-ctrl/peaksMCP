@@ -1,0 +1,81 @@
+# Curated runtime prompt text (single source for the L3 "hidden" layer).
+#
+# Every model/user-facing string that used to be hardcoded in Python source
+# lives here so the wording can be reviewed and edited without touching code.
+# Python only reads the values and formats the {placeholders}. Keys are
+# semantic; rule ids / audit reasons stay in code.
+#
+# Consumers:
+#   tools.py                       -> prompts.interactive_omitted_note,
+#                                      prompts.list_resources_guidance
+#   backend/notebook_unsafe.py     -> prompts.notebook_unsafe
+#   security/code_scanner.py       -> prompts.scanner
+#   security/ipython_scanner.py    -> prompts.ipython
+#
+# Keep every value byte-identical to the wording it replaces unless a wording
+# change is the actual intent; several regression tests compare rendered text.
+version: 1
+prompts:
+  # ------------------------------------------------------------------ tools
+  interactive_omitted_note: "Interactive panel/widget rendered in the notebook for the user; it cannot be embedded here. Consider it done and describe the figure to the user."
+
+  # guidance payload returned by mcp_list_resources
+  list_resources_guidance:
+    resources_vs_tools:
+      resources: "Read-only reference data, templates and documentation — each resource below includes its template inline; run it verbatim."
+      tools: "Active operations: peaks_search_api / peaks_get_api to look up APIs, notebook_write_with_api_check to write and run analysis cells."
+    when_to_use_resources:
+      - "Before drawing any figure, pick a plotting format here and run its inline template verbatim."
+      - "For a publication-style figure, run the selected template verbatim (adjust variable names only)."
+      - "Comparing many cuts -> dispersion_grid; one cut -> dispersion_single; EF slice -> fermi_surface."
+    first_use: "Call mcp_list_resources() BEFORE plotting to select the canonical format."
+
+  # ------------------------------------------------------- notebook_unsafe
+  notebook_unsafe:
+    index_build_failed: "The Peaks API index could not be built; restart the kernel."
+    plot_templates_not_read: "Plotting code detected, but the canonical plot templates have not been read yet this session. Call mcp_list_resources() first — it returns every plotting format's template inline. After that single call this guard stays satisfied and plotting code runs freely."
+    savefig_forbidden: "This cell saves a figure to disk (savefig), which is permanently disabled: figures are rendered inline in the notebook. Remove the savefig call — there is no user-confirmation path for saving figures."
+    unknown_api_first: "Execution blocked: unverifiable API reference(s) {names}. None of these resolve to a Peaks API by exact name. Use peaks_search_api to find the correct API (candidates: {suggestions}) or fix the typo. If the receiver is complex (e.g. a function return value), assign it to an intermediate variable first. This name must be fetched with peaks_get_api before it can be used."
+    unknown_api_retry: "Execution blocked: these names were already reported as unverifiable this session ({names}) and no successful peaks_get_api has followed. Call peaks_search_api, then peaks_get_api(<canonical id>) once for each name, then resubmit the cell."
+
+  # --------------------------------------------------------- code scanner
+  scanner:
+    # reflection / smuggling
+    ref_getattr_dynamic: "getattr with a dynamic attribute name cannot be verified statically"
+    ref_dynamic_attr: "dynamic attribute name passed to {name} cannot be verified statically"
+    ref_chain_call: "reflection attribute chain in a call cannot be bounded statically"
+    smug_attr_mutation: "attribute mutation on an imported module or reflection object via {name}"
+    smug_setattr_dangerous: "setattr storing a dangerous callable ({value_name})"
+    smug_attribute_delete: "attribute deletion on an imported module or reflection object"
+    smug_hidden_callable: "attribute smuggling: storing a dangerous callable where name tracking cannot follow it"
+    # capability sinks
+    cap_sandbox_via: "operation outside the analysis sandbox via {name}"
+    cap_reflection_via: "reflection through {name}; its effect cannot be bounded statically"
+    cap_star_import: "star import from {module} defeats name tracking; import the names explicitly"
+    ind_subscript_call: "calling a value fetched through a subscript/container index cannot be tracked statically"
+    # files and processes
+    file_modifying: "file opened in a modifying mode"
+    file_modifying_path: "path opened in a modifying mode"
+    file_modifying_indirect: "file opened in a modifying mode via indirect fetch"
+    file_mode_unclear: "open() with a non-constant mode; read-only-ness cannot be confirmed — approve only if safe"
+    file_mode_unclear_indirect: "open() with a non-constant mode via indirect fetch; read-only-ness cannot be confirmed"
+    file_raw_write: "raw-descriptor file write via {name}"
+    file_write_consent: "file write via {name}; approve only to write to disk"
+    file_write_consent_indirect: "file write via indirect fetch of {target}; approve only to write to disk"
+    deserialize_unsafe: "unsafe deserialization via {name}"
+    env_mutation: "process environment modification"
+    env_mutation_aliased: "process environment modification through an aliased os.environ"
+    savefig_disabled: "figure save to disk (savefig) is disabled; figures are rendered inline"
+    # execution
+    exec_dynamic: "dynamic code execution via {name}"
+    exec_indirect: "dynamic code execution via indirect fetch of {target}"
+    sys_destructive: "system or destructive operation via {name}"
+    sys_destructive_indirect: "system or destructive operation via indirect fetch of {target}"
+    path_destructive: "destructive path operation via {name}"
+    import_dynamic: "dynamic import via {name}"
+    network_consent: "network request via {name}; approve only to send data externally"
+
+  # ------------------------------------------------------ ipython scanner
+  ipython:
+    ipy_shell: "shell escape or indirect IPython command execution"
+    ipy_env_magic: "environment or extension modifying IPython magic"

@@ -99,6 +99,8 @@ Claude Desktop <-> STDIO proxy <-> HTTP MCP <-> Jupyter kernel <-> JupyterLab Co
 - `peaksMCP/plotting/`, `peaksMCP/workflows/` — publication plotting and validation
 - `peaksMCP/transport/` — `stdio_proxy.py` (Claude Desktop proxy)
 - `peaksMCP/config/metadata_baseline.yaml` — tool presentation metadata (single source)
+- `peaksMCP/config/prompts.yaml` — runtime prompt text (interactive/guidance copy,
+  `notebook_unsafe` hard-block replies, code/ipython scanner issue descriptions)
 - `claude_plugin/` — Claude Desktop plugin (`.mcp.json`, skills)
 
 ---
@@ -150,7 +152,8 @@ When adding, removing or renaming an MCP tool, update **all** of these:
 
 Tool metadata lives in YAML, not hardcoded in Python. `config/metadata.py` loads
 `metadata_baseline.yaml` (15 tools) as the single source of truth for titles and
-descriptions.
+descriptions, and `prompts.yaml` for the runtime prompt text that tools,
+`notebook_unsafe.py` and the code scanners show the model/user.
 
 ---
 

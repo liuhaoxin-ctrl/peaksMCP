@@ -337,12 +337,85 @@ def scan_modules(
 
 
 def load_overrides(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
-    """Load curated aliases and metadata overrides."""
+    """Load the curated API presentation document.
+
+    Parameters
+    ----------
+    path : str or os.PathLike, optional
+        Override file to read; defaults to the packaged ``api_overrides.yaml``.
+
+    Returns
+    -------
+    dict
+        Parsed document. An unreadable file yields an empty document.
+
+    Examples
+    --------
+    >>> "apis" in load_overrides()
+    True
+    """
     target = Path(path) if path else Path(__file__).with_name("api_overrides.yaml")
     try:
         return yaml.safe_load(target.read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError):
-        return {"aliases": {}, "overrides": {}}
+        return {}
+
+
+def load_api_overrides(path: str | os.PathLike[str] | None = None) -> dict[str, dict[str, Any]]:
+    """Return the per-API presentation entries, keyed by API name.
+
+    Each entry may carry ``aliases`` (extra search terms), ``docstring_note``
+    (prepended to the live docstring), ``module`` and ``project``.
+
+    Parameters
+    ----------
+    path : str or os.PathLike, optional
+        Override file to read; defaults to the packaged ``api_overrides.yaml``.
+
+    Returns
+    -------
+    dict of dict
+        Mapping of API name to its curated configuration.
+
+    Examples
+    --------
+    >>> "k_convert" in load_api_overrides()
+    True
+    """
+    entries = load_overrides(path).get("apis") or {}
+    return {str(name): dict(config or {}) for name, config in entries.items()}
+
+
+def load_project_added(path: str | os.PathLike[str] | None = None) -> set[str]:
+    """Return the ``module:name`` ids this project adds to the API.
+
+    Derived from the ``project: true`` flag in ``api_overrides.yaml``, so the
+    audited exposure record cannot drift from the aliases and notes that sit
+    next to it. :func:`build_index` marks every matching entry with
+    ``project_added=True`` so callers can tell project code from upstream.
+
+    Parameters
+    ----------
+    path : str or os.PathLike, optional
+        Override file to read; defaults to the packaged ``api_overrides.yaml``.
+
+    Returns
+    -------
+    set of str
+        ``module:name`` identifiers such as
+        ``peaksMCP.plotting.layout:plot_batch``. Entries missing a ``module``
+        are ignored.
+
+    Examples
+    --------
+    >>> "peaksMCP.plotting.layout:plot_batch" in load_project_added()
+    True
+    """
+    return {
+        f"{config['module']}:{name}"
+        for name, config in load_api_overrides(path).items()
+        if config.get("project") and config.get("module")
+    }
 
 
 def _merge_duplicates(entries: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -398,18 +471,22 @@ def build_index() -> ApiIndex:
             ),
         ]
     )
-    overrides = load_overrides()
-    aliases = overrides.get("aliases") or {}
-    per_api = overrides.get("overrides") or {}
+    api_overrides = load_api_overrides()
+    project_added = load_project_added()
     for item in entries:
         names = {item["name"], item["id"]}
         item_aliases: list[str] = []
-        for key, values in aliases.items():
+        note: str | None = None
+        for key, config in api_overrides.items():
             if key in names or key.lower() == str(item["name"]).lower():
-                item_aliases.extend(str(value) for value in values)
-        override = per_api.get(item["id"], per_api.get(item["name"], {})) or {}
-        item.update(override)
+                item_aliases.extend(str(value) for value in config.get("aliases") or [])
+                if config.get("docstring_note"):
+                    note = str(config["docstring_note"])
+        if note is not None:
+            item["docstring_note"] = note
         item["aliases"] = sorted(set([*item.get("aliases", []), *item_aliases]))
+        if f"{item.get('module')}:{item.get('name')}" in project_added:
+            item["project_added"] = True
     fingerprint = source_fingerprint()
     entries = [item for item in entries if item.get("module") not in _HIDDEN_MODULES]
     return ApiIndex(entries=entries, peaks_version=getattr(peaks, "__version__", "?"), fingerprint=fingerprint)

@@ -10,12 +10,15 @@ from typing import Any
 from fastmcp import FastMCP
 from mcp.types import TextContent
 
-from peaksMCP.config import tool_metadata
+from peaksMCP.config import prompts, tool_metadata
 from peaksMCP.discovery.signatures import describe_api
 
 from ..backend import NotebookBackend, SharedState, UnsafeNotebookBackend, ensure_fresh_index
 from ..security import AuditLogger
 
+#: Curated model/user-facing runtime text (config/prompts.yaml), read once at
+#: import so per-call lookups stay cheap and wording lives outside Python.
+_PROMPTS = prompts()
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _OMITTED_IMAGE_MIME = "application/vnd.peaksmcp.image-omitted+json"
 #: MIME types that only a live browser frontend can render (ipywidgets,
@@ -96,11 +99,7 @@ def _interactive_omitted_content(mime: str) -> TextContent:
             {
                 "output_type": "interactive_omitted",
                 "mime_type": mime,
-                "note": (
-                    "Interactive panel/widget rendered in the notebook for the "
-                    "user; it cannot be embedded here. Consider it done and "
-                    "describe the figure to the user."
-                ),
+                "note": _PROMPTS["interactive_omitted_note"],
             },
             ensure_ascii=False,
         ),
@@ -270,26 +269,17 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
             for resource_id in list_resources()
             for meta in [resource_metadata(resource_id)]
         ]
+        guidance = _PROMPTS["list_resources_guidance"]
         return {
             "total_resources": len(resources),
             "resources": resources,
             "guidance": {
                 "resources_vs_tools": {
-                    "resources": (
-                        "Read-only reference data, templates and documentation — each "
-                        "resource below includes its template inline; run it verbatim."
-                    ),
-                    "tools": (
-                        "Active operations: peaks_search_api / peaks_get_api to look up "
-                        "APIs, notebook_write_with_api_check to write and run analysis cells."
-                    ),
+                    "resources": guidance["resources_vs_tools"]["resources"],
+                    "tools": guidance["resources_vs_tools"]["tools"],
                 },
-                "when_to_use_resources": [
-                    "Before drawing any figure, pick a plotting format here and run its inline template verbatim.",
-                    "For a publication-style figure, run the selected template verbatim (adjust variable names only).",
-                    "Comparing many cuts -> dispersion_grid; one cut -> dispersion_single; EF slice -> fermi_surface.",
-                ],
-                "first_use": "Call mcp_list_resources() BEFORE plotting to select the canonical format.",
+                "when_to_use_resources": list(guidance.get("when_to_use_resources") or []),
+                "first_use": guidance.get("first_use") or "",
             },
         }
 

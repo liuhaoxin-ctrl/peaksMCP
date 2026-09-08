@@ -125,7 +125,7 @@ resources:
     template: |
       from peaksMCP.plotting import plot_batch
       # Run this cell verbatim — plot_batch renders the map inline itself.
-            # fs: 2D (kx, ky) DataArray taken at E = E_F (binding energy 0)
+      # fs: 2D (kx, ky) DataArray taken at E = E_F (binding energy 0)
       figs = plot_batch([fs], figsize_per_panel=(5.0, 5.0), dpi=200,
                         cmap="magma", shared_colorbar=True)
 
@@ -144,7 +144,7 @@ resources:
     template: |
       import matplotlib.pyplot as plt, numpy as np
       # Run this cell verbatim — the final plt.show() renders exactly ONE figure.
-            # cut: 2D (eV, k_par) DataArray in binding energy (E_F = 0)
+      # cut: 2D (eV, k_par) DataArray in binding energy (E_F = 0)
       # Read coordinates via cut.coords[name].values (or cut.<name>.values).
       eV = cut.coords["eV"].values
       k = cut.coords["kx"].values if "kx" in cut.dims else cut.coords[list(set(cut.dims) - {"eV"})[0]].values
@@ -173,7 +173,7 @@ resources:
     template: |
       from peaksMCP.plotting import plot_batch
       # Run this cell verbatim — plot_batch renders the grid inline itself.
-            # cuts: list of 2D (eV, k_par) DataArrays; titles: same length, e.g.
+      # cuts: list of 2D (eV, k_par) DataArrays; titles: same length, e.g.
       # [f"Idx {i}  pol={pol}"] for the index i and its polarization
       figs = plot_batch(cuts, titles=titles, max_cols=4,
                         figsize_per_panel=(3.5, 3.2), dpi=160,
@@ -192,7 +192,7 @@ resources:
     template: |
       import matplotlib.pyplot as plt, numpy as np
       # Run this cell verbatim — the final plt.show() renders exactly ONE figure.
-            # curves: list of 1D DataArray; axis = curves[0]'s sole dimension name
+      # curves: list of 1D DataArray; axis = curves[0]'s sole dimension name
       axis = list(curves[0].dims)[0]
       fig, ax = plt.subplots(figsize=(6.0, 4.5), dpi=180)
       off = 0.0
@@ -240,7 +240,7 @@ resources:
     template: |
       import matplotlib.pyplot as plt, numpy as np
       # Run this cell verbatim — the final plt.show() renders exactly ONE figure.
-            # kzd: 2D (kz, k_par) DataArray in binding energy (E_F = 0)
+      # kzd: 2D (kz, k_par) DataArray in binding energy (E_F = 0)
       kp = kzd.kx if "kx" in kzd.dims else kzd[list(set(kzd.dims) - {"kz"})[0]]
       v = np.nanpercentile(kzd.values, 99)
       fig, ax = plt.subplots(figsize=(4.5, 5.0), dpi=200)

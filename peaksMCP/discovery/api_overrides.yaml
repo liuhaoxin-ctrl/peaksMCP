@@ -1,91 +1,350 @@
-version: 1
-# Register of API entries this project adds on top of upstream peaks/peaksMCP.
-# Everything under a `peaksMCP.` module is project code (auto-discovered); the
-# list below is the authoritative review/provenance record. Their search
-# aliases and docstring notes live in `aliases` / `overrides` below. To remove
-# a project entry: delete the module function and its rows here.
-project_added:
-  - module:peaksMCP.batch.resource_budget:batch_execution_lock
-  - module:peaksMCP.plotting.layout:plot_batch
-  - module:peaksMCP.plotting.validation:plot_validation_pair
-  - module:peaksMCP.pxt_utils.converter:convert_path
-  - module:peaksMCP.pxt_utils.converter:convert_pxt
-  - module:peaksMCP.pxt_utils.converter:default_output_dir
-  - module:peaksMCP.pxt_utils.converter:index_from_path
-  - module:peaksMCP.pxt_utils.csv_translator:translate_datasheet
-  - module:peaksMCP.pxt_utils.loader:load_pxt
-  - module:peaksMCP.pxt_utils.loader:register_l112_loader
-  - module:peaksMCP.pxt_utils.metadata:classify_data_format
-  - module:peaksMCP.pxt_utils.metadata:is_gold_format
-  - module:peaksMCP.pxt_utils.metadata:load_metadata
-  - module:peaksMCP.pxt_utils.metadata:read_meta
-  - module:peaksMCP.pxt_utils.metadata:theta_offset_deg
-  - module:peaksMCP.workflows.publication:publication_grid
-  - module:peaksMCP.workflows.publication:validate_arpes_metadata
-  - module:peaksMCP.workflows.slice_view:show_mapping_slice
-# Note: additions made inside the peaks library itself (peaks_dev), e.g. the
-# two-pass gold-fit helpers, are private/underscore and live outside this
-# discovery file; they are tracked by peaks_dev git history instead.
-aliases:
-  EDC: [energy distribution curve, 能量分布曲线, 能谱曲线]
-  MDC: [momentum distribution curve, 动量分布曲线, 动量曲线]
-  k_convert: [momentum conversion, k-space, 动量转换, k空间]
-  smooth: [smoothing, filter, 平滑, 滤波]
-  norm: [normalize, normalization, 归一化, 标准化]
-  bgs: [background subtraction, subtract background, 背景扣除]
-  extract_cut: [slice data, crop spectrum, line cut, 切片, 选区, 截取]
-  deriv: [derivative, differentiation, 导数, 微分, 求导]
-  curvature: [curvature, 曲率]
-  load: [open data, read data, 加载, 读取]
-  save: [export, write data, 保存, 导出]
-  plot_grid: [figure grid, visualize batch, panel plot, 绘图, 画图, 批量谱图]
-  plot_batch: [batch plotting, plot batch, batch figures, batch grid, 批量画图, 批量画谱图, 批量绘图, 批量图]
-  estimate_EF: [Fermi level, Fermi energy, 费米能级]
-  fit_gold: [gold reference fit, fit Fermi edge, gold fit, Fermi level fit, 金参考拟合, 金边拟合, 金拟合, 费米边拟合, 费米能级拟合]
-  bin_data: [bin pixels, coarsen data, 数据分箱, 像素合并]
-  sym: [symmetrize, mirror spectrum, 对称化, 镜像对称]
-  rotate: [rotate image, angular rotation, 旋转谱图, 数据旋转]
-  degrid: [remove mesh grid, FFT grid removal, 去网格, 去除条纹]
-  mask_data: [polygon mask, region mask, 多边形掩膜, 区域遮罩]
-  drop_nan_borders: [trim nan edges, crop empty border, 删除空边, 裁剪NaN边界]
-  DOS: [density of states, 态密度, 态密]
-  tot: [total intensity, integrated intensity, spectral weight, 总强度, 谱权重]
-  radial_cuts: [radial cut, angular cut, 径向切片, 径向切割]
-  sum_data: [sum scans, add spectra, 数据相加, 求和]
-  subtract_data: [subtract scans, difference spectrum, 数据相减, 差谱]
-  merge_data: [merge scans, combine spectra, concatenate, 数据合并, 拼接]
-  estimate_sym_point: [symmetry point, mirror centre, 对称中心, 对称点]
-  show_mapping_slice: [mapping slice, slice of mapping, energy map, map slice, constant energy map, 切片图, mapping切片, mapping切片图, 展示mapping, 固定能层图]
-  read_meta: [summarize sweeps, list records, sweep classification, experiment summary, experiment records, read metadata, 汇总记录, 实验记录, 数据清单, 读元数据]
-  drift_correction: [drift correction, align maps, 漂移校正, 图像配准]
-  disp_from_hv: [dispersion from hv, photon energy dispersion, 光子能色散]
-  disp: [interactive viewer, interactive plot, GUI viewer, data viewer widget, 3D viewer, 交互式查看器, 交互式绘图, 三维查看器, interactive, interactive panel, panel viewer, 交互面板, 原生交互查看器]
-  correct_isolated_bad_pixels: [bad pixel removal, clean bad pixels, 坏点修复, 去坏点]
-  plot_validation_pair: [before after validation, before-after pair, raw vs k-space, raw vs kx, validate cut, cut validation, 处理前后对比, 验证图, 单条验证]
-  History: [processing history, provenance, 处理历史]
-overrides:
+version: 2
+# Single source of truth for curated API presentation.
+#
+# One entry per API, so an API's aliases and its docstring note read together
+# instead of being split across two parallel sections.
+#
+#   module         Project-added APIs only (peaksMCP.*). Upstream peaks
+#                  entries omit it.
+#   project        true marks an API this project adds on top of upstream peaks.
+#                  The project set is derived from this flag, so there is no
+#                  second list to keep in sync.
+#   aliases        Extra search terms (English + Chinese); merged into the index
+#                  and scored just below an exact name hit.
+#   docstring_note Prepended to the live docstring by peaks_get_api. Keep it to
+#                  function / input-output / hierarchy.
+#
+# Keys are API names and match every scope exposing that name (DataArray,
+# Dataset, DataTree), which is why upstream entries apply across scopes.
+apis:
+  # =========================================================== peaks upstream
+  # --- loading and saving ---
+  load:
+    aliases: [open data, read data, 加载, 读取]
+  save:
+    aliases: [export, write data, 保存, 导出]
+  History:
+    aliases: [processing history, provenance, 处理历史]
+
+  # --- cuts, curves and derived quantities ---
+  EDC:
+    aliases: [energy distribution curve, 能量分布曲线, 能谱曲线]
+  MDC:
+    aliases: [momentum distribution curve, 动量分布曲线, 动量曲线]
+  DOS:
+    aliases: [density of states, 态密度, 态密]
+  tot:
+    aliases: [total intensity, integrated intensity, spectral weight, 总强度, 谱权重]
+  extract_cut:
+    aliases: [slice data, crop spectrum, line cut, 切片, 选区, 截取]
+  radial_cuts:
+    aliases: [radial cut, angular cut, 径向切片, 径向切割]
+  deriv:
+    aliases: [derivative, differentiation, 导数, 微分, 求导]
+  curvature:
+    aliases: [curvature, 曲率]
+
+  # --- preprocessing ---
+  smooth:
+    aliases: [smoothing, filter, 平滑, 滤波]
+  norm:
+    aliases: [normalize, normalization, 归一化, 标准化]
+  bgs:
+    aliases: [background subtraction, subtract background, 背景扣除]
+  bin_data:
+    aliases: [bin pixels, coarsen data, 数据分箱, 像素合并]
+  sym:
+    aliases: [symmetrize, mirror spectrum, 对称化, 镜像对称]
+  rotate:
+    aliases: [rotate image, angular rotation, 旋转谱图, 数据旋转]
+  degrid:
+    aliases: [remove mesh grid, FFT grid removal, 去网格, 去除条纹]
+  mask_data:
+    aliases: [polygon mask, region mask, 多边形掩膜, 区域遮罩]
+  drop_nan_borders:
+    aliases: [trim nan edges, crop empty border, 删除空边, 裁剪NaN边界]
+  drift_correction:
+    aliases: [drift correction, align maps, 漂移校正, 图像配准]
+  correct_isolated_bad_pixels:
+    aliases: [bad pixel removal, clean bad pixels, 坏点修复, 去坏点]
+
+  # --- combining scans ---
+  sum_data:
+    aliases: [sum scans, add spectra, 数据相加, 求和]
+  subtract_data:
+    aliases: [subtract scans, difference spectrum, 数据相减, 差谱]
+  merge_data:
+    aliases: [merge scans, combine spectra, concatenate, 数据合并, 拼接]
+
+  # --- Fermi level and k-space ---
+  estimate_EF:
+    aliases: [Fermi level, Fermi energy, 费米能级]
+  estimate_sym_point:
+    aliases: [symmetry point, mirror centre, 对称中心, 对称点]
+  fit_gold:
+    aliases:
+      - gold reference fit
+      - fit Fermi edge
+      - gold fit
+      - Fermi level fit
+      - 金参考拟合
+      - 金边拟合
+      - 金拟合
+      - 费米边拟合
+      - 费米能级拟合
+    docstring_note: |
+      Fit the Fermi edge of a gold reference.
+      Output: EF_correction (poly dict), EF_quality, inline figure.
+      Hierarchy: apply its EF_correction to each cut via
+      metadata.set_EF_correction before k_convert.
   k_convert:
+    aliases: [momentum conversion, k-space, 动量转换, k空间]
     docstring_note: |
       Convert a cut to (eV, kx), flattening the Fermi edge in the same call.
       Input: raw (kinetic, theta_par) DataArray + EF_correction (fit_gold
       output) passed as k_convert(EF_correction=...). Output: (eV, kx)
       DataArray. Hierarchy: fit_gold once -> k_convert per cut with that
       EF_correction. `return_kz_scan_in_hv` applies to hv (kz) scans.
-  fit_gold:
-    docstring_note: |
-      Fit the Fermi edge of a gold reference.
-      Output: EF_correction (poly dict), EF_quality, inline figure.
-      Hierarchy: apply its EF_correction to each cut via
-      metadata.set_EF_correction before k_convert.
-  plot_validation_pair:
-    docstring_note: |
-      Inline before/after figure for one cut: raw angle-space vs processed
-      k-space.
-  plot_batch:
-    docstring_note: |
-      Inline grid of matplotlib figures for a list of DataArrays.
+  disp_from_hv:
+    aliases: [dispersion from hv, photon energy dispersion, 光子能色散]
+
+  # --- plotting and viewing ---
+  plot_grid:
+    aliases: [figure grid, visualize batch, panel plot, 绘图, 画图, 批量谱图]
   disp:
+    aliases:
+      - interactive viewer
+      - interactive plot
+      - GUI viewer
+      - data viewer widget
+      - 3D viewer
+      - 交互式查看器
+      - 交互式绘图
+      - 三维查看器
+      - interactive
+      - interactive panel
+      - panel viewer
+      - 交互面板
+      - 原生交互查看器
     docstring_note: |
       peaks' native Qt interactive viewer for loaded data.
       Use: data.disp() or disp([da, ...], primary_dim=...); import from
       peaks.core.GUI.disp_panels.
+
+  # ========================================================= project-added
+  # Everything below ships with peaksMCP. `project: true` is what makes the
+  # index flag an entry, so this block doubles as the audited exposure record:
+  # adding a public function to peaksMCP without a row here fails the tests.
+
+  # --- PXT loading and conversion ---
+  load_pxt:
+    module: peaksMCP.pxt_utils.loader
+    project: true
+    aliases:
+      - load pxt
+      - read pxt
+      - open pxt
+      - pxt file
+      - load raw scan
+      - 加载PXT
+      - 读取PXT
+      - 打开PXT
+  register_l112_loader:
+    module: peaksMCP.pxt_utils.loader
+    project: true
+    aliases:
+      - l112 loader
+      - register loader
+      - beamline loader
+      - L112加载器
+      - 注册加载器
+  convert_pxt:
+    module: peaksMCP.pxt_utils.converter
+    project: true
+    aliases:
+      - convert pxt
+      - pxt to netcdf
+      - convert to netcdf
+      - convert scan file
+      - single file conversion
+      - 转换PXT
+      - PXT转NetCDF
+      - 单文件转换
+  convert_path:
+    module: peaksMCP.pxt_utils.converter
+    project: true
+    aliases:
+      - batch convert
+      - convert directory
+      - convert folder
+      - convert all scans
+      - 批量转换
+      - 目录转换
+      - 文件夹转换
+  default_output_dir:
+    module: peaksMCP.pxt_utils.converter
+    project: true
+    aliases:
+      - output directory
+      - default output
+      - output path
+      - 输出目录
+      - 默认输出路径
+  index_from_path:
+    module: peaksMCP.pxt_utils.converter
+    project: true
+    aliases:
+      - index from filename
+      - extract index
+      - parse index
+      - scan number
+      - 从路径取编号
+      - 索引解析
+  translate_datasheet:
+    module: peaksMCP.pxt_utils.csv_translator
+    project: true
+    aliases:
+      - datasheet translation
+      - translate csv
+      - datasheet to metadata
+      - parse datasheet
+      - 数据表翻译
+      - datasheet转换
+
+  # --- PXT metadata ---
+  load_metadata:
+    module: peaksMCP.pxt_utils.metadata
+    project: true
+    aliases:
+      - load experiment metadata
+      - read experiment metadata
+      - metadata json
+      - experiment record table
+      - 加载元数据
+      - 读取实验记录
+      - 实验记录表
+  read_meta:
+    module: peaksMCP.pxt_utils.metadata
+    project: true
+    aliases:
+      - summarize sweeps
+      - list records
+      - sweep classification
+      - experiment summary
+      - experiment records
+      - read metadata
+      - 汇总记录
+      - 实验记录
+      - 数据清单
+      - 读元数据
+  classify_data_format:
+    module: peaksMCP.pxt_utils.metadata
+    project: true
+    aliases:
+      - classify format
+      - data format
+      - format detection
+      - sweep or fix
+      - 格式判定
+      - 数据格式分类
+  is_gold_format:
+    module: peaksMCP.pxt_utils.metadata
+    project: true
+    aliases:
+      - gold format
+      - is gold
+      - gold reference check
+      - 金数据判定
+      - 是否金数据
+  theta_offset_deg:
+    module: peaksMCP.pxt_utils.metadata
+    project: true
+    aliases:
+      - theta offset
+      - angle offset
+      - high symmetry offset
+      - 角度偏移
+      - 高对称点偏移
+
+  # --- plotting and workflows ---
+  plot_batch:
+    module: peaksMCP.plotting.layout
+    project: true
+    aliases:
+      - batch plotting
+      - plot batch
+      - batch figures
+      - batch grid
+      - 批量画图
+      - 批量画谱图
+      - 批量绘图
+      - 批量图
+    docstring_note: |
+      Inline grid of matplotlib figures for a list of DataArrays.
+  plot_validation_pair:
+    module: peaksMCP.plotting.validation
+    project: true
+    aliases:
+      - before after validation
+      - before-after pair
+      - raw vs k-space
+      - raw vs kx
+      - validate cut
+      - cut validation
+      - 处理前后对比
+      - 验证图
+      - 单条验证
+    docstring_note: |
+      Inline before/after figure for one cut: raw angle-space vs processed
+      k-space.
+  show_mapping_slice:
+    module: peaksMCP.workflows.slice_view
+    project: true
+    aliases:
+      - mapping slice
+      - slice of mapping
+      - energy map
+      - map slice
+      - constant energy map
+      - 切片图
+      - mapping切片
+      - mapping切片图
+      - 展示mapping
+      - 固定能层图
+  publication_grid:
+    module: peaksMCP.workflows.publication
+    project: true
+    # Deliberately publication-specific: a generic "grid" term here outranks
+    # peaks' own plot_grid on plain "draw a panel grid" queries.
+    aliases:
+      - publication grid
+      - paper figure grid
+      - publication figure set
+      - 论文配图
+      - 发表级图组
+  validate_arpes_metadata:
+    module: peaksMCP.workflows.publication
+    project: true
+    aliases:
+      - validate metadata
+      - arpes metadata check
+      - metadata validation
+      - 元数据校验
+      - ARPES元数据检查
+
+  # --- batch execution ---
+  batch_execution_lock:
+    module: peaksMCP.batch.resource_budget
+    project: true
+    aliases:
+      - cpu budget lock
+      - execution lock
+      - serialise batch
+      - batch lock
+      - CPU预算锁
+      - 批处理锁
+      - 串行化批处理
+
+# Note: additions made inside the peaks library itself (peaks_dev), e.g. the
+# two-pass gold-fit helpers, are private/underscore and live outside this
+# discovery file; they are tracked by peaks_dev git history instead.

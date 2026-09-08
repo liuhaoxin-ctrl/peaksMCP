@@ -4,10 +4,15 @@ from __future__ import annotations
 
 from typing import Any
 
+from peaksMCP.config import prompts as _load_prompts
+
 from ..security import AuditLogger, ConsentManager, call_names, scan_code
 from ..security.api_allowlists import BUILTIN_NAMES, GENERIC_METHODS, GENERIC_MODULES
 from ..security.api_provenance import CallTarget, analyze_provenance, extract_call_targets
 from .base import ExecutionMode, SharedState, ensure_fresh_index
+
+#: Curated hard-block reply text (config/prompts.yaml), read once at import.
+_PROMPTS = _load_prompts().get("notebook_unsafe") or {}
 
 #: Callable leaves that draw or store a figure, matched against alias-resolved
 #: canonical call names (AST, so comments/strings never trip the guard).
@@ -178,32 +183,20 @@ class UnsafeNotebookBackend:
         try:
             index = ensure_fresh_index(self.state)
         except Exception:
-            return _refused(
-                "The Peaks API index could not be built; restart the kernel."
-            )
+            return _refused(_PROMPTS["index_build_failed"])
 
         names = call_names(code)
         if not getattr(self.state, "read_plot_resources", False) and _plot_intent(names):
             self.audit.write(
                 "notebook_write_with_api_check", "blocked", {"reason": "plot_resources_not_read"}
             )
-            return _refused(
-                "Plotting code detected, but the canonical plot templates have not been "
-                "read yet this session. Call mcp_list_resources() first — it returns every "
-                "plotting format's template inline. After that single call this guard stays "
-                "satisfied and plotting code runs freely."
-            )
+            return _refused(_PROMPTS["plot_templates_not_read"])
 
         if _saves_figure(names):
             self.audit.write(
                 "notebook_write_with_api_check", "blocked", {"reason": "savefig_forbidden"}
             )
-            return _refused(
-                "This cell saves a figure to disk (savefig), which is permanently "
-                "disabled: figures are rendered inline in the notebook. Remove the "
-                "savefig call — there is no user-confirmation path for saving "
-                "figures."
-            )
+            return _refused(_PROMPTS["savefig_forbidden"])
 
         targets = extract_call_targets(code)
         tags, generic_roots, defined, imported = analyze_provenance(
@@ -314,13 +307,7 @@ class UnsafeNotebookBackend:
                     "requires_search": True,
                     "hard_refusal": True,
                     "unknown_refs": hard_names,
-                    "message": (
-                        "Execution blocked: these names were already reported as "
-                        f"unverifiable this session ({hard_names}) and no successful "
-                        "peaks_get_api has followed. Call peaks_search_api, then "
-                        "peaks_get_api(<canonical id>) once for each name, then "
-                        "resubmit the cell."
-                    ),
+                    "message": _PROMPTS["unknown_api_retry"].format(names=hard_names),
                     "api_check": api_check,
                 }
             self.audit.write(
@@ -337,14 +324,9 @@ class UnsafeNotebookBackend:
                 "blocked": True,
                 "requires_search": True,
                 "unknown_refs": [u["name"] for u in unknown],
-                "message": (
-                    "Execution blocked: unverifiable API reference(s) "
-                    f"{[u['name'] for u in unknown]}. None of these resolve to a Peaks "
-                    "API by exact name. Use peaks_search_api to find the correct API "
-                    f"(candidates: {api_check['suggestions']}) or fix the typo. If the "
-                    "receiver is complex (e.g. a function return value), assign it to "
-                    "an intermediate variable first. This name must be fetched with "
-                    "peaks_get_api before it can be used."
+                "message": _PROMPTS["unknown_api_first"].format(
+                    names=[u["name"] for u in unknown],
+                    suggestions=api_check["suggestions"],
                 ),
                 "api_check": api_check,
             }

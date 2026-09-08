@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
-
-import yaml
-
-from peaksMCP.discovery.index import build_index
+from peaksMCP.discovery.index import build_index, load_api_overrides, load_project_added
 from peaksMCP.discovery.signatures import describe_api
 
 
@@ -27,8 +23,11 @@ def test_every_public_name_is_searchable_in_top_three():
 
 def test_at_least_sixty_natural_language_aliases_rank_top_three():
     index = build_index()
-    document = yaml.safe_load(Path(__file__).parents[2].joinpath("peaksMCP/discovery/api_overrides.yaml").read_text())
-    cases = [(query, name) for name, queries in document["aliases"].items() for query in queries]
+    cases = [
+        (query, name)
+        for name, config in load_api_overrides().items()
+        for query in (config.get("aliases") or [])
+    ]
     assert len(cases) >= 60
     reciprocal_ranks = []
     for query, expected in cases[:60]:
@@ -141,6 +140,77 @@ class _StubNotebook:
 
     def wait_for_kernel(self) -> dict:
         return {}
+
+
+def test_project_added_declaration_matches_the_live_index():
+    """The curated project record must not drift from what is exposed.
+
+    Discovery is an AST scan, so a new public function joins the index
+    automatically; this asserts the review record keeps up in both directions
+    (nothing stale declared, nothing exposed undeclared).
+    """
+    index = build_index()
+    declared = load_project_added()
+    exposed = {
+        f"{item['module']}:{item['name']}"
+        for item in index.entries
+        if str(item["module"]).startswith("peaksMCP")
+    }
+    assert declared, "project_added must not be empty"
+    assert not declared - exposed, f"declared but no longer in the index: {sorted(declared - exposed)}"
+    assert not exposed - declared, f"exposed but never declared: {sorted(exposed - declared)}"
+
+
+def test_project_added_entries_are_flagged_in_the_index():
+    """build_index marks declared project entries so callers can audit them."""
+    index = build_index()
+    flagged = {f"{item['module']}:{item['name']}" for item in index.entries if item.get("project_added")}
+    exposed = {
+        f"{item['module']}:{item['name']}"
+        for item in index.entries
+        if str(item["module"]).startswith("peaksMCP")
+    }
+    assert flagged and flagged == exposed
+
+
+def test_alias_and_override_keys_resolve_to_real_apis():
+    """Hand-written aliases/notes must not outlive the APIs they describe."""
+    index = build_index()
+    known = {item["name"] for item in index.entries} | {item["id"] for item in index.entries}
+    documented = load_api_overrides()
+    assert documented, "api_overrides.yaml must define at least one API entry"
+    for key, config in documented.items():
+        assert key in known, f"entry targets a missing API: {key}"
+        if config.get("project"):
+            assert config.get("module"), f"project entry without a module: {key}"
+
+
+def test_every_documented_api_has_search_aliases():
+    """Every documented API must be reachable by more than its exact name.
+
+    Project APIs are auto-discovered rather than hand-registered, so an entry
+    with no aliases is effectively invisible to natural-language search.
+    """
+    for name, config in load_api_overrides().items():
+        assert config.get("aliases"), f"project/us documented API without aliases: {name}"
+
+
+def test_ef_correction_handoff_notes_match_real_signatures():
+    """k_convert/fit_gold notes promise an EF_correction handoff; peaks must still expose it.
+
+    The peaks side can change signatures independently (e.g. the two-pass
+    fit_gold and EF_correction-aware k_convert), and the curated notes are
+    hand-written, so this guards the contract the notes advertise.
+    """
+    index = build_index()
+    signatures = {
+        name: describe_api(next(item for item in index.entries if item["name"] == name))["signature"]
+        for name in ("k_convert", "fit_gold")
+    }
+    # k_convert must still accept the correction the note tells the model to pass.
+    assert "EF_correction=" in signatures["k_convert"], signatures["k_convert"]
+    # fit_gold must still expose the correction type the note describes.
+    assert "EF_correction_type" in signatures["fit_gold"], signatures["fit_gold"]
 
 
 def test_stale_index_is_hot_rebuilt_by_search_and_get(monkeypatch, tmp_path):

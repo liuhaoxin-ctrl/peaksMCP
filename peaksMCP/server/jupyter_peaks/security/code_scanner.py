@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from peaksMCP.config import prompts as _load_prompts
+
 from .ipython_scanner import scan_ipython
 
 
@@ -21,6 +23,38 @@ class RiskLevel(StrEnum):
 
     HIGH = "high"
     CRITICAL = "critical"
+
+
+#: Curated issue-description templates (config/prompts.yaml). Wording lives in
+#: YAML; rule ids and risk levels stay here. Loaded once at import.
+_SCANNER_TEXT = _load_prompts().get("scanner") or {}
+
+
+def _desc(key: str, **values: object) -> str:
+    """Return one formatted scanner description from the curated prompts YAML.
+
+    Parameters
+    ----------
+    key : str
+        Template key under ``prompts.scanner`` in ``config/prompts.yaml``.
+    values
+        Placeholders to format into the template.
+
+    Returns
+    -------
+    str
+        Rendered description text.
+
+    Raises
+    ------
+    KeyError
+        If the template key is missing — a loud failure beats shipping an
+        empty or stale description to the model or the consent dialog.
+    """
+    template = _SCANNER_TEXT.get(key)
+    if template is None:
+        raise KeyError(f"scanner prompt template {key!r} missing from config/prompts.yaml")
+    return template.format(**values) if values else template
 
 
 @dataclass(slots=True)
@@ -494,7 +528,7 @@ def _classify_call(
         # A computed attribute name (``getattr(os, 'sy' + 'stem')``) makes the
         # fetched member unknowable: hard block rather than guess.
         issues.append(SecurityIssue(
-            "REF003", "getattr with a dynamic attribute name cannot be verified statically",
+            "REF003", _desc("ref_getattr_dynamic"),
             RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node),
         ))
     if name in {"setattr", "delattr", "builtins.setattr", "builtins.delattr"}:
@@ -504,7 +538,7 @@ def _classify_call(
             isinstance(attribute, ast.Constant) and isinstance(attribute.value, str)
         ):
             issues.append(SecurityIssue(
-                "REF003", f"dynamic attribute name passed to {name} cannot be verified statically",
+                "REF003", _desc("ref_dynamic_attr", name=name),
                 RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node),
             ))
         elif any(part in _REFLECTION_ATTRS for part in receiver_chain) or (
@@ -515,60 +549,60 @@ def _classify_call(
             )
         ):
             issues.append(SecurityIssue(
-                "SMUG002", f"attribute mutation on an imported module or reflection object via {name}",
+                "SMUG002", _desc("smug_attr_mutation", name=name),
                 RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node),
             ))
         elif name.rsplit(".", 1)[-1] == "setattr" and len(node.args) >= 3:
             value_name = ".".join(_chain(node.args[2], aliases))
             if _dangerous_reference(value_name):
                 issues.append(SecurityIssue(
-                    "SMUG002", f"setattr storing a dangerous callable ({value_name})",
+                    "SMUG002", _desc("smug_setattr_dangerous", value_name=value_name),
                     RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node),
                 ))
     if name in _RAW_FILE_WRITERS:
         issues.append(SecurityIssue(
-            "FILE003", f"raw-descriptor file write via {name}",
+            "FILE003", _desc("file_raw_write", name=name),
             RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node),
         ))
     elif name in _DESERIALIZE_SINKS or name.rsplit(".", 1)[-1] == "read_pickle":
         issues.append(SecurityIssue(
-            "DES001", f"unsafe deserialization via {name}",
+            "DES001", _desc("deserialize_unsafe", name=name),
             RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node),
         ))
     if name in _CRITICAL_CALLS or (name.split(".")[-1] in _CRITICAL_CALLS and name.startswith("builtins.")):
-        issues.append(SecurityIssue("EXEC001", f"dynamic code execution via {name}", RiskLevel.CRITICAL, getattr(node, "lineno", 0), ast.unparse(node)))
+        issues.append(SecurityIssue("EXEC001", _desc("exec_dynamic", name=name), RiskLevel.CRITICAL, getattr(node, "lineno", 0), ast.unparse(node)))
     elif name in _SYSTEM_CALLS:
-        issues.append(SecurityIssue("SYS001", f"system or destructive operation via {name}", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+        issues.append(SecurityIssue("SYS001", _desc("sys_destructive", name=name), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
     elif name in _DYNAMIC_IMPORTS:
-        issues.append(SecurityIssue("IMPORT001", f"dynamic import via {name}", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+        issues.append(SecurityIssue("IMPORT001", _desc("import_dynamic", name=name), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
     elif name in {"open", "builtins.open", "io.open"} and _open_modes(node) == "w":
-        issues.append(SecurityIssue("FILE001", "file opened in a modifying mode", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+        issues.append(SecurityIssue("FILE001", _desc("file_modifying"), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
     elif name in {"open", "builtins.open", "io.open"} and _open_modes(node) is None:
         # mode is a variable/expression: read-only-ness cannot be
         # confirmed, so it always requires explicit consent.
-        consent_issues.append(SecurityIssue("FILE002", "open() with a non-constant mode; read-only-ness cannot be confirmed — approve only if safe", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+        consent_issues.append(SecurityIssue("FILE002", _desc("file_mode_unclear"), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
     elif name.endswith(".open") and _has_path_origin(_chain(node.func, aliases)) and _open_modes(node, mode_position=0) == "w":
-        issues.append(SecurityIssue("FILE001", "path opened in a modifying mode", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+        issues.append(SecurityIssue("FILE001", _desc("file_modifying_path"), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
     elif _is_path_method_call(node, aliases):
-        issues.append(SecurityIssue("SYS001", f"destructive path operation via {name}", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+        issues.append(SecurityIssue("SYS001", _desc("path_destructive", name=name), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
     elif _is_env_mutation_call(node, aliases):
-        issues.append(SecurityIssue("ENV001", "process environment modification", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+        issues.append(SecurityIssue("ENV001", _desc("env_mutation"), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
     elif _is_savefig(node, aliases):
-        issues.append(SecurityIssue("SAVE001", "figure save to disk (savefig) is disabled; figures are rendered inline", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+        issues.append(SecurityIssue("SAVE001", _desc("savefig_disabled"), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
     elif name in _FILE_WRITERS or name.rsplit(".", 1)[-1] in _FILE_WRITE_METHOD_NAMES:
-        consent_issues.append(SecurityIssue("SAVE002", f"file write via {name}; approve only to write to disk", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+        consent_issues.append(SecurityIssue("SAVE002", _desc("file_write_consent", name=name), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
     target = _indirect_call_target(node, aliases)
     if target:
         if target in _INDIRECT_TARGETS:
-            issues.append(SecurityIssue("EXEC001", f"dynamic code execution via indirect fetch of {target}", RiskLevel.CRITICAL, getattr(node, "lineno", 0), ast.unparse(node)))
+            issues.append(SecurityIssue("EXEC001", _desc("exec_indirect", target=target), RiskLevel.CRITICAL, getattr(node, "lineno", 0), ast.unparse(node)))
         elif target in _SYSTEM_METHOD_NAMES | _PATH_METHODS:
-            issues.append(SecurityIssue("SYS001", f"system or destructive operation via indirect fetch of {target}", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+            issues.append(SecurityIssue("SYS001", _desc("sys_destructive_indirect", target=target), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
         elif target == "open" and _open_modes(node) == "w":
-            issues.append(SecurityIssue("FILE001", "file opened in a modifying mode via indirect fetch", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+            issues.append(SecurityIssue("FILE001", _desc("file_modifying_indirect"), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
         elif target == "open" and _open_modes(node) is None:
-            consent_issues.append(SecurityIssue("FILE002", "open() with a non-constant mode via indirect fetch; read-only-ness cannot be confirmed", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+            consent_issues.append(SecurityIssue("FILE002", _desc("file_mode_unclear_indirect"), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
         elif target in _FILE_WRITE_METHOD_NAMES:
-            consent_issues.append(SecurityIssue("SAVE002", f"file write via indirect fetch of {target}; approve only to write to disk", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+            consent_issues.append(SecurityIssue("SAVE002", _desc("file_write_consent_indirect", target=target), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
 
 
 def scan_code(code: str) -> ScanResult:
@@ -612,7 +646,7 @@ def scan_code(code: str) -> ScanResult:
                 # Star imports defeat all name-based tracking: pull in an
                 # unlisted ``os.system`` etc. that would never be seen.
                 issues.append(SecurityIssue(
-                    "CAP003", f"star import from {node.module} defeats name tracking; import the names explicitly",
+                    "CAP003", _desc("cap_star_import", module=node.module),
                     RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node),
                 ))
         if isinstance(node, ast.Call):
@@ -621,14 +655,14 @@ def scan_code(code: str) -> ScanResult:
                 # callee is unknowable from source, which is exactly how exec /
                 # subprocess are smuggled through containers.
                 issues.append(SecurityIssue(
-                    "IND002", "calling a value fetched through a subscript/container index cannot be tracked statically",
+                    "IND002", _desc("ind_subscript_call"),
                     RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node),
                 ))
             elif any(part in _REFLECTION_ATTRS for part in _chain(node.func, aliases)):
                 # __dict__ / __class__.__mro__ / __subclasses__ chains can reach
                 # any object in the interpreter; a call through them is unbounded.
                 issues.append(SecurityIssue(
-                    "REF001", "reflection attribute chain in a call cannot be bounded statically",
+                    "REF001", _desc("ref_chain_call"),
                     RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node),
                 ))
             name = _call_name(node, aliases)
@@ -637,18 +671,18 @@ def scan_code(code: str) -> ScanResult:
                 # subprocess / ctypes / importlib / pickle / joblib: process,
                 # native-code, dynamic-import and deserialization sinks.
                 issues.append(SecurityIssue(
-                    "CAP001", f"operation outside the analysis sandbox via {name}",
+                    "CAP001", _desc("cap_sandbox_via", name=name),
                     RiskLevel.CRITICAL, getattr(node, "lineno", 0), ast.unparse(node),
                 ))
             elif root in _REFLECTION_BASES:
                 # globals/locals/vars/__builtins__ can reach any callable.
                 issues.append(SecurityIssue(
-                    "CAP002", f"reflection through {name}; its effect cannot be bounded statically",
+                    "CAP002", _desc("cap_reflection_via", name=name),
                     RiskLevel.CRITICAL, getattr(node, "lineno", 0), ast.unparse(node),
                 ))
             elif root in _NETWORK_MODULES:
                 consent_issues.append(SecurityIssue(
-                    "NET001", f"network request via {name}; approve only to send data externally",
+                    "NET001", _desc("network_consent", name=name),
                     RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node),
                 ))
             else:
@@ -663,7 +697,7 @@ def scan_code(code: str) -> ScanResult:
             )
             for target in targets:
                 if _is_env_assignment(target, aliases):
-                    issues.append(SecurityIssue("ENV001", "process environment modification", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+                    issues.append(SecurityIssue("ENV001", _desc("env_mutation"), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
                 elif (
                     isinstance(node, ast.AugAssign)
                     and isinstance(target, ast.Name)
@@ -671,23 +705,23 @@ def scan_code(code: str) -> ScanResult:
                 ):
                     # ``env = os.environ; env |= {...}`` mutates the process
                     # environment through an aliased Name target.
-                    issues.append(SecurityIssue("ENV001", "process environment modification through an aliased os.environ", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+                    issues.append(SecurityIssue("ENV001", _desc("env_mutation_aliased"), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
                 if isinstance(target, ast.Attribute):
                     rule = _smuggling_rule_id(target, value_chain, aliases)
                     if rule:
                         issues.append(SecurityIssue(
                             rule,
-                            "attribute smuggling: storing a dangerous callable where name tracking cannot follow it",
+                            _desc("smug_hidden_callable"),
                             RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node),
                         ))
         if isinstance(node, ast.Delete):
             for target in node.targets:
                 if _is_env_assignment(target, aliases):
-                    issues.append(SecurityIssue("ENV001", "process environment modification", RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+                    issues.append(SecurityIssue("ENV001", _desc("env_mutation"), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
                 if isinstance(target, ast.Attribute) and _smuggling_rule_id(target, None, aliases):
                     issues.append(SecurityIssue(
                         "SMUG001",
-                        "attribute deletion on an imported module or reflection object",
+                        _desc("smug_attribute_delete"),
                         RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node),
                     ))
     reason = "; ".join(issue.description for issue in issues[:3]) if issues else None

@@ -16,7 +16,10 @@ description: Use `peaksMCP` to call the `peaks` package and perform preprocessin
 1. Use the fitted gold curve to level the Fermi edge of the $E_k\text{--}k$ data and set the Fermi energy to zero $\rightarrow$ set the high-symmetry point in angle space to zero $\rightarrow$ convert to k-space.
 2. Prioritize using the public `peaks` APIs (which contain complete docstrings); do not reimplement internal `peaks` functions.
 3. When performing 4th-order polynomial fitting (`poly4`) on gold data, outliers must be excluded prior to fitting.
-4. **Use preprocess_cut for fast process**
+4. **One gold fit, then per-cut conversion**: run `fit_gold` once on the Au
+   reference, apply the result with `da.metadata.set_EF_correction(EF_correction)`,
+   then call `da.k_convert()` on each cut. There is no single-call shortcut — do not
+   re-fit the Fermi edge per cut.
 
 ## Required Parameters
 
@@ -27,6 +30,14 @@ description: Use `peaksMCP` to call the `peaks` package and perform preprocessin
 ## Deliverables & Output Protocol
 
 Use `plot` to convey **key** information to the user.
-Save processed cuts with `peaks.save(da, path)` (or `save_processed`), not raw `da.to_netcdf` — it fails on unsanitized metadata attrs.
+Save processed cuts with `da.save(path)`, not raw `da.to_netcdf` — it fails on unsanitized metadata attrs.
 
 **Carefully review the template code returned by mcp_list_resources and follow its intent.**
+
+## Figure debugging protocol
+
+When a figure output is questioned, diagnose **whether an image rendered** before changing any code:
+
+1. Call `notebook_read_active_cell_output` and look for the `inline_image_rendered` marker (or `image/png` in the mime list).
+2. **Marker present** → the figure WAS rendered. The problem is its *content*: inspect the data/values used.
+3. **Bare `<Figure ...>` repr with no image marker** → the figure was NOT displayed. Fix the display, not the fit.

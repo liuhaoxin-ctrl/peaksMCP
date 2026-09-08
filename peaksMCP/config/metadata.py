@@ -1,4 +1,4 @@
-"""Read the curated presentation layer for MCP tools."""
+"""Read the curated presentation layer for MCP tools and runtime prompts."""
 
 from __future__ import annotations
 
@@ -12,6 +12,35 @@ import yaml
 @lru_cache(maxsize=1)
 def _document() -> dict[str, Any]:
     return yaml.safe_load(Path(__file__).with_name("metadata_baseline.yaml").read_text(encoding="utf-8")) or {}
+
+
+@lru_cache(maxsize=1)
+def _prompts_document() -> dict[str, Any]:
+    return yaml.safe_load(Path(__file__).with_name("prompts.yaml").read_text(encoding="utf-8")) or {}
+
+
+def prompts() -> dict[str, Any]:
+    """Return the curated runtime prompt text (the L3 layer).
+
+    Model/user-facing copy that used to be hardcoded in Python source
+    (``tools.py`` interactive/guidance text, ``notebook_unsafe.py`` hard-block
+    replies and the code/ipython scanner issue descriptions) is stored in
+    ``prompts.yaml`` so wording can be reviewed and edited without touching
+    code. Python only formats the ``{placeholders}``.
+
+    Returns
+    -------
+    dict
+        Nested prompt groups: ``interactive_omitted_note``,
+        ``list_resources_guidance``, ``notebook_unsafe``, ``scanner``,
+        ``ipython``.
+
+    Examples
+    --------
+    >>> "scanner" in prompts()
+    True
+    """
+    return _prompts_document().get("prompts") or {}
 
 
 def tool_metadata(name: str) -> dict[str, str]:
