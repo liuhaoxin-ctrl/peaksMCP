@@ -1,39 +1,48 @@
-"""Unified data loading facade.
+"""Unified data loading facade: metadata first, data as the lazy layer.
 
 One entry for the agent to load ANY data — any number of files, any
 supported type — from a notebook:
 
     data       = load_data("BP_0020.nc")            # one NetCDF -> DataArray
     raw        = load_data("raw/BP_0020.pxt")       # one PXT    -> DataArray
-    scans      = load_data("data/")                 # folder     -> {stem: DataArray}
-    scans      = load_data("data_netcdf/")          # already-converted folder
-    subset     = load_data(["a.nc", "b.nc"])        # explicit list -> same mapping
+    exp        = load_data("data/")                 # folder     -> LoadedScans
+    exp        = load_data("data_netcdf/")          # already-converted folder
+    subset     = load_data(["a.nc", "b.nc"])        # explicit list -> LoadedScans
+
+Folder / list loads return a lightweight :class:`LoadedScans` index — the
+metadata the agent needs to DECIDE (which scans are gold/cut/mapping, which
+still need conversion) — with the data itself as one extra layer: access
+``exp[stem]`` to load that single file (NetCDF lazily).  Whatever the number
+of files, loading never materialises the data; the printed summary is one
+line and the index object is the shared record in the notebook.
 
 Rules:
-- Single file returns a DataArray; a folder or a list returns a
-  ``{stem: DataArray}`` mapping (sorted, so data/ and data_netcdf/ load in
-  one call). NetCDF stays lazy by default.
-- A sibling ``datasheet.csv`` in a folder is translated automatically and
-  attached to raw PXT arrays; arrays that already carry converted metadata
-  are left untouched.
-- PXT input is read through the internal PXT reader; NetCDF through
-  ``peaks.load`` (L112 geometry registered).
-- Optional explicit ``metadata`` (path or dict) is embedded into
-  ``attrs["experiment_metadata_json"]``.
+- Single file returns a DataArray; a folder or a list returns LoadedScans.
+- Metadata source order: explicit ``metadata`` argument > sibling
+  ``datasheet.csv`` in the folder (translated once) > each NetCDF's embedded
+  ``experiment_metadata_json`` (header read only).  PXT files without a
+  datasheet carry path info only.
+- Data layer: ``exp[stem]`` reads NetCDF lazily (default) or the raw PXT via
+  the internal PXT reader; arrays that already carry converted metadata are
+  left untouched; raw PXT gets the translated document attached.
 - The original files are never modified.
 """
 
 from __future__ import annotations
 
+import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .models import Report
 
+_SUPPORTED_SUFFIXES = {".pxt", ".nc"}
+
 
 class LoadReport(Report):
-    """Result of load_data: which file, how it was read, dims."""
+    """Result of load_data for the single-file form: which file, how read."""
 
     operation = "load_data"
     status = "ok"
@@ -68,21 +77,12 @@ def _attach_metadata(data: Any, metadata: Any) -> None:
     data.attrs["experiment_metadata_json"] = payload
 
 
-_SUPPORTED_SUFFIXES = {".pxt", ".nc"}
-
-
-def _index_from_stem(stem: str) -> int | None:
-    """Parse a trailing index out of a filename stem (``BP_0020`` -> 20)."""
-    match = re.search(r"(?:^|_|-)(\d+)\s*$", stem)
-    return int(match.group(1)) if match else None
-
-
 def _single(path: Path, lazy: bool) -> tuple[Any, str]:
     """Load one supported file into a DataArray (delegation seam for tests).
 
     peaks.load prints a per-file Markdown line on the lazy path; it is
-    swallowed here so a folder load stays quiet (load_data prints its own
-    one-line summary). Loading itself is unaffected.
+    swallowed here so a load stays quiet (load_data prints its own summary).
+    Loading itself is unaffected.
     """
     suffix = path.suffix.lower()
     if suffix == ".pxt":
@@ -103,14 +103,94 @@ def _single(path: Path, lazy: bool) -> tuple[Any, str]:
     return load(str(path), lazy=False, quiet=True), "NetCDF"
 
 
-def _auto_datasheet_payload(directory: Path) -> dict[str, Any] | None:
-    """Translate a sibling ``datasheet.csv`` once for a directory load.
+def _index_from_stem(stem: str) -> int | None:
+    """Parse a trailing index out of a filename stem (``BP_0020`` -> 20)."""
+    match = re.search(r"(?:^|_|-)(\d+)\s*$", stem)
+    return int(match.group(1)) if match else None
 
-    Mirrors the converter's sibling-datasheet discovery so a raw experiment
-    folder loads with its record table attached before any conversion ran.
+
+def _scan_kind_of(is_gold: bool, data_format: str) -> str:
+    """Datasheet-based kind (no data read): gold/cut/mapping/unknown."""
+    if is_gold or "au" in (data_format or "").lower() or "金" in (data_format or ""):
+        return "gold"
+    lowered = (data_format or "").lower()
+    if "sweep" in lowered:
+        return "cut"
+    if "mapping" in lowered:
+        return "mapping"
+    return "unknown"
+
+
+@dataclass
+class ScanEntry:
+    """One file in a LoadedScans index: identity + decision metadata."""
+
+    stem: str
+    path: str
+    file_kind: str  # "pxt" | "netcdf"
+    index: int | None = None
+    data_format: str = ""
+    is_gold: bool = False
+    scan_kind: str = "unknown"
+    theta_offset_deg: float | None = None
+    energy_window_eV: tuple[float, float] | None = None
+    #: None = unknown (e.g. explicit list); True = NetCDF present; False =
+    #: raw PXT without its converted sibling (still needs conversion).
+    converted: bool | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "stem": self.stem,
+            "path": self.path,
+            "file_kind": self.file_kind,
+            "index": self.index,
+            "data_format": self.data_format,
+            "is_gold": self.is_gold,
+            "scan_kind": self.scan_kind,
+            "theta_offset_deg": self.theta_offset_deg,
+            "energy_window_eV": self.energy_window_eV,
+            "converted": self.converted,
+        }
+
+
+def _fill_from_record(entry: ScanEntry, index: int | None, record: Any) -> ScanEntry:
+    """Fill decision metadata from one datasheet/embedded record."""
+    if index is not None:
+        entry.index = index
+    experiment = (record or {}).get("experiment") or {}
+    data_format = str(experiment.get("data_format") or "")
+    entry.data_format = data_format
+    entry.is_gold = bool(record.get("is_gold_reference"))
+    entry.scan_kind = _scan_kind_of(entry.is_gold, data_format)
+    offset = record.get("theta_offset_deg")
+    entry.theta_offset_deg = float(offset) if isinstance(offset, (int, float)) else None
+    start, stop = experiment.get("energy_start_eV"), experiment.get("energy_stop_eV")
+    if isinstance(start, (int, float)) and isinstance(stop, (int, float)):
+        entry.energy_window_eV = (float(start), float(stop))
+    return entry
+
+
+def _datasheet_candidates(directory: Path) -> list[Path]:
+    """Where a datasheet may live for a folder being indexed.
+
+    The standard experiment layout keeps ``datasheet.csv`` inside the raw
+    ``data/`` folder; the converted sibling is ``<folder>_netcdf/`` (or the
+    raw sibling when indexing ``<folder>_netcdf/``).  Candidates: inside the
+    folder, in its parent, and in the raw sibling of a ``*_netcdf`` folder.
     """
-    for name in ("datasheet.csv", "Datasheet.csv"):
-        datasheet = directory / name
+    candidates = [directory / name for name in ("datasheet.csv", "Datasheet.csv")]
+    candidates.append(directory.parent / "datasheet.csv")
+    if directory.name.endswith("_netcdf"):
+        raw_sibling = directory.parent / directory.name[: -len("_netcdf")]
+        candidates.extend(
+            raw_sibling / name for name in ("datasheet.csv", "Datasheet.csv")
+        )
+    return candidates
+
+
+def _auto_datasheet_payload(directory: Path) -> dict[str, Any] | None:
+    """Translate the experiment's ``datasheet.csv`` once for a directory load."""
+    for datasheet in _datasheet_candidates(directory):
         if not datasheet.exists():
             continue
         try:
@@ -122,13 +202,162 @@ def _auto_datasheet_payload(directory: Path) -> dict[str, Any] | None:
     return None
 
 
-def _attach_to(data: Any, payload: dict[str, Any] | None, index: int | None) -> None:
-    """Embed the experiment metadata document onto a loaded DataArray.
+def _embedded_record(path: Path) -> tuple[int | None, Any]:
+    """Read the metadata record embedded in a converted NetCDF (header only).
 
-    Arrays that already carry converted metadata (NetCDF loaded from a
-    conversion) are left untouched; raw PXT arrays get the document and,
-    when the index is known, an ``experiment_index`` attribute.
+    NetCDF arrays already carry ``experiment_index`` and
+    ``experiment_metadata_json`` from the conversion; reading the header is
+    cheap and never loads the data blocks.
     """
+    try:
+        data, _ = _single(path, lazy=True)
+    except Exception:
+        return None, None
+    try:
+        index = data.attrs.get("experiment_index")
+        raw = data.attrs.get("experiment_metadata_json")
+        payload = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        records = payload.get("records") or {}
+        return index, records.get(str(index))
+    except Exception:
+        return None, None
+
+
+def _record_of(payload: dict[str, Any] | None, index: int | None) -> Any:
+    if payload is None or index is None:
+        return None
+    try:
+        return (payload.get("records") or {}).get(str(index))
+    except Exception:
+        return None
+
+
+def _conversion_sibling_dir(folder: Path) -> Path | None:
+    """The conversion target for a raw data folder: sibling <name>_netcdf."""
+    return folder.parent / f"{folder.name}_netcdf"
+
+
+class LoadedScans:
+    """Lightweight experiment index: decision metadata + lazy data layer.
+
+    Whatever the file count, constructing the index reads no data blocks:
+    entries carry the datasheet/embedded metadata (kind, gold, offsets,
+    windows, conversion state) and ``scans[stem]`` loads that one file on
+    demand (NetCDF lazily by default).  The index object itself is the
+    shared record left in the notebook.
+    """
+
+    def __init__(
+        self,
+        entries: list[ScanEntry],
+        *,
+        source: str,
+        lazy: bool = True,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        entries = sorted(entries, key=lambda entry: entry.stem)
+        self.entries = entries
+        self._by_stem = {entry.stem: entry for entry in entries}
+        self.source = source
+        self.lazy = lazy
+        self.payload = payload
+        self._cache: dict[str, Any] = {}
+
+    # -- mapping-style access ------------------------------------------------
+    def __len__(self) -> int:
+        return len(self.entries)
+
+    def __iter__(self):
+        return iter(self.entries)
+
+    def __contains__(self, stem: object) -> bool:
+        return stem in self._by_stem
+
+    @property
+    def stems(self) -> list[str]:
+        return [entry.stem for entry in self.entries]
+
+    def keys(self) -> list[str]:
+        return self.stems
+
+    # -- decision helpers ----------------------------------------------------
+    @property
+    def gold(self) -> list[str]:
+        return [entry.stem for entry in self.entries if entry.scan_kind == "gold"]
+
+    @property
+    def cuts(self) -> list[str]:
+        return [entry.stem for entry in self.entries if entry.scan_kind == "cut"]
+
+    @property
+    def mappings(self) -> list[str]:
+        return [entry.stem for entry in self.entries if entry.scan_kind == "mapping"]
+
+    @property
+    def needs_conversion(self) -> list[str]:
+        """Raw PXT entries whose converted NetCDF is missing."""
+        return [entry.stem for entry in self.entries if entry.converted is False]
+
+    # -- data layer (the extra dimension) ------------------------------------
+    def __getitem__(self, stem: str) -> Any:
+        """Load ONE file on demand; NetCDF stays lazy, PXT is read eagerly."""
+        if stem in self._cache:
+            return self._cache[stem]
+        entry = self._by_stem.get(stem)
+        if entry is None:
+            raise KeyError(
+                f"load_data: {stem!r} is not in this index. Stems: "
+                + ", ".join(self.stems[:10])
+                + ("..." if len(self.stems) > 10 else "")
+            )
+        path = Path(entry.path)
+        data, _kind = _single(path, lazy=self.lazy)
+        if "experiment_metadata_json" not in data.attrs and self.payload is not None:
+            index = _index_from_stem(stem)
+            record = _record_of(self.payload, index)
+            if record is not None:
+                _attach_to(data, self.payload, index)
+        self._cache[stem] = data
+        return data
+
+    def load(self, stem: str) -> Any:
+        """Alias of ``scans[stem]`` for readability."""
+        return self[stem]
+
+    def summary_line(self) -> str:
+        counts = {
+            kind: sum(entry.scan_kind == kind for entry in self.entries)
+            for kind in ("gold", "cut", "mapping", "unknown")
+        }
+        to_convert = len(self.needs_conversion)
+        where = self.source
+        text = (
+            f"load_data: {len(self.entries)} file(s) indexed from {where} "
+            f"(gold={counts['gold']}, cuts={counts['cut']}, "
+            f"mappings={counts['mapping']}, unknown={counts['unknown']})"
+        )
+        if self.payload is not None:
+            text += " metadata=datasheet"
+        elif any(entry.file_kind == "netcdf" for entry in self.entries):
+            text += " metadata=embedded"
+        else:
+            text += " metadata=none"
+        if to_convert:
+            text += f"; {to_convert} still need(s) conversion"
+        text += "; data layer via scans[stem]"
+        return text[:200]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "lazy": self.lazy,
+            "summary": self.summary_line(),
+            "entries": [entry.to_dict() for entry in self.entries],
+        }
+
+
+def _attach_to(data: Any, payload: dict[str, Any] | None, index: int | None) -> None:
+    """Embed the experiment metadata document onto a loaded DataArray."""
     if payload is None:
         return
     try:
@@ -147,34 +376,33 @@ def load_data(
     lazy: bool = True,
     metadata: str | Path | dict[str, Any] | None = None,
 ) -> Any:
-    """Load data for the agent: one file, many files, or a whole folder.
-
-    Unified loading entry that accepts any number of supported inputs and
-    returns what matches the shape of the request:
+    """Load data for the agent: metadata first, data as the lazy layer.
 
     - one ``.pxt`` / ``.nc`` file  -> a single peaks DataArray;
-    - a folder                    -> ``{stem: DataArray, ...}`` for every
-      ``.pxt`` / ``.nc`` inside it (sorted, so a directory like ``data/`` or
-      ``data_netcdf/`` loads in one call); a sibling ``datasheet.csv`` is
-      translated automatically and attached to raw PXT arrays (arrays that
-      already carry converted metadata are left untouched);
-    - a list/tuple of paths       -> same mapping as the folder case.
+    - a folder or a path list      -> a :class:`LoadedScans` index: every
+      file's decision metadata (index, data format, gold/cut/mapping kind,
+      theta offset, energy window, conversion state) without reading any
+      data block, plus the data layer through ``scans[stem]`` (NetCDF lazy).
+
+    Metadata for the index comes from, in order: the explicit ``metadata``
+    argument, a sibling ``datasheet.csv`` in the folder, or each NetCDF's
+    embedded ``experiment_metadata_json`` (header only).  Raw PXT files
+    without a datasheet carry path info only.
 
     Parameters
     ----------
     source : str, Path, list or tuple
         One file, one directory, or an explicit sequence of files.
     lazy : bool, default True
-        Passed to the underlying reader (NetCDF keeps chunks lazy).
+        NetCDF data stays chunked until accessed.
     metadata : str, Path or dict, optional
-        Explicit experiment metadata (``experiment_metadata.json``) embedded
-        into ``attrs["experiment_metadata_json"]`` for every loaded array.
+        Explicit experiment metadata used for the index and attached to raw
+        PXT arrays on load.
 
     Returns
     -------
-    peaks DataArray or dict of DataArray
-        A single DataArray for one file; a ``{stem: DataArray}`` mapping for
-        a folder or a sequence of files.
+    peaks DataArray or LoadedScans
+        A DataArray for one file; a LoadedScans index for a folder/list.
 
     Raises
     ------
@@ -186,7 +414,7 @@ def load_data(
         paths = [Path(item).expanduser() for item in source]
         if not paths:
             raise ValueError("load_data: no paths given (empty sequence).")
-        return _load_many(paths, lazy=lazy, metadata=metadata)
+        return _index_paths(paths, lazy=lazy, metadata=metadata)
 
     path = Path(source).expanduser()
     if not path.exists():
@@ -194,9 +422,10 @@ def load_data(
             f"load_data: path not found: {path}. Check the path before retrying."
         )
     if path.is_dir():
-        return _load_many(
+        return _index_paths(
             sorted(
-                item for item in path.iterdir()
+                item
+                for item in path.iterdir()
                 if item.is_file() and item.suffix.lower() in _SUPPORTED_SUFFIXES
             ),
             lazy=lazy,
@@ -215,91 +444,61 @@ def load_data(
     return data
 
 
-def _load_many(
+def _index_paths(
     paths: list[Path],
     *,
     lazy: bool,
     metadata: Any,
     directory: Path | None = None,
-) -> dict[str, Any]:
-    """Load a set of paths into a ``{stem: DataArray}`` mapping."""
+) -> LoadedScans:
+    """Build a LoadedScans index for a set of paths (no data read)."""
     if not paths:
         where = f" in {directory}" if directory is not None else ""
         raise ValueError(
             f"load_data: no supported data files (.pxt, .nc){where}."
         )
-    payload = metadata
-    if payload is not None and not isinstance(payload, dict):
-        try:
-            from peaksMCP.pxt_utils.metadata import _load_metadata
+    payload: dict[str, Any] | None = None
+    if metadata is not None:
+        if isinstance(metadata, dict):
+            payload = metadata
+        else:
+            try:
+                from peaksMCP.pxt_utils.metadata import _load_metadata
 
-            payload = _load_metadata(payload)
-        except Exception:
-            payload = None
-    elif payload is None and directory is not None:
+                payload = _load_metadata(metadata)
+            except Exception:
+                payload = None
+    elif directory is not None:
         payload = _auto_datasheet_payload(directory)
 
-    loaded: dict[str, Any] = {}
-    pxt_count = nc_count = 0
-    failed: list[str] = []
+    sibling = _conversion_sibling_dir(directory) if directory is not None else None
+    entries: list[ScanEntry] = []
     for path in paths:
-        try:
-            data, kind = _single(path, lazy)
-        except Exception as exc:
-            failed.append(f"{path.name} ({type(exc).__name__}: {exc})")
-            continue
-        if kind == "PXT":
-            pxt_count += 1
-            index = _index_from_stem(path.stem)
-            _attach_to(data, payload, index)
+        stem = path.stem
+        file_kind = "netcdf" if path.suffix.lower() == ".nc" else "pxt"
+        index = _index_from_stem(stem)
+        record = _record_of(payload, index)
+        converted: bool | None
+        if file_kind == "netcdf":
+            converted = True
+        elif sibling is not None:
+            converted = (sibling / f"{stem}.nc").exists()
         else:
-            nc_count += 1
-            _attach_to(data, payload, _index_from_stem(path.stem))
-        loaded[path.stem] = data
-    if not loaded:
-        raise ValueError(
-            "load_data: none of the requested files could be loaded: "
-            + "; ".join(failed[:5])
+            converted = None
+        entry = ScanEntry(
+            stem=stem,
+            path=str(path),
+            file_kind=file_kind,
+            converted=converted,
         )
-    where = directory or ("sequence" if len(paths) > 1 else str(paths[0]))
-    names = sorted(loaded)
-    if len(names) <= 12:
-        keys_text = "{" + ", ".join(names) + "}"
-    else:
-        keys_text = (
-            "{" + ", ".join(names[:5]) + ", ..., " + names[-1]
-            + f"}} ({len(names)} keys)"
-        )
-    # First line = the agent's cognition channel (short, echoed to the model):
-    # what was loaded, where, and where the mapping lives.
-    print(
-        f"load_data: {len(loaded)} file(s) loaded from {where} "
-        f"({pxt_count} pxt, {nc_count} netcdf); returned dict {keys_text}"
-    )
-    # Following rows = the notebook archive for the user (per-file identities).
-    for path in paths:
-        data = loaded.get(path.stem)
-        if data is None:
-            continue
-        kind = "pxt" if path.suffix.lower() == ".pxt" else "netcdf"
-        shape = ", ".join(f"{dim}×{size}" for dim, size in data.sizes.items())
-        note = _identity_note(payload, _index_from_stem(path.stem))
-        print(f"  {path.stem:<16s} {kind:<7s} ({shape}){note}")
-    if failed:
-        print(f"load_data: skipped {len(failed)} file(s): {'; '.join(failed[:3])}")
-    return loaded
-
-
-def _identity_note(payload: dict[str, Any] | None, index: int | None) -> str:
-    """Datasheet identity for one file's archive row (index, data format)."""
-    if payload is None or index is None:
-        return ""
-    try:
-        record = (payload.get("records") or {}).get(str(index))
-        data_format = str(((record or {}).get("experiment") or {}).get("data_format") or "")
-    except Exception:
-        return ""
-    parts = [f"index={index}"]
-    if data_format:
-        parts.append(data_format)
-    return "  " + "  ".join(parts)
+        if record is not None:
+            entry = _fill_from_record(entry, index, record)
+        elif file_kind == "netcdf" and record is None:
+            embedded_index, embedded = _embedded_record(path)
+            if embedded is not None:
+                entry = _fill_from_record(entry, embedded_index, embedded)
+        entries.append(entry)
+    shown_source = directory.name if directory is not None else "sequence"
+    scans = LoadedScans(entries, source=shown_source, lazy=lazy, payload=payload)
+    print(scans.summary_line())
+    return scans

@@ -164,10 +164,11 @@ def test_native_catalog_v1_exists_and_holds_only_upstream_entries():
     assert "k_convert" in apis and "fit_gold" in apis
 
 
-def test_load_data_folder_returns_stem_mapping_with_datasheet(monkeypatch, tmp_path, capsys):
-    """A whole experiment folder loads in one call; the sibling datasheet is
-    translated and attached to the raw PXT arrays."""
+def test_load_data_folder_returns_index_with_datasheet(monkeypatch, tmp_path, capsys):
+    """A whole experiment folder is indexed without reading data; the sibling
+    datasheet feeds the decision metadata and the data layer loads on demand."""
     from peaksMCP import pxt_utils
+    from peaksMCP.overrides import LoadedScans
 
     folder = tmp_path / "data"
     folder.mkdir()
@@ -192,16 +193,22 @@ def test_load_data_folder_returns_stem_mapping_with_datasheet(monkeypatch, tmp_p
         encoding="utf-8",
     )
     loaded = load_data(str(folder))
-    assert isinstance(loaded, dict)
-    assert sorted(loaded) == ["BP_0005", "BP_0020"]
-    assert loaded["BP_0020"].attrs["experiment_index"] == 20
+    assert isinstance(loaded, LoadedScans)
+    assert loaded.stems == ["BP_0005", "BP_0020"]
+    # Decision metadata without touching data files.
+    assert loaded.cuts == ["BP_0005"] and loaded.gold == ["BP_0020"]
+    entry20 = loaded.entries[1]
+    assert entry20.index == 20 and entry20.data_format == "Au sweep"
+    assert entry20.scan_kind == "gold"
+    # Data layer: loading one stem reads exactly that file and attaches the
+    # translated document.
+    data20 = loaded["BP_0020"]
+    assert data20.attrs["experiment_index"] == 20
     doc = loaded["BP_0005"].attrs["experiment_metadata_json"]
     assert doc["records"]["5"]["experiment"]["data_format"] == "sweep"
     assert doc["records"]["20"]["experiment"]["data_format"] == "Au sweep"
     out = capsys.readouterr().out
-    assert "2 file(s) loaded" in out and "2 pxt" in out
-    assert "returned dict {BP_0005, BP_0020}" in out  # agent's key guidance
-    assert "index=20  Au sweep" in out  # user's archive identity row
+    assert "2 file(s) indexed" in out and "gold=1, cuts=1" in out
 
 
 def test_load_data_sequence_of_files(monkeypatch, tmp_path, capsys):
@@ -215,26 +222,77 @@ def test_load_data_sequence_of_files(monkeypatch, tmp_path, capsys):
         lambda path: xr.DataArray(np.ones((2, 2)), dims=("eV", "theta_par")),
     )
     loaded = load_data([str(a), str(b)])
-    assert sorted(loaded) == ["A_0001", "B_0002"]
+    assert loaded.stems == ["A_0001", "B_0002"]
     out = capsys.readouterr().out
-    assert "2 file(s) loaded" in out
+    assert "2 file(s) indexed" in out
 
 
-def test_load_data_folder_reports_failed_files(monkeypatch, tmp_path, capsys):
+def test_load_data_index_never_reads_but_data_layer_fails_per_file(monkeypatch, tmp_path):
+    """Indexing a folder reads nothing; a corrupt file only fails when its
+    data layer is accessed, and other stems keep working."""
     from peaksMCP import pxt_utils
+    from peaksMCP.overrides import LoadedScans
 
     folder = tmp_path / "data"
     folder.mkdir()
     (folder / "good.pxt").write_bytes(b"x")
+    (folder / "bad.pxt").write_bytes(b"y")
 
     def flaky(path):
         if "good" in str(path):
             return xr.DataArray(np.ones((2, 2)), dims=("eV", "theta_par"))
         raise OSError("corrupt")
 
-    (folder / "bad.pxt").write_bytes(b"y")
     monkeypatch.setattr(pxt_utils.loader, "load_pxt", flaky)
     loaded = load_data(str(folder))
-    assert list(loaded) == ["good"]
+    assert isinstance(loaded, LoadedScans)
+    assert loaded.stems == ["bad", "good"]  # both indexed, nothing read
+    with pytest.raises(OSError, match="corrupt"):
+        loaded["bad"]
+    assert loaded["good"].dims == ("eV", "theta_par")
+
+
+def test_load_data_index_uses_embedded_netcdf_metadata(monkeypatch, tmp_path, capsys):
+    """A converted folder without a datasheet still gets decision metadata
+    from each NetCDF's embedded experiment_metadata_json (header only)."""
+    import json as _json
+
+    from peaksMCP.overrides import LoadedScans
+    from peaksMCP.overrides import load as load_module
+
+    folder = tmp_path / "data_netcdf"
+    folder.mkdir()
+    for stem in ("BP_0015", "BP_0020"):
+        (folder / f"{stem}.nc").write_bytes(b"fake-nc")
+
+    def fake_single(path, lazy=True):
+        import os
+
+        index = load_module._index_from_stem(os.path.basename(os.fspath(path))[:-3])
+        document = {
+            "records": {
+                "15": {"experiment": {"data_format": "sweep",
+                                      "energy_start_eV": 2.2, "energy_stop_eV": 2.7}},
+                "20": {"experiment": {"data_format": "Au sweep"}},
+            }
+        }
+        return xr.DataArray(
+            np.ones((3, 4)), dims=("eV", "theta_par"),
+            attrs={
+                "units": "counts",
+                "experiment_index": index,
+                "experiment_metadata_json": _json.dumps(document),
+            },
+        ), "NetCDF"
+
+    monkeypatch.setattr(load_module, "_single", fake_single)
+    loaded = load_data(str(folder))
+    assert isinstance(loaded, LoadedScans)
+    assert loaded.gold == ["BP_0020"] and loaded.cuts == ["BP_0015"]
+    assert loaded.entries[0].energy_window_eV == (2.2, 2.7)
+    assert loaded.entries[0].converted is True
     out = capsys.readouterr().out
-    assert "skipped 1 file(s)" in out and "bad" in out
+    assert "metadata=embedded" in out
+    # The data layer goes through the same single-file reader.
+    data = loaded["BP_0015"]
+    assert data.attrs["experiment_index"] == 15

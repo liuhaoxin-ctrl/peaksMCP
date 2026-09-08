@@ -39,7 +39,7 @@ from .batch_preprocess import (
 from .calibration import GoldCalibration, fit_gold_reference
 from .conversion import convert_experiment
 from .inspection import ExperimentSummary, ScanKind, ScanSummary, inspect_experiment
-from .load import load_data
+from .load import LoadedScans, ScanEntry, load_data
 from .models import Report, report_dict, report_summary
 from .preprocess import ProcessingReport, ProcessingResult, preprocess_cut, preprocess_mapping
 from .save import save_result
@@ -47,6 +47,8 @@ from .save import save_result
 __all__ = [
     # loading and persistence facades
     "load_data",
+    "LoadedScans",
+    "ScanEntry",
     "save_result",
     # task-level facades
     "convert_experiment",

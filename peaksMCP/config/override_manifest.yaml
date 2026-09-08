@@ -53,11 +53,14 @@ apis:
       - 读取PXT
       - 打开PXT
     docstring_note: |
-      Unified loading entry for ANY data: one file returns a DataArray
-      (NetCDF keeps full peaks geometry; raw PXT loads for inspection), a
-      folder or a path list returns a {stem: DataArray} mapping — data/ and
-      data_netcdf/ load in one call. A sibling datasheet.csv is translated
-      and attached to raw PXT arrays. Never writes to disk.
+      Unified loading entry for ANY data, metadata first: one file returns a
+      DataArray; a folder or a path list returns a LoadedScans index with
+      every file's decision metadata (index, data format, gold/cut/mapping
+      kind, theta offset, energy window, conversion state) — data/ and
+      data_netcdf/ index in one call without reading data blocks, and
+      scans[stem] loads one file lazily on demand. Metadata comes from the
+      datasheet.csv sibling, embedded NetCDF records, or an explicit
+      metadata argument. Never writes to disk.
   save_result:
     module: peaksMCP.overrides.save
     project: true
@@ -392,12 +395,12 @@ project:
     exposure: facade
     category: ingestion
     kind: loader
-    summary: Load any data for the agent - one file, a list, or a whole folder.
+    summary: Load any data for the agent - one file, or an index of a folder/list.
     inputs: "source: one file (.pxt/.nc), a folder, or a sequence of paths; lazy: bool=True; metadata: optional path/dict"
-    returns: "peaks DataArray (one file) or {stem: DataArray} (folder/sequence)"
+    returns: "peaks DataArray (one file) or LoadedScans (folder/sequence: decision metadata + scans[stem] data layer)"
     preconditions: "path(s) exist; folder contains supported files"
     errors: "missing path; unsupported suffix; empty folder/sequence"
-    example: 'scans = load_data("data/")   # {stem: DataArray}'
+    example: 'scans = load_data("data/"); gold = scans.gold; cut = scans["BP_0015"]'
     stability: new
   - name: save_result
     export: peaksMCP.overrides.save_result
