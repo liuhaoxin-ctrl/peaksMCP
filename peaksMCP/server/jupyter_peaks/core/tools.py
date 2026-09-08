@@ -175,16 +175,16 @@ def _require_index(state: SharedState):
 def _record_verified_api(state: SharedState, entry: dict[str, Any]) -> None:
     """Remember that a canonical API was fetched via peaks_get_api this session.
 
-    Unlocking covers the canonical name and every search alias, so a later
-    cell that writes the alias (e.g. ``mapping slice`` for ``show_mapping_slice``)
-    is not blocked as an unverifiable name.
+    Only the canonical executable name is unlocked.  Natural-language aliases
+    never unlock Python symbols: they are search vocabulary, not callable
+    identifiers, so a later cell that writes an alias (e.g. ``mapping slice``)
+    stays blocked until the model fetches and uses the real function name.
     """
-    names = {str(entry.get("name") or "")}
-    names.update(str(alias) for alias in entry.get("aliases", []) if alias)
-    names.discard("")
-    state.verified_peaks_names.update(names)
-    for name in names:
-        state.unknown_api_attempts.pop(name, None)
+    name = str(entry.get("name") or "")
+    if not name:
+        return
+    state.verified_peaks_names.add(name)
+    state.unknown_api_attempts.pop(name, None)
 
 
 def _summarize_arguments(args: tuple, kwargs: dict[str, Any]) -> dict[str, Any]:

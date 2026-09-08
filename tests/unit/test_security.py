@@ -464,8 +464,12 @@ def test_unknown_api_first_advisory_then_same_name_hard(tmp_path):
     assert state.bridge.request.call_count == 0
 
 
-def test_get_api_proof_unlocks_unknown_name(tmp_path):
-    """A successful peaks_get_api for the canonical API unlocks its alias."""
+def test_get_api_proof_unlocks_only_canonical_name(tmp_path):
+    """peaks_get_api proof unlocks the canonical executable name only.
+
+    Natural-language aliases are search vocabulary, not Python identifiers:
+    writing an alias as a callable must stay blocked even after the entry was
+    fetched, until the model uses the real function name."""
     from unittest.mock import Mock
 
     from peaksMCP.discovery.index import build_index
@@ -483,25 +487,26 @@ def test_get_api_proof_unlocks_unknown_name(tmp_path):
     state.bridge.request.return_value = {"ok": True}
     nb = UnsafeNotebookBackend(state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl"))
 
-    # A python-callable alias no longer ships, so add one in-test to exercise
-    # the unlock path: an unverified name is blocked until peaks_get_api proof.
+    # A python-callable alias does not ship, so add one in-test: the alias must
+    # never unlock, while the canonical name must.
     entry = next(e for e in state.api_index.entries if e["name"] == "show_mapping_slice")
-    aliases = list(entry.get("aliases") or [])
-    entry["aliases"] = aliases
     alias_name = "mapping_slice_alias"
-    if alias_name not in aliases:
-        aliases.append(alias_name)
+    entry["aliases"] = list(entry.get("aliases") or []) + [alias_name]
 
     first = nb.write_with_api_check(f"{alias_name}(da, dim='eV')", timeout=5)
     assert first["blocked"] is True
 
     _record_verified_api(state, entry)  # what a successful peaks_get_api records
 
+    # The alias still does not unlock a Python symbol after proof.
     again = nb.write_with_api_check(f"{alias_name}(da, dim='eV')", timeout=5)
-    assert not again.get("blocked")
-    assert again.get("ok") is True
-    verified = again.get("api_check", {}).get("verified_peaks_apis", [])
-    assert any(item["name"] == alias_name for item in verified)
+    assert again["blocked"] is True
+
+    # The canonical executable name is unlocked and runs.
+    third = nb.write_with_api_check("show_mapping_slice(da, dim='eV')", timeout=5)
+    assert not third.get("blocked")
+    verified = third.get("api_check", {}).get("verified_peaks_apis", [])
+    assert any(item["name"] == "show_mapping_slice" for item in verified)
 
 
 def test_savefig_requires_user_approval(tmp_path):
@@ -583,7 +588,7 @@ def test_save_result_approve_requires_user_approval(tmp_path):
     assert any(op[0][0] == "execute_code" for op in state.bridge.request.call_args_list)
 
 
-
+def test_write_with_api_check_classifies_generic_and_verified_calls(tmp_path):
     from unittest.mock import Mock
 
     from peaksMCP.discovery.index import build_index
@@ -690,3 +695,69 @@ def test_write_with_api_check_receiver_aware_and_scope_aware(monkeypatch, tmp_pa
     result = stale.write_with_api_check("da.k_convert()", timeout=5)
     assert not result.get("blocked")
     assert stale.state.api_index.is_stale() is False
+
+
+def test_project_import_gate_accepts_all_legal_import_forms(tmp_path):
+    """Legal peaksMCP import shapes must all pass the API check: plain,
+    parenthesised across lines, ``as`` renames, and module-alias calls."""
+    from unittest.mock import Mock
+
+    from peaksMCP.discovery.index import build_index
+    from peaksMCP.server.jupyter_peaks.backend import (
+        SharedState,
+        UnsafeNotebookBackend,
+    )
+    from peaksMCP.server.jupyter_peaks.security import AuditLogger, ConsentManager
+
+    state = SharedState(Mock(user_ns={}))
+    state.require_consent = False
+    state.api_index = build_index()
+    state.bridge = Mock()
+    state.bridge.request.return_value = {"ok": True}
+    nb = UnsafeNotebookBackend(state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl"))
+
+    for code in (
+        "from peaksMCP.overrides import load_data\nload_data('scan.pxt')",
+        "from peaksMCP.overrides import (\n    load_data,\n)\nload_data('scan.pxt')",
+        "from peaksMCP.overrides import load_data as ld\nld('scan.pxt')",
+        "import peaksMCP.overrides as ov\nov.load_data('scan.pxt')",
+        "from peaks import load\ndata = load('scan.nc')\ndata.k_convert(quiet=True)",
+    ):
+        result = nb.write_with_api_check(code, timeout=5)
+        assert not result.get("blocked"), (code, result)
+
+
+def test_project_import_gate_rejects_ghost_exports_and_star_imports(tmp_path):
+    """Names that are not real peaks/peaksMCP exports are refused before the
+    kernel runs, and star imports from peaks/peaksMCP are always refused."""
+    from unittest.mock import Mock
+
+    from peaksMCP.discovery.index import build_index
+    from peaksMCP.server.jupyter_peaks.backend import (
+        SharedState,
+        UnsafeNotebookBackend,
+    )
+    from peaksMCP.server.jupyter_peaks.security import AuditLogger, ConsentManager
+
+    state = SharedState(Mock(user_ns={}))
+    state.require_consent = False
+    state.api_index = build_index()
+    state.bridge = Mock()
+    state.bridge.request.return_value = {"ok": True}
+    nb = UnsafeNotebookBackend(state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl"))
+
+    ghost = nb.write_with_api_check(
+        "from peaksMCP.overrides import ghost_api\nghost_api('x')", timeout=5
+    )
+    assert ghost["blocked"] is True
+    assert ghost.get("requires_search") is True
+    assert "ghost_api" in ghost["message"]
+    state.bridge.request.assert_not_called()
+
+    for code in (
+        "from peaksMCP.overrides import *\nload_data('x')",
+        "from peaks import *\ndata = load('x.nc')",
+    ):
+        result = nb.write_with_api_check(code, timeout=5)
+        assert result["blocked"] is True
+        assert "Star import" in result["message"]

@@ -15,9 +15,17 @@ from .base import SharedState, ensure_fresh_index
 _PROMPTS = _load_prompts().get("notebook_unsafe") or {}
 
 
-def _refused(message: str) -> dict[str, Any]:
+def _refused(message: str, *, requires_search: bool = False) -> dict[str, Any]:
     """Build the standard refusal payload for a non-executed cell."""
-    return {"success": False, "executed": False, "blocked": True, "message": message}
+    payload: dict[str, Any] = {
+        "success": False,
+        "executed": False,
+        "blocked": True,
+        "message": message,
+    }
+    if requires_search:
+        payload["requires_search"] = True
+    return payload
 
 
 class UnsafeNotebookBackend:
@@ -67,6 +75,58 @@ class UnsafeNotebookBackend:
     def execute_code(self, code: str, timeout: float = 120.0) -> dict[str, Any]:
         self._authorize("notebook_write_with_api_check", code)
         return self.state.bridge.request("execute_code", {"code": code}, timeout=timeout)
+
+    def _check_project_imports(
+        self, provenance: Any, index: Any
+    ) -> dict[str, Any] | None:
+        """Reject unverifiable peaks/peaksMCP imports before classification.
+
+        ``from peaksMCP.overrides import ghost`` binds a name that is neither a
+        real export nor generic; executing it would only fail in the kernel.
+        Star imports from peaks/peaksMCP are refused outright (importing every
+        name defeats the API check), and every other from-imported name must
+        resolve to a top-level/module index entry or to a real indexed module
+        (``from peaksMCP.pxt_utils import converter``).
+        """
+        star = sorted(provenance.star_sources & {"peaks", "peaksMCP"})
+        if star:
+            self.audit.write("notebook_write_with_api_check", "blocked", {"reason": "star_import"})
+            return _refused(
+                _PROMPTS["star_import_rejected"].format(module=", ".join(star)),
+                requires_search=True,
+            )
+        project_imports = {
+            name: qualified
+            for name, qualified in provenance.from_sources.items()
+            if (qualified or "").split(".")[0] in {"peaks", "peaksMCP"}
+        }
+        if not project_imports:
+            return None
+        importable_names = {
+            entry["name"]
+            for entry in index.entries
+            if entry.get("scope") in {"top_level", "module"}
+        }
+        indexed_modules = {entry["module"] for entry in index.entries}
+        # ``qualified`` is ``<module>.<original export>``, so renames
+        # (``from ... import load_data as ld``) still check the real export.
+        missing = sorted(
+            qualified.rsplit(".", 1)[-1]
+            for name, qualified in project_imports.items()
+            if qualified.rsplit(".", 1)[-1] not in importable_names
+            and qualified not in indexed_modules
+        )
+        if not missing:
+            return None
+        self.audit.write(
+            "notebook_write_with_api_check",
+            "blocked",
+            {"reason": "unverified_import", "names": missing},
+        )
+        return _refused(
+            _PROMPTS["import_not_exported"].format(names=missing),
+            requires_search=True,
+        )
 
     def _probe_ns(self, name: str, generic_roots: set[str]) -> str | None:
         """Resolve a name's receiver type from the live kernel namespace.
@@ -145,9 +205,16 @@ class UnsafeNotebookBackend:
             return _refused(_PROMPTS["index_build_failed"])
 
         targets = extract_call_targets(code)
-        tags, generic_roots, defined, imported = analyze_provenance(
-            code, set(GENERIC_MODULES)
+        provenance = analyze_provenance(code, set(GENERIC_MODULES))
+        tags, generic_roots, defined, imported = (
+            provenance.tags,
+            provenance.generic,
+            provenance.defined,
+            provenance.imported,
         )
+        blocked = self._check_project_imports(provenance, index)
+        if blocked:
+            return blocked
         verified: list[dict[str, Any]] = []
         generic: list[str] = []
         unknown: list[dict[str, Any]] = []
@@ -210,8 +277,9 @@ class UnsafeNotebookBackend:
                 unknown.append({"name": target.leaf, "suggested": [str(m.get("id")) for m in matches]})
 
         # A name the model already proved with a successful peaks_get_api this
-        # session (canonical name or alias) counts as verified-by-probe: drop it
-        # from the unknown set so it no longer blocks.
+        # session counts as verified-by-probe: drop it from the unknown set so
+        # it no longer blocks.  Only canonical executable names are recorded —
+        # aliases never unlock Python symbols (see _record_verified_api).
         verified_names = self.state.verified_peaks_names
         unlocked = [u for u in unknown if u["name"] in verified_names]
         if unlocked:

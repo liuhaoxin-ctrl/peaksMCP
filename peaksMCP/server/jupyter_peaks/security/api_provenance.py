@@ -42,6 +42,20 @@ class CallTarget(NamedTuple):
     subscripted: bool = False
 
 
+class Provenance(NamedTuple):
+    """Variable-origin analysis result for one code snippet."""
+
+    tags: dict[str, str]
+    generic: set[str]
+    defined: set[str]
+    imported: set[str]
+    #: ``from <module> import <name>`` bindings (name -> module).  The API gate
+    #: uses these to verify that peaks/peaksMCP imports resolve to real exports.
+    from_sources: dict[str, str]
+    #: Module roots star-imported (``from <root> import *``), e.g. ``{"peaks"}``.
+    star_sources: set[str]
+
+
 def extract_call_targets(code: str) -> list[CallTarget]:
     """Return every call site in ``code``, sorted by source position.
 
@@ -156,8 +170,8 @@ def _assign_tag(
 
 def analyze_provenance(
     code: str, generic_roots: set[str]
-) -> tuple[dict[str, str], set[str], set[str], set[str]]:
-    """Return ``(tags, generic, defined, imported)`` for ``code``.
+) -> Provenance:
+    """Return the variable-origin analysis for ``code``.
 
     ``tags`` maps variable names to a receiver-type tag by walking statements in
     order: import aliases resolve generic modules (``import numpy as n``),
@@ -165,16 +179,19 @@ def analyze_provenance(
     ``data = load(...)`` -> dataarray), and simple copies inherit their source.
     ``defined``/``imported`` record names bound by the code (bare user helpers)
     and names brought in by imports, so bare calls to them are treated as
-    generic rather than unknown.
+    generic rather than unknown.  ``from_sources``/``star_sources`` keep the
+    import shape for the API gate's real-export check.
     """
     try:
         tree = ast.parse(code)
     except SyntaxError:
-        return {}, set(generic_roots), set(), set()
+        return Provenance({}, set(generic_roots), set(), set(), {}, set())
     tags: dict[str, str] = {}
     imports: dict[str, str] = {}
     defined: set[str] = set()
     imported: set[str] = set()
+    from_sources: dict[str, str] = {}
+    star_sources: set[str] = set()
     generic = set(generic_roots)
     for node in tree.body:
         if isinstance(node, ast.Import):
@@ -190,13 +207,19 @@ def analyze_provenance(
                     tags[name] = "module"
                     generic.add(name)
         elif isinstance(node, ast.ImportFrom):
+            parent = (node.module or "").split(".")[0]
             for alias in node.names:
                 if alias.name == "*":
+                    star_sources.add(parent)
                     continue
                 name = alias.asname or alias.name
                 defined.add(name)
                 imported.add(name)
-                parent = node.module.split(".")[0] if node.module else ""
+                # Record the bound name AND the original export so the API gate
+                # can verify real exports behind `as` renames.
+                from_sources[name] = (
+                    f"{node.module}.{alias.name}" if node.module else alias.name
+                )
                 if parent in generic or name in generic:
                     tags[name] = "module"
                     generic.add(name)
@@ -213,4 +236,4 @@ def analyze_provenance(
             if isinstance(node.target, ast.Name):
                 tags[node.target.id] = tag
                 defined.add(node.target.id)
-    return tags, generic, defined, imported
+    return Provenance(tags, generic, defined, imported, from_sources, star_sources)
