@@ -318,3 +318,56 @@ def test_load_data_index_reports_pxt_dims_from_header(tmp_path, capsys):
     assert entry.sizes == expected, (entry.sizes, expected)
     assert entry.file_kind == "pxt"
     assert loaded.entries[0].index == 9
+
+
+def test_load_data_index_tags_processed_netcdf_entries(tmp_path, capsys):
+    """*_processed.nc products index as their own processed entries, inherit
+    the raw stem's datasheet identity, and stay out of the decision sets."""
+    import json as _json
+
+    from peaksMCP.overrides import LoadedScans, load_data
+    from peaksMCP.overrides import load as load_module
+
+    folder = tmp_path / "data_netcdf"
+    folder.mkdir()
+    (folder / "BP_0005.nc").write_bytes(b"fake")
+    (folder / "BP_0005_processed.nc").write_bytes(b"fake")
+
+    def fake_single(path, lazy=True):
+        import os
+
+        stem = os.path.basename(os.fspath(path))[:-3]
+        processed = "_processed" in stem
+        stem = stem.replace("_processed", "")
+        index = load_module._index_from_stem(stem)
+        document = {
+            "records": {"5": {"experiment": {"data_format": "sweep",
+                                             "energy_start_eV": 2.2,
+                                             "energy_stop_eV": 2.7}}}
+        }
+        attrs = {"units": "counts", "experiment_index": index,
+                 "experiment_metadata_json": _json.dumps(document)}
+        if processed:
+            dims, coords = ("eV", "kx"), {"eV": range(4), "kx": range(6)}
+        else:
+            dims, coords = ("eV", "theta_par"), {"eV": range(4), "theta_par": range(6)}
+        return xr.DataArray(np.ones((4, 6)), dims=dims, coords=coords,
+                            attrs=attrs), "NetCDF"
+
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    try:
+        monkeypatch.setattr(load_module, "_single", fake_single)
+        loaded = load_data(str(folder))
+    finally:
+        monkeypatch.undo()
+    assert isinstance(loaded, LoadedScans)
+    stems = {e.stem: e for e in loaded.entries}
+    assert stems["BP_0005"].processed is False
+    proc = stems["BP_0005_processed"]
+    assert proc.processed is True
+    assert proc.index == 5 and proc.scan_kind == "cut"
+    assert proc.sizes == {"eV": 4, "kx": 6}  # the product's own header dims
+    assert loaded.cuts == ["BP_0005"]  # decision sets stay raw-only
+    assert loaded.processed == ["BP_0005_processed"]
+    out = capsys.readouterr().out
+    assert "processed=1" in out

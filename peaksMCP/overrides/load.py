@@ -137,6 +137,10 @@ class ScanEntry:
     #: Dimensions read from the file header (PXT wave header / NetCDF
     #: metadata) without materialising any data block; None when unreadable.
     sizes: dict[str, int] | None = None
+    #: True for preprocessing products (``<stem>_processed.nc`` /
+    #: ``<stem>_proc.nc``): they index as their own entry, tagged processed,
+    #: and inherit the datasheet identity of the raw stem.
+    processed: bool = False
     #: None = unknown (e.g. explicit list); True = NetCDF present; False =
     #: raw PXT without its converted sibling (still needs conversion).
     converted: bool | None = None
@@ -153,6 +157,7 @@ class ScanEntry:
             "theta_offset_deg": self.theta_offset_deg,
             "energy_window_eV": self.energy_window_eV,
             "sizes": self.sizes,
+            "processed": self.processed,
             "converted": self.converted,
         }
 
@@ -299,16 +304,26 @@ class LoadedScans:
 
     # -- decision helpers ----------------------------------------------------
     @property
+    def raw_entries(self) -> list[ScanEntry]:
+        """Original scans only (preprocessing products excluded)."""
+        return [entry for entry in self.entries if not entry.processed]
+
+    @property
     def gold(self) -> list[str]:
-        return [entry.stem for entry in self.entries if entry.scan_kind == "gold"]
+        return [entry.stem for entry in self.raw_entries if entry.scan_kind == "gold"]
 
     @property
     def cuts(self) -> list[str]:
-        return [entry.stem for entry in self.entries if entry.scan_kind == "cut"]
+        return [entry.stem for entry in self.raw_entries if entry.scan_kind == "cut"]
 
     @property
     def mappings(self) -> list[str]:
-        return [entry.stem for entry in self.entries if entry.scan_kind == "mapping"]
+        return [entry.stem for entry in self.raw_entries if entry.scan_kind == "mapping"]
+
+    @property
+    def processed(self) -> list[str]:
+        """Preprocessing products in this folder (``*_processed.nc``)."""
+        return [entry.stem for entry in self.entries if entry.processed]
 
     @property
     def needs_conversion(self) -> list[str]:
@@ -342,20 +357,25 @@ class LoadedScans:
         return self[stem]
 
     def summary_line(self) -> str:
+        raw = self.raw_entries
         counts = {
-            kind: sum(entry.scan_kind == kind for entry in self.entries)
+            kind: sum(entry.scan_kind == kind for entry in raw)
             for kind in ("gold", "cut", "mapping", "unknown")
         }
         to_convert = len(self.needs_conversion)
+        n_processed = len(self.entries) - len(raw)
         where = self.source
         text = (
             f"load_data: {len(self.entries)} file(s) indexed from {where} "
             f"(gold={counts['gold']}, cuts={counts['cut']}, "
-            f"mappings={counts['mapping']}, unknown={counts['unknown']})"
+            f"mappings={counts['mapping']}, unknown={counts['unknown']}"
         )
+        if n_processed:
+            text += f", processed={n_processed}"
+        text += ")"
         if self.payload is not None:
             text += " metadata=datasheet"
-        elif any(entry.file_kind == "netcdf" for entry in self.entries):
+        elif any(entry.file_kind == "netcdf" for entry in raw):
             text += " metadata=embedded"
         else:
             text += " metadata=none"
@@ -493,7 +513,11 @@ def _index_paths(
     for path in paths:
         stem = path.stem
         file_kind = "netcdf" if path.suffix.lower() == ".nc" else "pxt"
-        index = _index_from_stem(stem)
+        processed = bool(
+            file_kind == "netcdf" and re.search(r"_(?:processed|proc)$", stem)
+        )
+        identity_stem = re.sub(r"_(?:processed|proc)$", "", stem) if processed else stem
+        index = _index_from_stem(identity_stem)
         record = _record_of(payload, index)
         converted: bool | None
         if file_kind == "netcdf":
@@ -517,6 +541,7 @@ def _index_paths(
             file_kind=file_kind,
             index=index,
             sizes=sizes,
+            processed=processed,
             converted=converted,
         )
         if record is not None:
