@@ -11,7 +11,7 @@ from typing import Any
 from threadpoolctl import threadpool_limits
 
 from .models import BatchItemResult, BatchResult
-from .resource_budget import ResourceBudget, batch_execution_lock
+from .resource_budget import ResourceBudget, _batch_execution_lock
 
 
 def _run_one(function: Callable[[Any], Any], item: Any) -> tuple[Any, float]:
@@ -60,7 +60,7 @@ class BatchExecutor:
         BatchResult
             Ordered per-item results and CPU statistics.
         """
-        with batch_execution_lock():
+        with _batch_execution_lock():
             return self._run_unlocked(function, items, progress=progress)
 
     def _run_unlocked(

@@ -32,7 +32,7 @@ description: Use `peaksMCP` to call the `peaks` package and perform preprocessin
 Use `plot` to convey **key** information to the user.
 Save processed cuts with `da.save(path)`, not raw `da.to_netcdf` — it fails on unsanitized metadata attrs.
 
-**Use the peaksMCP plotting façades (`plot_batch`, `plot_validation_pair`, `show_mapping_slice`, `publication_grid`) for figures; when raw matplotlib is unavoidable, follow the figure conventions in the server instructions (constrained_layout, DejaVu Sans with mathtext symbols, English labels, 150/300 dpi).**
+**Use the peaksMCP plotting façades (`plot_batch`, `plot_validation_pair`, `show_mapping_slice`) for figures; when raw matplotlib is unavoidable, follow the figure conventions in the server instructions (constrained_layout, DejaVu Sans with mathtext symbols, English labels, 150/300 dpi).**
 
 ## Figure debugging protocol
 

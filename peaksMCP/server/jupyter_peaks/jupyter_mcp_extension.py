@@ -35,9 +35,9 @@ def _start(ipython: Any, host: str | None = None, port: int | None = None) -> Ju
         # the extension-loading thread.  A plain ``import peaksMCP`` performs no
         # such side effect anymore (see peaksMCP/__init__.py).
         try:
-            from peaksMCP.pxt_utils.loader import register_l112_loader
+            from peaksMCP.pxt_utils.loader import _register_l112_loader
 
-            register_l112_loader()
+            _register_l112_loader()
         except Exception:
             pass
     if _server is None:

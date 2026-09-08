@@ -25,7 +25,7 @@ from .models import (
 _INDEX_RE = re.compile(r"(?:^|_)(\d+)$")
 
 
-def default_output_dir(source: Path) -> Path:
+def _default_output_dir(source: Path) -> Path:
     """Default destination for a folder conversion: a sibling ``<name>_netcdf/`` folder.
 
     Parameters
@@ -55,7 +55,7 @@ def _discover_pxt_files(source: Path, substring: str = "") -> list[Path]:
     )
 
 
-def index_from_path(path: str | Path) -> int | None:
+def _index_from_path(path: str | Path) -> int | None:
     """Extract the trailing integer index from a PXT filename stem."""
     match = _INDEX_RE.search(Path(path).stem)
     return int(match.group(1)) if match else None
@@ -343,7 +343,7 @@ def convert_pxt(
     source = Path(input_path).expanduser().resolve()
     requested_target = Path(output_path).expanduser() if output_path else source.with_suffix(".nc")
     target = requested_target.resolve()
-    index = index_from_path(source)
+    index = _index_from_path(source)
     temporary: Path | None = None
     try:
         # Check safety before both loading data and the existing-output shortcut.
@@ -493,7 +493,7 @@ def convert_path(
     destination = (
         Path(output_dir).expanduser().resolve()
         if output_dir
-        else default_output_dir(source)
+        else _default_output_dir(source)
     )
     metadata_path = _auto_metadata(
         metadata_path, source, destination, report_warnings
@@ -525,7 +525,7 @@ def convert_path(
                 ConversionItem(
                     input=task.input_path,
                     output=task.output_path,
-                    index=index_from_path(task.input_path),
+                    index=_index_from_path(task.input_path),
                     status="failed" if result.status == "failed" else result.status,
                     error_type=result.error_type,
                     error=result.error,

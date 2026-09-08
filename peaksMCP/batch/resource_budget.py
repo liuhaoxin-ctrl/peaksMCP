@@ -25,7 +25,7 @@ _PROCESS_BATCH_LOCK = threading.Lock()
 
 
 @contextmanager
-def batch_execution_lock() -> Iterator[None]:
+def _batch_execution_lock() -> Iterator[None]:
     """Serialize batch pools across dashboard requests and CLI processes."""
     with _PROCESS_BATCH_LOCK:
         root = Path(os.environ.get("PEAKSMCP_HOME", Path.home() / ".peaksMCP"))

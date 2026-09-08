@@ -1,6 +1,37 @@
 # Changelog
 
 ## [Unreleased] — 2026-09-08
+
+### API surface: catalog keeps only model-facing verbs (BREAKING)
+
+The search/get catalog and index now expose verbs the model can act on;
+implementation parts were made private and disappear from the index:
+
+- `pxt_utils/converter.py`: `default_output_dir` / `index_from_path` are now
+  `_default_output_dir` / `_index_from_path` (conversion internals).
+- `pxt_utils/loader.py`: `register_l112_loader` is now `_register_l112_loader`;
+  the in-kernel extension still registers the L112 loader at startup, but the
+  model no longer needs to call it.
+- `pxt_utils/metadata.py`: `load_metadata` is now `_load_metadata` — the raw
+  document parser is an internal detail of the single `read_meta` verb (its
+  aliases were merged onto `read_meta`).
+- `batch/resource_budget.py`: `batch_execution_lock` is now `_batch_execution_lock`
+  (used only by `BatchExecutor`).
+- `workflows/publication.py`: `publication_grid` is now `_publication_grid`;
+  publication intent ("论文配图" etc.) resolves to `plot_batch`, whose alias
+  set absorbed the publication terms. `validate_arpes_metadata` stays public.
+- `discovery/api_overrides.yaml`: six `project: true` rows removed (18 -> 12);
+  `index.py`'s unused `IndexStaleError` deleted.
+
+### Performance and dead code
+
+- `discovery/index.py`: `ApiIndex.is_stale()` previously re-walked every Peaks +
+  peaksMCP source file on every search/write. The fingerprint result is now
+  cached for `STALE_REFRESH_INTERVAL_S` (5 s); `ensure_fresh_index` still
+  hot-rebuilds once a stale fingerprint is observed.
+- `security/code_scanner.py`: removed `call_names` (no production caller since
+  the savefig special case folded into the scanner in the previous change); its
+  export and unit test were deleted.
 ### Output normalisation lands on the write tool; save gate is consent-first (BREAKING)
 
 The model no longer reads outputs back: `notebook_write_with_api_check` is the

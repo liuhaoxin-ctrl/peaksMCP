@@ -154,15 +154,6 @@ apis:
       convert it first with convert_pxt (idempotent: skips if the .nc already
       exists), then load the produced .nc — do not feed the raw PXT to peaks
       workflows directly.
-  register_l112_loader:
-    module: peaksMCP.pxt_utils.loader
-    project: true
-    aliases:
-      - l112 loader
-      - register loader
-      - beamline loader
-      - L112加载器
-      - 注册加载器
   convert_pxt:
     module: peaksMCP.pxt_utils.converter
     project: true
@@ -196,25 +187,6 @@ apis:
       converted idempotently (skips any .nc that already exists). Run this once
       before processing a folder of raw scans; it is a prerequisite transform,
       not a saved result.
-  default_output_dir:
-    module: peaksMCP.pxt_utils.converter
-    project: true
-    aliases:
-      - output directory
-      - default output
-      - output path
-      - 输出目录
-      - 默认输出路径
-  index_from_path:
-    module: peaksMCP.pxt_utils.converter
-    project: true
-    aliases:
-      - index from filename
-      - extract index
-      - parse index
-      - scan number
-      - 从路径取编号
-      - 索引解析
   translate_datasheet:
     module: peaksMCP.pxt_utils.csv_translator
     project: true
@@ -227,7 +199,7 @@ apis:
       - datasheet转换
 
   # --- PXT metadata ---
-  load_metadata:
+  read_meta:
     module: peaksMCP.pxt_utils.metadata
     project: true
     aliases:
@@ -238,10 +210,6 @@ apis:
       - 加载元数据
       - 读取实验记录
       - 实验记录表
-  read_meta:
-    module: peaksMCP.pxt_utils.metadata
-    project: true
-    aliases:
       - summarize sweeps
       - list records
       - sweep classification
@@ -286,6 +254,11 @@ apis:
     module: peaksMCP.plotting.layout
     project: true
     aliases:
+      - publication grid
+      - paper figure grid
+      - publication figure set
+      - 论文配图
+      - 发表级图组
       - batch plotting
       - plot batch
       - batch figures
@@ -326,17 +299,6 @@ apis:
       - mapping切片图
       - 展示mapping
       - 固定能层图
-  publication_grid:
-    module: peaksMCP.workflows.publication
-    project: true
-    # Deliberately publication-specific: a generic "grid" term here outranks
-    # peaks' own plot_grid on plain "draw a panel grid" queries.
-    aliases:
-      - publication grid
-      - paper figure grid
-      - publication figure set
-      - 论文配图
-      - 发表级图组
   validate_arpes_metadata:
     module: peaksMCP.workflows.publication
     project: true
@@ -348,18 +310,3 @@ apis:
       - ARPES元数据检查
 
   # --- batch execution ---
-  batch_execution_lock:
-    module: peaksMCP.batch.resource_budget
-    project: true
-    aliases:
-      - cpu budget lock
-      - execution lock
-      - serialise batch
-      - batch lock
-      - CPU预算锁
-      - 批处理锁
-      - 串行化批处理
-
-# Note: additions made inside the peaks library itself (peaks_dev), e.g. the
-# two-pass gold-fit helpers, are private/underscore and live outside this
-# discovery file; they are tracked by peaks_dev git history instead.

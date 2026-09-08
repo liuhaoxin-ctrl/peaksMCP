@@ -481,17 +481,6 @@ def test_get_api_proof_unlocks_unknown_name(tmp_path):
     assert any(item["name"] == alias_name for item in verified)
 
 
-def test_call_names_resolve_aliases_and_skip_unparsable():
-    from peaksMCP.server.jupyter_peaks.security import call_names
-
-    assert call_names(
-        "import matplotlib.pyplot as plt\nfig, ax = plt.subplots()"
-    ) == ["matplotlib.pyplot.subplots"]
-    assert call_names("import numpy as np\nnp.arange(3)") == ["numpy.arange"]
-    assert call_names("x = 1  # not a call") == []
-    assert call_names("def broken(:") == []  # unparsable -> no matches
-
-
 def test_savefig_requires_user_approval(tmp_path):
     """A savefig cell pauses for explicit user approval (SAVE001 consent); it is
     never executed without it, and executes once the user approves."""

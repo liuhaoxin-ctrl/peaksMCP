@@ -109,6 +109,8 @@ def test_index_fingerprint_detects_source_changes(monkeypatch):
     assert index.is_stale() is False
     # A source change must flip the fingerprint without touching the entries.
     monkeypatch.setattr(index_module, "source_fingerprint", lambda *a, **k: "changed-after-build")
+    # Force the staleness TTL cache to refresh on the next check.
+    monkeypatch.setattr(index_module, "STALE_REFRESH_INTERVAL_S", 0.0)
     assert index_module.source_fingerprint() == "changed-after-build"
     assert index.is_stale() is True
 

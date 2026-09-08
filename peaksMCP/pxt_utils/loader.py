@@ -188,7 +188,7 @@ def load_pxt(path: str | os.PathLike[str]) -> xr.DataArray:
 # --------------------------------------------------------------------------- #
 # L112 beamline registration (explicit, kernel-side only)
 # --------------------------------------------------------------------------- #
-def register_l112_loader() -> type | None:
+def _register_l112_loader() -> type | None:
     """Register the L112 DA30L NetCDF loader into peaks' LOC_REGISTRY.
 
     This is called explicitly by the in-kernel extension when the MCP server

@@ -10,8 +10,9 @@ import ast
 import hashlib
 import os
 import re
+import time
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -51,14 +52,11 @@ TIER_NATIVE = "native"
 #: ``plot_batch``.
 OVERRIDE_MIN_SCORE = 900
 
-
-class IndexStaleError(RuntimeError):
-    """Raised when the cached API index no longer matches the source tree.
-
-    The index is intentionally rebuilt only by a kernel restart (never hot-
-    rebuilt), so tools fail fast and tell the model to restart instead of
-    serving a stale surface mixed with fresh source docs.
-    """
+#: Full-tree fingerprint checks are expensive (an os.walk over every Peaks +
+#: peaksMCP source file).  ``ApiIndex.is_stale()`` runs on every search and
+#: write, so the fingerprint result is cached for this window: source edits are
+#: picked up within a few seconds without paying the walk cost per call.
+STALE_REFRESH_INTERVAL_S = 5.0
 
 
 def _tokens(text: str) -> set[str]:
@@ -687,6 +685,9 @@ class ApiIndex:
     entries: list[dict[str, Any]]
     peaks_version: str
     fingerprint: str
+    #: TTL cache for the expensive full-tree fingerprint check (is_stale).
+    _stale_checked_at: float = field(default=0.0, init=False, repr=False)
+    _stale_result: bool = field(default=False, init=False, repr=False)
 
     def search(self, query: str, scope: str = "all", limit: int = 5) -> list[dict[str, Any]]:
         """Two-tier override-first search; returns compact entries only.
@@ -730,7 +731,14 @@ class ApiIndex:
     def is_stale(self) -> bool:
         """Return True when Peaks or adapter source changed after this index was built.
 
-        The index is never hot-rebuilt; a stale index must be rebuilt by a kernel
-        restart (``peaksMCP restart kernel``).
+        The full-tree fingerprint walk is cached for ``STALE_REFRESH_INTERVAL_S``
+        seconds so per-call staleness checks stay cheap (searches and writes call
+        this on every request).  Source edits are reflected within the window;
+        the index itself is hot-rebuilt by :func:`ensure_fresh_index` once a
+        stale fingerprint is observed.
         """
-        return source_fingerprint() != self.fingerprint
+        now = time.monotonic()
+        if now - self._stale_checked_at >= STALE_REFRESH_INTERVAL_S:
+            self._stale_checked_at = now
+            self._stale_result = source_fingerprint() != self.fingerprint
+        return self._stale_result

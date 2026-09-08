@@ -54,8 +54,8 @@ shutil.copy2({raw!r}, tmp / "{CUT_STEM}.pxt")
 from peaksMCP.pxt_utils.converter import convert_pxt
 item = convert_pxt(tmp / "{CUT_STEM}.pxt", tmp / "{CUT_STEM}.nc")
 import peaks
-from peaksMCP.pxt_utils.loader import register_l112_loader
-register_l112_loader()
+from peaksMCP.pxt_utils.loader import _register_l112_loader
+_register_l112_loader()
 da = peaks.load(str(tmp / "{CUT_STEM}.nc"))
 da.metadata.set_EF_correction({EF_CORRECTION})
 shifted = da.assign_coords(theta_par=da.theta_par - {THETA_OFFSET_DEG})

@@ -145,14 +145,14 @@ def test_validate_arpes_metadata_units_required():
     assert any("no units" in issue for issue in issues)
 
 
-def test_publication_grid_rejects_unvalidated_data():
+def test_private_publication_grid_rejects_unvalidated_data():
     import xarray as xr
 
-    from peaksMCP.workflows.publication import publication_grid
+    from peaksMCP.workflows.publication import _publication_grid
 
     bad = xr.DataArray([[1.0, 2.0], [3.0, 4.0]], dims=("eV", "theta_par"))
     with pytest.raises(ValueError, match="validation failed"):
-        publication_grid([bad], titles=["bad"])
+        _publication_grid([bad], titles=["bad"])
 
 
 def test_read_meta_classifies_records_and_dimensionality(tmp_path):

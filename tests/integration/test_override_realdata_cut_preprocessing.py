@@ -5,7 +5,7 @@ The workflow mirrors a Jupyter session, not a file-processing pipeline:
 1. raw data starts as a ``.pxt`` file (``PEAKSMCP_REALDATA_PXT`` -> the raw
    L112 data folder, e.g. ``.../BP260623/data``);
 2. the override black-box functions are the API surface: ``convert_pxt``
-   (PXT -> NetCDF, the *only* on-disk artifact), ``load_metadata`` for the
+   (PXT -> NetCDF, the *only* on-disk artifact), ``read_meta`` for the
    experiment record, and ``plot_validation_pair`` / ``plot_batch`` for
    figures;
 3. everything after conversion stays in memory — the loader geometry
@@ -76,9 +76,9 @@ def _load_converted(nc_path: Path):
     """peaks.load a converted cut after registering the L112 geometry loader."""
     import peaks
 
-    from peaksMCP.pxt_utils.loader import register_l112_loader
+    from peaksMCP.pxt_utils.loader import _register_l112_loader
 
-    register_l112_loader()
+    _register_l112_loader()
     return peaks.load(str(nc_path))
 
 
@@ -152,13 +152,14 @@ def test_save_only_happens_when_explicitly_requested(tmp_path):
 
 
 @REQUIRES_METADATA
-def test_experiment_metadata_json_is_consumable_by_override_load_metadata():
-    """translate_datasheet output stays readable by our override loader."""
-    from peaksMCP.pxt_utils.metadata import load_metadata
+def test_experiment_metadata_json_is_consumable_by_override_read_meta():
+    """translate_datasheet output stays readable through the read_meta verb
+    (the raw-document parser is an internal detail of that verb)."""
+    from peaksMCP.workflows import read_meta
 
-    doc = load_metadata(METADATA_JSON)
-    records = doc["records"]
-    assert records
-    cut = records["15"]
+    summary = read_meta(METADATA_JSON)
+    digest = {item["index"]: item for item in summary["records"]}
+    assert digest
+    cut = digest[15]
     assert cut["theta_offset_deg"] == THETA_OFFSET_DEG
-    assert cut["photon"]["polarisation"] in {"S", "P"}
+    assert cut["polarisation"] in {"S", "P"}

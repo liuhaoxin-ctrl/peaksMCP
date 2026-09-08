@@ -41,7 +41,7 @@ def validate_arpes_metadata(data: xr.DataArray) -> list[str]:
     return issues
 
 
-def publication_grid(
+def _publication_grid(
     scans: Iterable[xr.DataArray],
     *,
     titles: Sequence[str] | None = None,
@@ -73,7 +73,7 @@ def publication_grid(
 
     Examples
     --------
-    >>> figures = publication_grid([scan_20K, scan_40K], titles=["20 K", "40 K"])
+    >>> figures = _publication_grid([scan_20K, scan_40K], titles=["20 K", "40 K"])
     >>> import matplotlib.pyplot as plt
     >>> plt.show()
     """

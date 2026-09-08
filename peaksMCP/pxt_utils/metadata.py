@@ -23,7 +23,7 @@ _THETA_OFFSET_RE = re.compile(
 )
 
 
-def load_metadata(source: str | os.PathLike[str] | dict[str, Any] | Any) -> dict[str, Any]:
+def _load_metadata(source: str | os.PathLike[str] | dict[str, Any] | Any) -> dict[str, Any]:
     """Load the experiment metadata document from a path, dict or DataArray.
 
     A ``DataArray`` contributes ``attrs["experiment_metadata_json"]`` (the
@@ -118,7 +118,7 @@ def read_meta(
     >>> summary["sweeps"]
     [5, 6, 9]
     """
-    meta = load_metadata(metadata)
+    meta = _load_metadata(metadata)
     records_in = meta.get("records") or {}
     records_out: list[dict[str, Any]] = []
     sweeps: list[Any] = []

@@ -10,10 +10,10 @@ import pytest
 import xarray as xr
 
 from peaksMCP.pxt_utils.converter import (
+    _default_output_dir,
+    _index_from_path,
     convert_path,
     convert_pxt,
-    default_output_dir,
-    index_from_path,
 )
 from peaksMCP.pxt_utils.csv_translator import translate_datasheet
 from peaksMCP.pxt_utils.loader import load_pxt
@@ -382,7 +382,7 @@ def test_convert_path_force_cannot_overwrite_raw_input(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize(("name", "expected"), [("BP_0005.pxt", 5), ("scan_42.pxt", 42), ("scan.pxt", None)])
 def test_index_from_filename(name, expected):
-    assert index_from_path(name) == expected
+    assert _index_from_path(name) == expected
 
 
 def test_convert_path_single_file_to_directory(monkeypatch, tmp_path):
@@ -418,15 +418,15 @@ def _fake_load_pxt(_path):
     return xr.DataArray(np.ones((2, 3)), dims=("eV", "theta_par"), attrs={"units": "counts"})
 
 
-def test_default_output_dir_is_sibling_netcdf(tmp_path):
+def test_private_default_output_dir_is_sibling_netcdf(tmp_path):
     """A folder conversion without an explicit output targets a sibling
     ``<folder>_netcdf/`` directory (pure-function check; the batched worker
     path itself needs a real PXT fixture)."""
     source = tmp_path / "raw"
     source.mkdir()
     (source / "BP_0001.pxt").touch()
-    assert default_output_dir(source) == tmp_path / "raw_netcdf"
-    assert default_output_dir(tmp_path / "another") == tmp_path / "another_netcdf"
+    assert _default_output_dir(source) == tmp_path / "raw_netcdf"
+    assert _default_output_dir(tmp_path / "another") == tmp_path / "another_netcdf"
 
 
 def test_auto_datasheet_discovered_and_translated(tmp_path):
