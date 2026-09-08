@@ -368,6 +368,27 @@ def _read_config_document(path: Path) -> dict[str, Any]:
         return {}
 
 
+def _load_document_checked(path: Path) -> dict[str, Any]:
+    """Parse one curated document strictly for the default configuration.
+
+    Duplicate mapping keys, malformed YAML or missing files raise instead of
+    silently degrading to an empty catalog: discovery must never build an
+    index from a damaged curated config.
+    """
+    from peaksMCP.config.schema import load_yaml_unique
+
+    try:
+        return load_yaml_unique(path.read_text(encoding="utf-8"))
+    except OSError:
+        raise
+    except yaml.YAMLError as exc:
+        raise ValueError(f"{path.name}: invalid curated YAML: {exc}") from exc
+
+
+#: Directory holding the curated catalogs (patched in tests).
+_CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
+
+
 def load_overrides(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
     """Load the curated API presentation documents.
 
@@ -375,28 +396,41 @@ def load_overrides(path: str | os.PathLike[str] | None = None) -> dict[str, Any]
     ----------
     path : str or os.PathLike, optional
         Explicit override file to read (any legacy shape, including the
-        retired single-file ``config/manifest.yaml``).  When omitted, the
-        merged view of ``config/native_catalog.yaml`` (upstream, native tier)
-        and ``config/override_manifest.yaml`` (project APIs) is returned; the
-        legacy single file is read as a compatibility fallback only when both
-        new catalogs are absent.
+        retired single-file ``config/manifest.yaml``, parsed leniently).
+        When omitted, the merged view of ``config/native_catalog.yaml``
+        (upstream, native tier) and ``config/override_manifest.yaml``
+        (project APIs) is returned after strict schema validation; the
+        legacy single file is read as a compatibility fallback only when
+        both new catalogs are absent.
 
     Returns
     -------
     dict
         Merged document with ``version``, ``apis`` (native entries merged
         with project entries) and the override manifest's ``project`` seeds.
+
+    Raises
+    ------
+    ValueError
+        When the default configuration is damaged (duplicate keys, malformed
+        YAML or schema violations) — loud failure beats an empty catalog.
     """
     if path is not None:
         return _read_config_document(Path(path))
-    config_dir = Path(__file__).resolve().parents[1] / "config"
-    native = _read_config_document(config_dir / "native_catalog.yaml")
-    overrides = _read_config_document(config_dir / "override_manifest.yaml")
-    if not native and not overrides:
-        legacy = _read_config_document(config_dir / "manifest.yaml")
+    try:
+        native = _load_document_checked(_CONFIG_DIR / "native_catalog.yaml")
+        overrides = _load_document_checked(_CONFIG_DIR / "override_manifest.yaml")
+    except OSError:
+        # Compatibility: pre-split checkouts ship only the single file.
+        legacy = _read_config_document(_CONFIG_DIR / "manifest.yaml")
         if legacy:
             return legacy
         return {}
+    from peaksMCP.config.schema import validate_documents
+
+    errors = validate_documents(native, overrides)
+    if errors:
+        raise ValueError("curated config invalid:\n- " + "\n- ".join(errors))
     merged: dict[str, Any] = {"version": overrides.get("version", 3)}
     merged_apis: dict[str, Any] = {}
     for document in (native, overrides):
