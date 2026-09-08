@@ -579,6 +579,8 @@ def build_index() -> ApiIndex:
                 item_aliases.extend(str(value) for value in config.get("aliases") or [])
                 if config.get("docstring_note"):
                     note = str(config["docstring_note"])
+                if config.get("exposure"):
+                    item["exposure"] = str(config["exposure"])
         if note is not None:
             item["docstring_note"] = note
         item["aliases"] = sorted(set([*item.get("aliases", []), *item_aliases]))
@@ -611,6 +613,8 @@ def _rank_entries(
     query: str,
     scope: str,
     tier: str = "all",
+    *,
+    include_advanced: bool = False,
 ) -> list[tuple[int, str, dict[str, Any]]]:
     """Score entries for one query with deterministic lexical ranking.
 
@@ -618,6 +622,11 @@ def _rank_entries(
     name-prefix 800, name-substring 700, alias-substring 650, then the
     token-overlap fallback. ``tier`` restricts the candidate set to ``all`` /
     :data:`TIER_OVERRIDE` / :data:`TIER_NATIVE`.
+
+    Exposure gating: ``advanced`` entries (the curated low-level layer) are
+    excluded unless the query hits them exactly (score >= 900) or
+    ``include_advanced`` is set — generic/fuzzy queries must never surface
+    them by default.
     """
     qtokens = _tokens(query)
     scored: list[tuple[int, str, dict[str, Any]]] = []
@@ -664,6 +673,12 @@ def _rank_entries(
                     module_overlap = len(qtokens & _tokens(module))
                     score = name_overlap * 100 + alias_overlap * 80 + summary_overlap * 30 + docstring_overlap * 20 + module_overlap * 15
         if score:
+            if (
+                item.get("exposure") == "advanced"
+                and not include_advanced
+                and score < 900
+            ):
+                continue
             scored.append((score, str(item["id"]), item))
     scored.sort(key=lambda row: (-row[0], row[1]))
     return scored
@@ -687,12 +702,22 @@ def _trim_rows(
 
 
 def _filter_entries(
-    entries: list[dict[str, Any]], scope: str, tier: str
+    entries: list[dict[str, Any]],
+    scope: str,
+    tier: str,
+    *,
+    include_advanced: bool = False,
 ) -> list[dict[str, Any]]:
-    """Scope/tier filter used by the empty-query listing path."""
+    """Scope/tier filter used by the empty-query listing path.
+
+    Advanced (curated low-level) entries are excluded from listings unless
+    ``include_advanced`` is set.
+    """
 
     def keep(entry: dict[str, Any]) -> bool:
         if scope != "all" and entry["scope"] != scope:
+            return False
+        if not include_advanced and entry.get("exposure") == "advanced":
             return False
         if tier == TIER_OVERRIDE:
             return bool(entry.get("project_added"))
@@ -709,6 +734,8 @@ def search_index(
     scope: str = "all",
     limit: int = 5,
     tier: str = "all",
+    *,
+    include_advanced: bool = False,
 ) -> list[dict[str, Any]]:
     """Rank API entries using deterministic field-aware lexical matching.
 
@@ -742,8 +769,11 @@ def search_index(
     query = query.strip().lower()
     limit = max(1, min(int(limit), 20))
     if not query:
-        return _filter_entries(entries, scope, tier)[:limit]
-    return _trim_rows(_rank_entries(entries, query, scope, tier), limit)
+        return _filter_entries(entries, scope, tier, include_advanced=include_advanced)[:limit]
+    return _trim_rows(
+        _rank_entries(entries, query, scope, tier, include_advanced=include_advanced),
+        limit,
+    )
 
 
 def search_index_tiered(
@@ -751,6 +781,8 @@ def search_index_tiered(
     query: str,
     scope: str = "all",
     limit: int = 5,
+    *,
+    include_advanced: bool = False,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Two-stage override-first search used by the MCP search tool.
 
@@ -773,11 +805,16 @@ def search_index_tiered(
     query = query.strip().lower()
     limit = max(1, min(int(limit), 20))
     if not query:
-        return "all", _filter_entries(entries, scope, "all")[:limit]
-    override_rows = _rank_entries(entries, query, scope, TIER_OVERRIDE)
+        return "all", _filter_entries(entries, scope, "all", include_advanced=include_advanced)[:limit]
+    override_rows = _rank_entries(
+        entries, query, scope, TIER_OVERRIDE, include_advanced=include_advanced
+    )
     if override_rows and override_rows[0][0] >= OVERRIDE_MIN_SCORE:
         return TIER_OVERRIDE, _trim_rows(override_rows, limit)
-    return TIER_MIXED, _trim_rows(_rank_entries(entries, query, scope, "all"), limit)
+    return TIER_MIXED, _trim_rows(
+        _rank_entries(entries, query, scope, "all", include_advanced=include_advanced),
+        limit,
+    )
 
 
 @dataclass(slots=True)
@@ -791,23 +828,42 @@ class ApiIndex:
     _stale_checked_at: float = field(default=0.0, init=False, repr=False)
     _stale_result: bool = field(default=False, init=False, repr=False)
 
-    def search(self, query: str, scope: str = "all", limit: int = 5) -> list[dict[str, Any]]:
+    def search(
+        self,
+        query: str,
+        scope: str = "all",
+        limit: int = 5,
+        *,
+        include_advanced: bool = False,
+    ) -> list[dict[str, Any]]:
         """Two-tier override-first search; returns compact entries only.
 
         Override (peaksMCP project) APIs win whenever the query exactly matches
         one of their names or aliases; otherwise the full index is searched.
-        See :meth:`search_tiered` for the tier label.
+        Advanced entries surface only on exact hits or when
+        ``include_advanced=True``.  See :meth:`search_tiered` for the label.
         """
-        return search_index_tiered(self.entries, query, scope, limit)[1]
+        return search_index_tiered(
+            self.entries, query, scope, limit, include_advanced=include_advanced
+        )[1]
 
-    def search_tiered(self, query: str, scope: str = "all", limit: int = 5) -> tuple[str, list[dict[str, Any]]]:
+    def search_tiered(
+        self,
+        query: str,
+        scope: str = "all",
+        limit: int = 5,
+        *,
+        include_advanced: bool = False,
+    ) -> tuple[str, list[dict[str, Any]]]:
         """Two-stage override-first search with the searched-namespace label.
 
         Returns a ``(searched_namespace, matches)`` pair where the label is
         ``"override"`` (query hit an override name/alias exactly), ``"mixed"``
         (fell back to the full index) or ``"all"`` (empty query).
         """
-        return search_index_tiered(self.entries, query, scope, limit)
+        return search_index_tiered(
+            self.entries, query, scope, limit, include_advanced=include_advanced
+        )
 
     def get(self, canonical_id: str) -> dict[str, Any] | None:
         """Return one canonical entry.

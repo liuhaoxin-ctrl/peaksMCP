@@ -184,6 +184,11 @@ def validate_override_manifest(document: dict[str, Any]) -> list[str]:
             entry.get("module") or (entry.get("export") and entry.get("implementation"))
         ):
             errors.append(f"override_manifest: project entry {name} needs module or export+implementation")
+        if "exposure" not in entry:
+            errors.append(
+                f"override_manifest: {name} must declare an exposure "
+                "(facade | advanced | internal)"
+            )
         _check_aliases(entry, f"override_manifest: {name}", errors)
         for field, allowed, label in (
             ("exposure", _EXPOSURES, "exposure"),

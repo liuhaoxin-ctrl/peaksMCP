@@ -20,6 +20,7 @@ apis:
   load_data:
     module: peaksMCP.overrides.load
     project: true
+    exposure: facade
     aliases:
       - load data
       - load dataset
@@ -51,6 +52,7 @@ apis:
   save_result:
     module: peaksMCP.overrides.save
     project: true
+    exposure: facade
     aliases:
       - save result
       - save output
@@ -83,6 +85,7 @@ apis:
   convert_pxt:
     module: peaksMCP.pxt_utils.converter
     project: true
+    exposure: advanced
     aliases:
       - convert pxt
       - pxt to netcdf
@@ -100,6 +103,7 @@ apis:
   convert_path:
     module: peaksMCP.pxt_utils.converter
     project: true
+    exposure: advanced
     aliases:
       - batch convert
       - convert directory
@@ -116,6 +120,7 @@ apis:
   translate_datasheet:
     module: peaksMCP.pxt_utils.csv_translator
     project: true
+    exposure: advanced
     aliases:
       - datasheet translation
       - translate csv
@@ -128,6 +133,7 @@ apis:
   read_meta:
     module: peaksMCP.pxt_utils.metadata
     project: true
+    exposure: advanced
     aliases:
       - load experiment metadata
       - read experiment metadata
@@ -149,6 +155,7 @@ apis:
   classify_data_format:
     module: peaksMCP.pxt_utils.metadata
     project: true
+    exposure: advanced
     aliases:
       - classify format
       - data format
@@ -159,6 +166,7 @@ apis:
   is_gold_format:
     module: peaksMCP.pxt_utils.metadata
     project: true
+    exposure: advanced
     aliases:
       - gold format
       - is gold
@@ -168,6 +176,7 @@ apis:
   theta_offset_deg:
     module: peaksMCP.pxt_utils.metadata
     project: true
+    exposure: advanced
     aliases:
       - theta offset
       - angle offset
@@ -179,6 +188,7 @@ apis:
   plot_batch:
     module: peaksMCP.plotting.layout
     project: true
+    exposure: facade
     aliases:
       - publication grid
       - paper figure grid
@@ -198,6 +208,7 @@ apis:
   plot_validation_pair:
     module: peaksMCP.plotting.validation
     project: true
+    exposure: facade
     aliases:
       - before after validation
       - before-after pair
@@ -214,6 +225,7 @@ apis:
   show_mapping_slice:
     module: peaksMCP.workflows.slice_view
     project: true
+    exposure: facade
     aliases:
       - mapping slice
       - slice of mapping
@@ -228,6 +240,7 @@ apis:
   validate_arpes_metadata:
     module: peaksMCP.workflows.publication
     project: true
+    exposure: advanced
     aliases:
       - validate metadata
       - arpes metadata check

@@ -100,3 +100,46 @@ def test_search_match_mode_classification():
     assert _search_match_mode("load the dataset", "mixed", mixed_hit) == "fuzzy"
     assert _search_match_mode("", "all", []) == "list"
     assert _search_match_mode("anything", "mixed", []) == "fuzzy"
+
+
+def test_advanced_apis_are_hidden_until_exact_or_opt_in():
+    """exposure=advanced: hidden from generic/fuzzy search and listings;
+    reachable by exact name and via include_advanced=True."""
+    index = build_index()
+    advanced_names = {
+        item["name"] for item in index.entries if item.get("exposure") == "advanced"
+    }
+    assert "convert_pxt" in advanced_names and "read_meta" in advanced_names
+    assert advanced_names <= {
+        item["name"] for item in index.entries if item.get("project_added")
+    }
+    # Generic fuzzy query must not surface an advanced API by default.
+    for query in ("batch conversion helper", "translate a datasheet file"):
+        names = _names(index.search(query, limit=10))
+        assert not any(name in advanced_names for name in names), (query, names)
+    # ... but include_advanced=True lets them participate.
+    names = _names(index.search("translate datasheet", limit=10, include_advanced=True))
+    assert "translate_datasheet" in names
+    # Exact-name queries are always allowed (score 1000).
+    tier, matches = index.search_tiered("read_meta", limit=3)
+    assert tier == TIER_OVERRIDE and matches[0]["name"] == "read_meta"
+    # Exact aliases resolve too (score 900).
+    tier, matches = index.search_tiered("convert pxt", limit=3)
+    assert tier == TIER_OVERRIDE and matches[0]["name"] == "convert_pxt"
+    # Broad user-intent aliases reach the facade, not the advanced twin.
+    names = _names(index.search("batch convert a folder", limit=10))
+    assert "convert_path" not in names
+    names = _names(index.search("batch convert a folder", limit=10, include_advanced=True))
+    assert "convert_path" in names
+
+
+def test_facade_apis_stay_fully_searchable():
+    index = build_index()
+    facade_names = {
+        item["name"] for item in index.entries if item.get("exposure") == "facade"
+    }
+    assert {"load_data", "preprocess_cut", "plot_batch"} <= facade_names
+    # A generic intent query still lands on the facade (not the advanced twin).
+    names = _names(index.search("convert a file to netcdf", limit=5))
+    assert "convert_experiment" in names
+    assert "convert_pxt" not in names
