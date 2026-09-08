@@ -7,6 +7,13 @@ datasheet translator (``csv_translator``) and the cut workflow
 classifying a ``Data format`` value as gold / sweep / mapping.  ``read_meta``
 builds the structured per-index digest used before preprocessing, so agents
 call one function instead of hand-parsing the JSON repeatedly.
+
+Classification contract: ``is_gold_format`` and ``classify_data_format``
+here are the ONLY implementation of the gold/sweep/mapping rules.
+``csv_translator`` derives ``is_gold_reference`` from ``is_gold_format``,
+``read_meta`` derives per-record kinds from ``classify_data_format``, and any
+future record/shape classifier (e.g. an ``inspect_experiment`` facade or a
+batch digest) must delegate here — never re-implement the string rules.
 """
 
 from __future__ import annotations
