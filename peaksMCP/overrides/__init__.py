@@ -2,25 +2,29 @@
 
 The model verb surface holds ONLY compatibility adapters - things that add a
 real boundary peaks cannot cross itself (data access, format conversion,
-metadata, uniform persistence, deterministic plotting conventions).  It does
-NOT pre-compose analysis workflows: fitting, coordinate correction, k-space
-conversion and batch preprocessing are native peaks steps the model obtains
-through search/get and composes in the notebook, then persists through
-``save_result`` (staged + human-approved).
+inspection, uniform persistence, deterministic plotting conventions).  It
+does NOT pre-compose analysis workflows: fitting, coordinate correction,
+k-space conversion and batch preprocessing are native peaks steps the model
+obtains through search/get and composes in the notebook, then persists
+through the staged, human-approved save flow.
 
 Adapters:
 
-- data access: ``load_data`` (file / experiment index, PXT header dims) and
-  ``inspect_experiment`` (datasheet -> structured experiment summary);
+- data access: ``load_data`` (file / experiment index: per-file identity,
+  representation and sizes, read from headers only) and
+  ``inspect_experiment`` (scans index -> structured experiment summary -
+  the single classification owner for gold/cut/mapping kinds, decision
+  lists and shape conflicts);
 - conversion: ``convert_experiment`` (raw PXT -> NetCDF adapter; pure
-  computation, outputs are staged and published only after the consent card);
+  computation, outputs are published only after the consent card);
 - persistence: ``save_result`` (staged bytes + approval-gated gateway);
 - plotting conventions: ``plot_batch`` / ``plot_validation_pair`` /
-  ``show_mapping_slice``;
-- metadata helpers: ``read_meta`` / ``classify_data_format`` /
-  ``is_gold_format`` / ``theta_offset_deg`` / ``validate_arpes_metadata``.
+  ``show_mapping_slice``.
 
-Earlier task facades (fit_gold_reference, preprocess_cut, preprocess_mapping,
+Low-level metadata helpers (``read_meta`` / ``classify_data_format`` /
+``is_gold_format`` / ``theta_offset_deg``) live in ``pxt_utils.metadata`` as
+private implementation detail and are NOT re-exported here.  Earlier task
+facades (fit_gold_reference, preprocess_cut, preprocess_mapping,
 preprocess_batch) were demoted out of the model surface: they fixed a
 workflow that the model should compose from native peaks APIs; their code
 remains importable in the internal modules for in-process/tests only.
@@ -30,12 +34,6 @@ from __future__ import annotations
 
 from peaksMCP.plotting.layout import plot_batch
 from peaksMCP.plotting.validation import plot_validation_pair
-from peaksMCP.pxt_utils.metadata import (
-    classify_data_format,
-    is_gold_format,
-    read_meta,
-    theta_offset_deg,
-)
 from peaksMCP.workflows.publication import validate_arpes_metadata
 from peaksMCP.workflows.slice_view import show_mapping_slice
 
@@ -57,11 +55,7 @@ __all__ = [
     "ExperimentSummary",
     "ScanSummary",
     "ScanKind",
-    # metadata helpers
-    "read_meta",
-    "classify_data_format",
-    "is_gold_format",
-    "theta_offset_deg",
+    # publication metadata validation (model-visible helper)
     "validate_arpes_metadata",
     # plotting conventions
     "plot_batch",

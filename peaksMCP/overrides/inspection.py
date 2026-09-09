@@ -1,14 +1,23 @@
-"""Experiment inspection facade: one structured summary of a datasheet.
+"""Experiment inspection facade: the single classification owner.
 
-``inspect_experiment`` reads the translated metadata document (or a loaded
-scan carrying it) through the single metadata implementation in
-``peaksMCP.pxt_utils.metadata`` and produces a JSON-safe
-:class:`ExperimentSummary`: one :class:`ScanSummary` per record index with a
-:class:`ScanKind`, the energy window, theta offset, polarisation and — when
-the loaded arrays are supplied — the actual dimensions.  Records whose
-declared ``Data format`` disagrees with their shape (e.g. a 3-D cube labelled
-``sweep``) are reported as classification conflicts so the caller never feeds
-a mapping into a cut-only workflow.
+``inspect_experiment(scans)`` reads a :class:`LoadedScans` index (from
+``load_data``) and produces the structured, JSON-safe
+:class:`ExperimentSummary`: one :class:`ScanSummary` per experiment record
+with a :class:`ScanKind`, the energy window, theta offset, polarisation and
+the actual dimensions (from the header sizes each entry carries — no data is
+materialised).  Records whose declared ``Data format`` disagrees with their
+shape (e.g. a 3-D cube labelled ``sweep``) are reported as classification
+conflicts so the caller never feeds a mapping into a cut-only workflow.
+
+This facade is the ONLY classification owner: ``load_data`` deliberately
+indexes identity only (representation + sizes + provenance), and nothing
+else in the package decides gold/cut/mapping kinds or decision lists.  The
+low-level format-string rules live privately in ``pxt_utils.metadata``;
+``inspect_experiment`` combines those with the real shape information.
+
+The document-only forms (a path to ``experiment_metadata.json`` / parsed
+dict / a scan carrying it, with an optional ``scans`` dict of loaded arrays)
+remain supported for standalone inspection.
 """
 
 from __future__ import annotations
@@ -78,7 +87,7 @@ def _scan_kind(
     Rules (heuristic, conservative — anything unverifiable is ``unknown``):
     - gold records are always ``gold``;
     - a 3-D cube labelled ``sweep`` is really a (low-energy) mapping — the
-      caller is expected to confirm with ``preprocess_mapping``;
+      caller is expected to treat it as a mapping scan;
     - 1-D -> spectrum, 2-D -> cut, 3-D -> mapping, unless dimension names
       clearly say ``hv`` (hv scan) or spatial ``x``/``y`` (spatial map).
     """
@@ -122,7 +131,7 @@ def _conflict_for(
             dims=dims,
             issue=(
                 f"3-D record labelled 'sweep' (dims {dims}) is a mapping-shaped "
-                "cube; use preprocess_mapping, never preprocess_cut"
+                "cube; treat it as a mapping scan, never as a cut"
             ),
         )
     if len(dims) == 2 and format_kind == "mapping" and not ({"x", "y"} <= names):
@@ -148,82 +157,111 @@ def _conflict_for(
     return None
 
 
-def _digests(metadata: Any, scans: dict[int | str, Any] | None) -> dict[str, Any]:
-    """Run the single metadata digest implementation (read_meta).
+def _loaded_scans_index(experiment: Any) -> Any | None:
+    """Detect a LoadedScans index by its protocol shape (no import cycle).
 
-    A ``datasheet.csv`` path is translated first through the datasheet
-    translator, so the standard experiment folder (raw PXT + sibling
-    ``datasheet.csv``) can be inspected before any conversion ran.
+    Anything exposing ``entries`` with ``representation``/``experiment_index``
+    plus a ``metadata_document`` is treated as a load_data index.
     """
-    from peaksMCP.pxt_utils.metadata import read_meta
+    entries = getattr(experiment, "entries", None)
+    if not entries:
+        return None
+    sample = entries[0]
+    if not (
+        hasattr(sample, "stem")
+        and hasattr(sample, "representation")
+        and hasattr(sample, "experiment_index")
+        and hasattr(sample, "sizes")
+    ):
+        return None
+    if not (hasattr(experiment, "stems") and hasattr(experiment, "metadata_document")):
+        return None
+    return experiment
 
-    if isinstance(metadata, (str, os.PathLike)) and str(metadata).lower().endswith(".csv"):
-        from peaksMCP.pxt_utils.csv_translator import translate_datasheet
 
-        translated = translate_datasheet(Path(metadata))
-        metadata = translated.model_dump(mode="python")
-    return read_meta(metadata, data=scans)
+def _record_like(
+    index: int | str,
+    record: dict[str, Any] | None,
+    dims: list[str] | None,
+) -> tuple[dict[str, Any], ScanKind]:
+    """Normalize one metadata record into ScanSummary inputs.
+
+    Returns ``(fields, kind)`` where ``fields`` mirrors what the scan layer
+    knows (data_format, is_gold, windows, offset, polarisation) and ``kind``
+    is the executable ScanKind from format + shape.
+    """
+    if record is None:
+        record = {}
+    experiment = (record.get("experiment") or {}) if isinstance(record, dict) else {}
+    data_format = str(experiment.get("data_format") or "")
+    is_gold = bool(
+        (record.get("is_gold_reference") if isinstance(record, dict) else False)
+        or _format_is_gold(data_format)
+    )
+    format_kind = _classify_format(data_format)
+    kind = _scan_kind(format_kind, is_gold, dims)
+    start = experiment.get("energy_start_eV")
+    stop = experiment.get("energy_stop_eV")
+    window: tuple[float, float] | None = None
+    if isinstance(start, (int, float)) and isinstance(stop, (int, float)):
+        window = (float(start), float(stop))
+    photon = record.get("photon") or {}
+    fields: dict[str, Any] = {
+        "data_format": data_format,
+        "is_gold": is_gold,
+        "energy_window_eV": window,
+        "theta_offset_deg": record.get("theta_offset_deg"),
+        "polarisation": photon.get("polarisation") if isinstance(photon, dict) else None,
+    }
+    return fields, kind
 
 
-def inspect_experiment(
-    metadata: str | os.PathLike[str] | dict[str, Any] | Any,
-    *,
-    scans: dict[int | str, Any] | None = None,
+def _format_is_gold(data_format: str) -> bool:
+    from peaksMCP.pxt_utils.metadata import _is_gold_format
+
+    return _is_gold_format(data_format)
+
+
+def _classify_format(data_format: str) -> str | None:
+    from peaksMCP.pxt_utils.metadata import _classify_data_format
+
+    return _classify_data_format(data_format)
+
+
+def _summarize_rows(
+    rows: list[tuple[int | str, dict[str, Any], ScanKind, list[str] | None]],
 ) -> ExperimentSummary:
-    """Summarize one experiment metadata document for preprocessing.
-
-    Parameters
-    ----------
-    metadata : str, os.PathLike, dict or xarray.DataArray
-        Path to ``experiment_metadata.json``, its parsed dict, or a loaded
-        scan carrying ``attrs["experiment_metadata_json"]``.
-    scans : dict of int|str to xarray.DataArray, optional
-        Loaded scans keyed by record index; supplying them lets the summary
-        verify the declared ``Data format`` against the real dimensions and
-        report classification conflicts (3-D cubes labelled ``sweep``, 2-D
-        records labelled ``mapping`` without spatial axes, unverifiable 3-D
-        records).
-
-    Returns
-    -------
-    ExperimentSummary
-        Per-index ScanSummary rows (kind, dims, energy window, theta offset,
-        polarisation), gold/cut/mapping index lists and structured
-        ``conflicts``.  JSON-safe via ``model_dump(mode="json")``.
-
-    Examples
-    --------
-    >>> summary = inspect_experiment("experiment_metadata.json", scans=loaded)
-    >>> [c.issue for c in summary.conflicts]
-    []
-    """
-    document = _digests(metadata, scans)
+    """Build an ExperimentSummary from normalized (index, fields, kind, dims)."""
     summaries: list[ScanSummary] = []
     gold: list[int | str] = []
     cuts: list[int | str] = []
     mappings: list[int | str] = []
     conflicts: list[ExperimentConflict] = []
-    for record in document.get("records") or []:
-        index: int | str = record["index"]
-        data_format = str(record.get("data_format") or "")
-        format_kind = record.get("kind")
-        is_gold = bool(record.get("is_gold"))
-        dims = record.get("dims")
-        kind = _scan_kind(format_kind, is_gold, dims)
-        conflict = _conflict_for(index, data_format, format_kind, dims, kind)
+    windows: set[tuple[float, float]] = set()
+    for index, fields, kind, dims in rows:
+        data_format = str(fields["data_format"])
+        conflict = _conflict_for(
+            index,
+            data_format,
+            _classify_format(data_format),
+            dims,
+            kind,
+        )
         if conflict is not None:
             conflicts.append(conflict)
+        if fields["energy_window_eV"] is not None:
+            windows.add(fields["energy_window_eV"])  # type: ignore[arg-type]
         summaries.append(
             ScanSummary(
                 index=index,
                 data_format=data_format,
                 kind=kind,
-                is_gold=is_gold,
-                ndim=record.get("ndim"),
+                is_gold=bool(fields["is_gold"]),
+                ndim=len(dims) if dims is not None else None,
                 dims=list(dims or []),
-                energy_window_eV=record.get("energy_window_eV"),
-                theta_offset_deg=record.get("theta_offset_deg"),
-                polarisation=record.get("polarisation"),
+                energy_window_eV=fields["energy_window_eV"],
+                theta_offset_deg=fields["theta_offset_deg"],
+                polarisation=fields["polarisation"],
             )
         )
         if kind == ScanKind.GOLD:
@@ -239,6 +277,144 @@ def inspect_experiment(
         cuts=cuts,
         mappings=mappings,
         conflicts=conflicts,
-        notes=list(document.get("notes") or []),
-        energy_windows_eV=list(document.get("energy_windows_eV") or []),
+        energy_windows_eV=sorted(windows),
     )
+
+
+def _as_key(index_key: Any) -> int | str:
+    try:
+        return int(index_key)
+    except (TypeError, ValueError):
+        return str(index_key)
+
+
+def inspect_experiment(
+    experiment: Any,
+    *,
+    scans: dict[int | str, Any] | None = None,
+) -> ExperimentSummary:
+    """Classify one experiment into a structured summary (the only owner).
+
+    Parameters
+    ----------
+    experiment : LoadedScans, str, os.PathLike, dict or xarray.DataArray
+        A :class:`LoadedScans` index from ``load_data`` (primary form:
+        entries carry the header sizes; the index carries the metadata
+        document provenance).  Standalone documents are also accepted: a
+        path to ``experiment_metadata.json`` / ``datasheet.csv``, its parsed
+        dict, or a loaded scan carrying ``attrs["experiment_metadata_json"]``.
+    scans : dict of int|str to xarray.DataArray, optional
+        Loaded arrays keyed by record index (document-only form): supplying
+        them lets the summary verify the declared ``Data format`` against the
+        real dimensions and report classification conflicts.
+
+    Returns
+    -------
+    ExperimentSummary
+        Per-index ScanSummary rows (kind, dims, energy window, theta offset,
+        polarisation), gold/cut/mapping decision lists and structured
+        ``conflicts``.  JSON-safe via ``model_dump(mode="json")``.
+
+    Examples
+    --------
+    >>> scans = load_data("data/")
+    >>> summary = inspect_experiment(scans)
+    >>> summary.gold
+    [20]
+    """
+    loaded = _loaded_scans_index(experiment)
+    if loaded is not None:
+        return _inspect_loaded(loaded)
+    return _inspect_document(experiment, scans=scans)
+
+
+def _inspect_loaded(loaded: Any) -> ExperimentSummary:
+    """Classify a LoadedScans index: document records x loaded entries."""
+    document = loaded.metadata_document or {}
+    records_in = document.get("records") or {}
+    rows: list[tuple[int | str, dict[str, Any], ScanKind, list[str] | None]] = []
+
+    # One entry per experiment index for real-shape info: prefer the raw
+    # converted NetCDF, then the raw PXT, then the processed product.
+    def _rank(entry: Any) -> int:
+        representation = str(entry.representation)
+        if representation == "netcdf":
+            return 2
+        if representation == "raw_pxt":
+            return 1
+        return 0
+
+    best_entry: dict[int | str, Any] = {}
+    for entry in loaded.entries:
+        if entry.experiment_index is None:
+            continue
+        key = entry.experiment_index
+        prior = best_entry.get(key)
+        if prior is None or _rank(entry) > _rank(prior):
+            best_entry[key] = entry
+
+    seen: set[int | str] = set()
+    # Loaded entries first: their shapes drive classification even when no
+    # metadata document exists (dimension-shape classification).
+    for key, entry in sorted(best_entry.items(), key=lambda pair: str(pair[0])):
+        dims = list((entry.sizes or {}).keys()) or None
+        record = records_in.get(str(key))
+        fields, kind = _record_like(key, record, dims)
+        rows.append((key, fields, kind, dims))
+        seen.add(key)
+    # Document records without a loaded entry: format-only classification.
+    for index_key, record in records_in.items():
+        key = _as_key(index_key)
+        if key in seen:
+            continue
+        if not isinstance(record, dict):
+            continue
+        fields, kind = _record_like(key, record, None)
+        rows.append((key, fields, kind, None))
+
+    summary = _summarize_rows(rows)
+    notes = document.get("notes")
+    if isinstance(notes, list):
+        summary.notes = [str(note) for note in notes]
+    return summary
+
+
+def _inspect_document(metadata: Any, *, scans: dict[int | str, Any] | None) -> ExperimentSummary:
+    """Classify a standalone metadata document (path / dict / DataArray).
+
+    A ``datasheet.csv`` path is translated first through the datasheet
+    translator, so the standard experiment folder (raw PXT + sibling
+    ``datasheet.csv``) can be inspected before any conversion ran.
+    """
+    from peaksMCP.pxt_utils.metadata import _load_metadata, _read_meta
+
+    if isinstance(metadata, (str, os.PathLike)) and str(metadata).lower().endswith(".csv"):
+        from peaksMCP.pxt_utils.csv_translator import translate_datasheet
+
+        translated = translate_datasheet(Path(metadata))
+        metadata = translated.model_dump(mode="python")
+    document = _load_metadata(metadata)
+    digest = _read_meta(document, data=scans)
+    rows: list[tuple[int | str, dict[str, Any], ScanKind, list[str] | None]] = []
+    for record in digest.get("records") or []:
+        index: int | str = record["index"]
+        dims = record.get("dims")
+        fields, kind = _record_like(
+            index,
+            {
+                "experiment": {"data_format": record.get("data_format")},
+                "is_gold_reference": record.get("is_gold"),
+                "theta_offset_deg": record.get("theta_offset_deg"),
+                "photon": {"polarisation": record.get("polarisation")},
+            },
+            dims,
+        )
+        # _read_meta already computed the window from start/stop; keep it.
+        rows.append(
+            (index, {**fields, "energy_window_eV": record.get("energy_window_eV")}, kind, dims)
+        )
+    summary = _summarize_rows(rows)
+    notes = document.get("notes")
+    if isinstance(notes, list):
+        summary.notes = [str(note) for note in notes]
+    return summary

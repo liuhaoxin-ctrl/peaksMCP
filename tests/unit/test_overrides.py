@@ -288,9 +288,11 @@ def test_native_catalog_v1_exists_and_holds_only_upstream_entries():
 
 def test_load_data_folder_returns_index_with_datasheet(monkeypatch, tmp_path, capsys):
     """A whole experiment folder is indexed without reading data; the sibling
-    datasheet feeds the decision metadata and the data layer loads on demand."""
+    datasheet becomes the index's metadata document and classification stays
+    with inspect_experiment."""
     from peaksMCP import pxt_utils
     from peaksMCP.overrides import LoadedScans
+    from peaksMCP.overrides.inspection import inspect_experiment
 
     folder = tmp_path / "data"
     folder.mkdir()
@@ -317,11 +319,18 @@ def test_load_data_folder_returns_index_with_datasheet(monkeypatch, tmp_path, ca
     loaded = load_data(str(folder))
     assert isinstance(loaded, LoadedScans)
     assert loaded.stems == ["BP_0005", "BP_0020"]
-    # Decision metadata without touching data files.
-    assert loaded.cuts == ["BP_0005"] and loaded.gold == ["BP_0020"]
+    # Identity + provenance only; no classification at load time.
+    assert loaded.metadata_source == "datasheet"
     entry20 = loaded.entries[1]
-    assert entry20.index == 20 and entry20.data_format == "Au sweep"
-    assert entry20.scan_kind == "gold"
+    assert entry20.experiment_index == 20
+    assert entry20.representation == "raw_pxt"
+    assert not hasattr(entry20, "scan_kind")
+    # Classification is the inspect_experiment owner.
+    summary = inspect_experiment(loaded)
+    assert set(summary.gold) == {20}
+    assert set(summary.cuts) == {5}
+    assert summary.records[0].data_format == "Au sweep"  # str-sorted: "20" < "5"
+    assert summary.conflicts == []
     # Data layer: loading one stem reads exactly that file and attaches the
     # translated document.
     data20 = loaded["BP_0020"]
@@ -330,7 +339,9 @@ def test_load_data_folder_returns_index_with_datasheet(monkeypatch, tmp_path, ca
     assert doc["records"]["5"]["experiment"]["data_format"] == "sweep"
     assert doc["records"]["20"]["experiment"]["data_format"] == "Au sweep"
     out = capsys.readouterr().out
-    assert "2 file(s) indexed" in out and "gold=1, cuts=1" in out
+    assert "2 file(s) indexed" in out and "metadata=datasheet" in out
+    # The raw index never classifies: no gold/cuts on the object itself.
+    assert not hasattr(loaded, "gold")
 
 
 def test_load_data_sequence_of_files(monkeypatch, tmp_path, capsys):
@@ -375,12 +386,14 @@ def test_load_data_index_never_reads_but_data_layer_fails_per_file(monkeypatch, 
 
 
 def test_load_data_index_uses_embedded_netcdf_metadata(monkeypatch, tmp_path, capsys):
-    """A converted folder without a datasheet still gets decision metadata
-    from each NetCDF's embedded experiment_metadata_json (header only)."""
+    """A converted folder without a datasheet still carries the metadata
+    document embedded in each NetCDF (header only); classification stays with
+    inspect_experiment, which sees the header sizes as real shapes."""
     import json as _json
 
     from peaksMCP.overrides import LoadedScans
     from peaksMCP.overrides import load as load_module
+    from peaksMCP.overrides.inspection import inspect_experiment
 
     folder = tmp_path / "data_netcdf"
     folder.mkdir()
@@ -410,10 +423,19 @@ def test_load_data_index_uses_embedded_netcdf_metadata(monkeypatch, tmp_path, ca
     monkeypatch.setattr(load_module, "_single", fake_single)
     loaded = load_data(str(folder))
     assert isinstance(loaded, LoadedScans)
-    assert loaded.gold == ["BP_0020"] and loaded.cuts == ["BP_0015"]
-    assert loaded.entries[0].energy_window_eV == (2.2, 2.7)
-    assert loaded.entries[0].sizes == {"eV": 3, "theta_par": 4}
-    assert loaded.entries[0].converted is True
+    assert loaded.metadata_source == "embedded"
+    entry0 = loaded.entries[0]
+    assert entry0.experiment_index == 15
+    assert entry0.representation == "netcdf"
+    assert entry0.sizes == {"eV": 3, "theta_par": 4}
+    assert entry0.converted is True
+    # Classification from the embedded document + header dims (2-D sweeps).
+    summary = inspect_experiment(loaded)
+    assert set(summary.gold) == {20}
+    assert set(summary.cuts) == {15}
+    row15 = next(row for row in summary.records if row.index == 15)
+    assert row15.dims == ["eV", "theta_par"]
+    assert row15.energy_window_eV == (2.2, 2.7)
     out = capsys.readouterr().out
     assert "metadata=embedded" in out
     # The data layer goes through the same single-file reader.
@@ -439,16 +461,19 @@ def test_load_data_index_reports_pxt_dims_from_header(tmp_path, capsys):
     expected = dict(load_pxt(fixture).sizes)
     assert entry.sizes == expected, (entry.sizes, expected)
     assert entry.file_kind == "pxt"
-    assert loaded.entries[0].index == 9
+    assert entry.representation == "raw_pxt"
+    assert loaded.entries[0].experiment_index == 9
 
 
 def test_load_data_index_tags_processed_netcdf_entries(tmp_path, capsys):
-    """*_processed.nc products index as their own processed entries, inherit
-    the raw stem's datasheet identity, and stay out of the decision sets."""
+    """*_processed.nc products index as processed_netcdf entries under their
+    own stem; classification resolves the shared record index once, through
+    the raw converted NetCDF (never the processed product's dims)."""
     import json as _json
 
     from peaksMCP.overrides import LoadedScans, load_data
     from peaksMCP.overrides import load as load_module
+    from peaksMCP.overrides.inspection import inspect_experiment
 
     folder = tmp_path / "data_netcdf"
     folder.mkdir()
@@ -487,22 +512,32 @@ def test_load_data_index_tags_processed_netcdf_entries(tmp_path, capsys):
     assert stems["BP_0005"].processed is False
     proc = stems["BP_0005_processed"]
     assert proc.processed is True
-    assert proc.index == 5 and proc.scan_kind == "cut"
+    assert proc.representation == "processed_netcdf"
+    assert proc.experiment_index == 5
     assert proc.sizes == {"eV": 4, "kx": 6}  # the product's own header dims
-    assert loaded.cuts == ["BP_0005"]  # decision sets stay raw-only
     assert loaded.processed == ["BP_0005_processed"]
+    assert loaded.needs_conversion == []
     out = capsys.readouterr().out
     assert "processed=1" in out
+    # One classification per experiment record; the raw NetCDF (eV/theta_par)
+    # drives the shape, so the 2-D sweep stays a cut despite the processed
+    # product carrying k-space dims.
+    summary = inspect_experiment(loaded)
+    assert set(summary.cuts) == {5}
+    assert summary.gold == []
+    row = summary.records[0]
+    assert row.dims == ["eV", "theta_par"] and row.kind.value == "cut"
 
 
 def test_load_data_accepts_experiment_root_with_subfolders(monkeypatch, tmp_path, capsys):
     """Pointing load_data at the experiment ROOT (data/ + data_netcdf/) works:
     subfolders are indexed with their own contexts, converted NetCDF wins over
-    the raw PXT for the same stem, and the summary names the gold scan."""
+    the raw PXT for the same stem, and inspect_experiment classifies."""
     import json as _json
 
     from peaksMCP.overrides import LoadedScans, load_data
     from peaksMCP.overrides import load as load_module
+    from peaksMCP.overrides.inspection import inspect_experiment
 
     root = tmp_path / "BP260623"
     data_dir = root / "data"
@@ -546,11 +581,13 @@ def test_load_data_accepts_experiment_root_with_subfolders(monkeypatch, tmp_path
     assert isinstance(exp, LoadedScans)
     # Dedup: BP_0005 appears once (netcdf wins); BP_0020 stays raw pxt-only.
     assert exp.stems == ["BP_0005", "BP_0020"]
-    assert exp.gold == ["BP_0020"] and exp.cuts == ["BP_0005"]
+    assert exp.needs_conversion == ["BP_0020"]
     e5 = exp.entries[0]
     assert e5.file_kind == "netcdf" and e5.sizes == {"eV": 3, "theta_par": 4}
+    summary = inspect_experiment(exp)
+    assert set(summary.gold) == {20} and set(summary.cuts) == {5}
     out = capsys.readouterr().out
-    assert "gold=BP_0020" in out and "data_netcdf" in out
+    assert "metadata=datasheet" in out and "data_netcdf" in out
     # repr is the one-line summary for print(exp).
     assert "file(s) indexed" in repr(exp)
 

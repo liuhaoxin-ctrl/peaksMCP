@@ -195,7 +195,7 @@ def test_inspect_experiment_reports_classification_conflicts_from_shapes():
     assert by_index[6].kind == ScanKind.SPATIAL_MAP
     assert by_index[7].kind == ScanKind.SPECTRUM
     issues = {c.index: c.issue for c in summary.conflicts}
-    assert 2 in issues and "preprocess_mapping" in issues[2]
+    assert 2 in issues and "mapping-shaped cube" in issues[2]
     assert summary.mappings == [2, 3]
     assert 5 not in summary.mappings and 6 not in summary.mappings
     # JSON-safe round trip.
@@ -220,6 +220,84 @@ def test_inspect_experiment_loads_metadata_embedded_in_a_scan():
                          attrs={"experiment_metadata_json": meta})
     summary = inspect_experiment(array)
     assert {row.index for row in summary.records} == {1, 2, 3, 4, 5, 6, 7}
+
+
+def test_inspect_experiment_accepts_a_loaded_scans_index():
+    """The primary interface: scans = load_data(root); summary = inspect_experiment(scans).
+
+    The index carries identity + provenance + header sizes only; inspection is
+    the single classification owner: kinds, decision lists, dims from the
+    entry sizes and shape conflicts - one row per experiment record (raw and
+    processed entries sharing an index collapse onto the raw shape)."""
+    from peaksMCP.overrides import LoadedScans, ScanEntry
+
+    exp = LoadedScans(
+        [
+            ScanEntry(stem="BP_0007", path="/d/BP_0007.nc", representation="netcdf",
+                      experiment_index=7, sizes={"eV": 215, "theta_par": 902, "deflector_perp": 31}),
+            ScanEntry(stem="BP_0015", path="/d/BP_0015.nc", representation="netcdf",
+                      experiment_index=15, sizes={"eV": 168, "theta_par": 902}),
+            ScanEntry(stem="BP_0015_processed", path="/d/BP_0015_processed.nc",
+                      representation="processed_netcdf", experiment_index=15,
+                      sizes={"eV": 168, "kx": 902}),
+            ScanEntry(stem="BP_0020", path="/d/BP_0020.nc", representation="netcdf",
+                      experiment_index=20, sizes={"eV": 168, "theta_par": 902}),
+            ScanEntry(stem="unindexed", path="/d/unindexed.pxt", representation="raw_pxt"),
+        ],
+        source="BP260623/data_netcdf",
+        metadata_document={
+            "notes": ["Cut theta_offset=1.5"],
+            "records": {
+                "7": {"experiment": {"data_format": "sweep",
+                                     "energy_start_eV": 2.2, "energy_stop_eV": 2.7}},
+                "15": {"experiment": {"data_format": "sweep"}},
+                "20": {"experiment": {"data_format": "Au sweep"}},
+            },
+        },
+        metadata_source="embedded",
+    )
+    summary = inspect_experiment(exp)
+    by_index = {row.index: row for row in summary.records}
+    assert set(by_index) == {7, 15, 20}  # unindexed files have no record row
+    assert by_index[20].kind == ScanKind.GOLD
+    assert by_index[15].kind == ScanKind.CUT
+    assert by_index[15].dims == ["eV", "theta_par"]  # raw nc dims, not kx
+    assert by_index[15].is_gold is False
+    assert by_index[7].kind == ScanKind.MAPPING  # 3-D cube labelled sweep
+    assert any(c.index == 7 and "mapping-shaped cube" in c.issue for c in summary.conflicts)
+    assert set(summary.gold) == {20}
+    assert set(summary.cuts) == {15}
+    assert set(summary.mappings) == {7}
+    assert summary.energy_windows_eV == [(2.2, 2.7)]
+    assert summary.notes == ["Cut theta_offset=1.5"]
+    payload = summary.model_dump(mode="json")
+    assert payload["gold"] == [20]
+
+
+def test_inspect_experiment_classifies_sizes_only_without_document():
+    """Without any metadata document the shapes alone still classify; entries
+    without a parseable experiment index are skipped (no record identity)."""
+    from peaksMCP.overrides import LoadedScans, ScanEntry
+
+    exp = LoadedScans(
+        [
+            ScanEntry(stem="BP_0001", path="/d/BP_0001.pxt", representation="raw_pxt",
+                      experiment_index=1, sizes={"eV": 200}),
+            ScanEntry(stem="BP_0002", path="/d/BP_0002.pxt", representation="raw_pxt",
+                      experiment_index=2, sizes={"eV": 200, "theta_par": 100}),
+            ScanEntry(stem="BP_0003", path="/d/BP_0003.pxt", representation="raw_pxt",
+                      experiment_index=3, sizes={"eV": 60, "theta_par": 100, "deflector_perp": 10}),
+            ScanEntry(stem="scrap", path="/d/scrap.pxt", representation="raw_pxt"),
+        ],
+        source="sequence",
+    )
+    summary = inspect_experiment(exp)
+    by_index = {row.index: row for row in summary.records}
+    assert by_index[1].kind == ScanKind.SPECTRUM
+    assert by_index[2].kind == ScanKind.CUT
+    assert by_index[3].kind == ScanKind.MAPPING
+    assert summary.conflicts == []  # no declared format to disagree with
+    assert summary.records[2].data_format == ""
 
 
 # --------------------------------------------------------------------------- #

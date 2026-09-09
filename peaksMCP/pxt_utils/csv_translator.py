@@ -7,7 +7,7 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
-from .metadata import is_gold_format, theta_offset_deg
+from .metadata import _is_gold_format, _theta_offset_deg
 from .models import ExperimentMetadata, ExperimentRecord
 
 _KNOWN_FIELDS = {
@@ -153,7 +153,7 @@ def _record(
         else {},
         analyser=analyser,
         experiment=experiment,
-        is_gold_reference=is_gold_format(data_format),
+        is_gold_reference=_is_gold_format(data_format),
         unmapped=unmapped,
     )
 
@@ -239,7 +239,7 @@ def translate_datasheet(
                 continue
             notes.append(f"Index {index}: {value}")
             if records[key].theta_offset_deg is None:
-                records[key].theta_offset_deg = theta_offset_deg(value)
+                records[key].theta_offset_deg = _theta_offset_deg(value)
 
     # AI-visible notes embedded in note-column headers come first (agent reads
     # them before the per-Index notes).  The header may also carry the
@@ -255,7 +255,7 @@ def translate_datasheet(
             continue
         label = header.split("：", 1)[0] if "：" in header else header.split(":", 1)[0]
         agent_notes.append(f"{label}：{content}")
-        header_offset = theta_offset_deg(content)
+        header_offset = _theta_offset_deg(content)
         if header_offset is not None:
             for record in records.values():
                 if record.theta_offset_deg is None:

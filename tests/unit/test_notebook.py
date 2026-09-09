@@ -100,34 +100,111 @@ def test_read_active_cell_keeps_cursor_metadata_output_free():
     assert backend.active_cell()["id"] == "cell-7"
 
 
-def test_loaded_scans_is_first_class_in_variable_tools():
-    """A LoadedScans index in the notebook must be visible and readable: the
-    notebook is the shared context and the agent needs programmatic
+def test_loaded_scans_surfaces_through_the_generic_index_protocol():
+    """A LoadedScans index in the notebook must be visible and readable
+    through the generic object-summary protocol (no special case, no
+    classification): representation counts, conversion state and provenance.
+    The notebook is the shared context and the agent needs programmatic
     situation awareness (is the required data already loaded?)."""
     from peaksMCP.overrides import LoadedScans, ScanEntry
 
     exp = LoadedScans(
         [
-            ScanEntry(stem="BP_0020", path="/d/BP_0020.nc", file_kind="netcdf",
-                      index=20, data_format="Au sweep", is_gold=True,
-                      scan_kind="gold", sizes={"eV": 168, "theta_par": 902}),
-            ScanEntry(stem="BP_0015", path="/d/BP_0015.nc", file_kind="netcdf",
-                      index=15, data_format="sweep", scan_kind="cut",
-                      sizes={"eV": 168, "theta_par": 902}),
+            ScanEntry(stem="BP_0020", path="/d/BP_0020.nc", representation="netcdf",
+                      experiment_index=20, sizes={"eV": 168, "theta_par": 902}),
+            ScanEntry(stem="BP_0015", path="/d/BP_0015.pxt", representation="raw_pxt",
+                      experiment_index=15, sizes={"eV": 168, "theta_par": 902}),
         ],
-        source="BP260623/data_netcdf",
+        source="BP260623/data",
+        metadata_source="datasheet",
+        metadata_path="/d/datasheet.csv",
     )
     backend = NotebookBackend(SharedState(FakeIPython({"exp": exp, "scan": xr.DataArray([1])})))
 
     listed = backend.list_variables()["variables"]
     row = next(item for item in listed if item["name"] == "exp")
     assert row["type"].endswith("LoadedScans")
-    assert row["indexed"] == {"n": 2, "gold": ["BP_0020"], "cuts": 1,
-                              "mappings": 0, "processed": 0, "needs_conversion": []}
+    # Structural only: representations, not classification.
+    assert row["indexed"] == {"n": 2, "representations": {"raw_pxt": 1, "netcdf": 1},
+                              "needs_conversion": 1}
 
     detail = backend.read_variable("exp")
     assert detail["name"] == "exp"
     assert detail["n_files"] == 2
-    assert detail["gold"] == ["BP_0020"]
-    assert detail["cuts"] == ["BP_0015"]
+    assert detail["representations"] == {"raw_pxt": 1, "netcdf": 1}
+    assert detail["needs_conversion"] == ["BP_0015"]
+    assert detail["metadata_source"] == "datasheet"
     assert detail["summary"].startswith("load_data:")
+    # No classification leaks into the notebook surface.
+    assert "gold" not in detail and "cuts" not in detail
+
+
+def test_index_protocol_works_for_any_object_without_imports():
+    """The protocol is duck-typed: any entries/stems object summarizes, and
+    ordinary objects still fall back to a bounded repr."""
+    class Entry:
+        def __init__(self, stem, representation):
+            self.stem = stem
+            self.representation = representation
+
+    class MyIndex:
+        entries = [Entry("a.pxt", "raw_pxt")]
+        source = "mine"
+        metadata_source = "none"
+        stems = ["a.pxt"]
+
+        def summary_line(self):
+            return "my summary line"
+
+        @property
+        def needs_conversion(self):
+            return ["a.pxt"]
+
+    backend = NotebookBackend(SharedState(FakeIPython({"mine": MyIndex(), "plain": object()})))
+    listed = backend.list_variables()["variables"]
+    row = next(item for item in listed if item["name"] == "mine")
+    assert row["indexed"]["representations"] == {"raw_pxt": 1}
+    detail = backend.read_variable("plain")
+    assert "repr" in detail and len(detail["repr"]) <= 4000
+
+
+def test_inspect_notebook_targets_and_details_are_bounded():
+    from peaksMCP.overrides import LoadedScans, ScanEntry
+
+    exp = LoadedScans(
+        [ScanEntry(stem="BP_0015", path="/d/BP_0015.nc", representation="netcdf",
+                   experiment_index=15, sizes={"eV": 168, "theta_par": 902})],
+        source="data_netcdf",
+    )
+    state = SharedState(FakeIPython({"exp": exp, "scan": xr.DataArray([1], dims="eV")}))
+    backend = NotebookBackend(state)
+
+    rows = backend.inspect("variables", detail="summary", limit=1)
+    assert rows["target"] == "variables" and rows["count"] == 2 and rows["truncated"] is True
+    assert len(rows["variables"]) == 1
+    summary_row = rows["variables"][0]
+    assert summary_row["name"] == "exp"
+    assert "summary" in summary_row and "dims" not in summary_row
+
+    preview = backend.inspect("variables", detail="preview")
+    preview_rows = {item["name"]: item for item in preview["variables"]}
+    assert preview_rows["exp"]["structural"]["representations"]["netcdf"] == 1
+    assert preview_rows["scan"]["structural"]["dims"] == ["eV"]
+
+    variable = backend.inspect("variable", variable_name="exp", detail="summary")
+    assert variable["summary"].startswith("LoadedScans n=1")
+    variable_preview = backend.inspect("variable", variable_name="scan", detail="preview")
+    assert variable_preview["dims"] == ["eV"]
+
+    cell = backend.inspect("active_cell", detail="summary")
+    assert cell["target"] == "active_cell"
+    assert cell["n_outputs"] is None
+
+    with pytest.raises(ValueError, match="unknown target"):
+        backend.inspect("variablesx")
+    with pytest.raises(ValueError, match="requires variable_name"):
+        backend.inspect("variable")
+    with pytest.raises(KeyError):
+        backend.inspect("variable", variable_name="missing")
+    # limit is clamped to 1..50 (0 clamps up to 1).
+    assert len(backend.inspect("variables", detail="summary", limit=0)["variables"]) == 1

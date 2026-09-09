@@ -513,26 +513,25 @@ def test_theta_offset_in_note_header_is_backfilled_to_records(tmp_path):
 
 
 def test_record_classification_is_single_sourced(tmp_path):
-    """The gold/sweep/mapping rules live in pxt_utils.metadata only; the
-    datasheet translator and the read_meta digest must agree with them."""
+    """The gold/sweep/mapping string rules live privately in pxt_utils.metadata;
+    the datasheet translator and inspect_experiment must agree with them."""
     from peaksMCP.pxt_utils.metadata import (
-        classify_data_format,
-        is_gold_format,
-        read_meta,
+        _classify_data_format,
+        _is_gold_format,
     )
 
     # Rule table straight from the matchers.
-    assert is_gold_format("Au") is True
-    assert is_gold_format("Au sweep") is True
-    assert is_gold_format("sweep") is False
-    assert classify_data_format("Au sweep") == "gold"
-    assert classify_data_format("sweep") == "sweep"
-    assert classify_data_format("sweep mapping") == "sweep"
-    assert classify_data_format("mapping") == "mapping"
+    assert _is_gold_format("Au") is True
+    assert _is_gold_format("Au sweep") is True
+    assert _is_gold_format("sweep") is False
+    assert _classify_data_format("Au sweep") == "gold"
+    assert _classify_data_format("sweep") == "sweep"
+    assert _classify_data_format("sweep mapping") == "sweep"
+    assert _classify_data_format("mapping") == "mapping"
 
-    # A full datasheet round trip: translator records and digest agree.  The
-    # CSV carries a real "Data format" column (the shared write_datasheet test
-    # header has none, so this test writes its own table).
+    # A full datasheet round trip: translator records and the inspection
+    # digest agree.  The CSV carries a real "Data format" column (the shared
+    # write_datasheet test header has none, so this test writes its own table).
     source = tmp_path / "datasheet.csv"
     header = (
         "Experiment title,,,,\n"
@@ -549,9 +548,11 @@ def test_record_classification_is_single_sourced(tmp_path):
     assert document.records["1"].is_gold_reference is True
     assert document.records["2"].is_gold_reference is False
 
-    digest = read_meta(metadata_path)
-    by_index = {record["index"]: record for record in digest["records"]}
-    assert by_index[1]["kind"] == "gold"
-    assert by_index[2]["kind"] == "sweep"
-    assert by_index[3]["kind"] == "mapping"
-    assert digest["gold"] == [1] and digest["sweeps"] == [2] and digest["mappings"] == [3]
+    from peaksMCP.overrides.inspection import inspect_experiment
+
+    summary = inspect_experiment(metadata_path)
+    by_index = {row.index: row for row in summary.records}
+    assert str(by_index[1].kind) == "gold"
+    assert str(by_index[2].kind) == "cut"
+    assert str(by_index[3].kind) == "mapping"
+    assert summary.gold == [1] and summary.cuts == [2] and summary.mappings == [3]

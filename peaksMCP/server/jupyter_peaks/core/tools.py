@@ -397,10 +397,35 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
     def read_active_cell() -> dict[str, Any]:
         return _read_active_cell_normalized(notebook)
 
+    def inspect_notebook(
+        target: str = "variables",
+        variable_name: str | None = None,
+        detail: str = "summary",
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """Inspect the live notebook through the generic object-summary protocol.
+
+        ``target`` discriminates the request: ``variables`` (listing rows for
+        the namespace), ``variable`` (one named variable, requires
+        ``variable_name``) or ``active_cell`` (the current frontend cell).
+        ``detail`` selects ``summary`` (one bounded line per item) or
+        ``preview`` (structural detail: xarray dims/sizes/units/lazy state,
+        index representation counts and conversion state, bounded reprs).
+        ``limit`` caps how many variables rows are returned (1..50).
+        Bounds are enforced here; nothing unbounded reaches the model.
+        """
+        return notebook.inspect(
+            target,
+            variable_name=variable_name,
+            detail=detail,
+            limit=limit,
+        )
+
     functions = {
         "peaks_search_api": peaks_search_api,
         "peaks_get_api": peaks_get_api,
         "askuserquestion": askuserquestion,
+        "inspect_notebook": inspect_notebook,
         "notebook_list_variables": notebook.list_variables,
         "notebook_read_variable": notebook.read_variable,
         "notebook_read_active_cell": read_active_cell,

@@ -1,4 +1,4 @@
-"""Unified data loading facade: metadata first, data as the lazy layer.
+"""Unified data loading facade: identity index first, data as the lazy layer.
 
 One entry for the agent to load ANY data — any number of files, any
 supported type — from a notebook:
@@ -9,16 +9,22 @@ supported type — from a notebook:
     exp        = load_data("data_netcdf/")          # already-converted folder
     subset     = load_data(["a.nc", "b.nc"])        # explicit list -> LoadedScans
 
-Folder / list loads return a lightweight :class:`LoadedScans` index — the
-metadata the agent needs to DECIDE (which scans are gold/cut/mapping, which
-still need conversion) — with the data itself as one extra layer: access
-``exp[stem]`` to load that single file (NetCDF lazily).  Whatever the number
-of files, loading never materialises the data; the printed summary is one
-line and the index object is the shared record in the notebook.
+Folder / list loads return a lightweight :class:`LoadedScans` index: per-file
+identity only — stem, path, ``representation`` (``raw_pxt`` / ``netcdf`` /
+``processed_netcdf``), the experiment index parsed from the name/header, and
+the dimension sizes read from the file header — plus the metadata provenance
+(where the experiment metadata document came from: datasheet / embedded /
+explicit / none).  What each scan IS (gold/cut/mapping, offsets, windows,
+shape conflicts) is deliberately NOT decided here: classification is the job
+of ``inspect_experiment`` (the single classification owner), which reads this
+index.  The data itself is one extra layer: access ``exp[stem]`` to load that
+single file (NetCDF lazily).  Whatever the number of files, loading never
+materialises the data; the printed summary is one line and the index object
+is the shared record in the notebook.
 
 Rules:
 - Single file returns a DataArray; a folder or a list returns LoadedScans.
-- Metadata source order: explicit ``metadata`` argument > sibling
+- Metadata document source order: explicit ``metadata`` argument > sibling
   ``datasheet.csv`` in the folder (translated once) > each NetCDF's embedded
   ``experiment_metadata_json`` (header read only).  PXT files without a
   datasheet carry path info only.
@@ -39,6 +45,19 @@ from typing import Any
 from .models import Report
 
 _SUPPORTED_SUFFIXES = {".pxt", ".nc"}
+
+#: Representation of one indexed file: what it IS on disk, nothing more.
+#: ``converted``/``processed``/``needs_conversion`` derive from this value.
+REPRESENTATION_RAW_PXT = "raw_pxt"
+REPRESENTATION_NETCDF = "netcdf"
+REPRESENTATION_PROCESSED_NETCDF = "processed_netcdf"
+
+#: Where the LoadedScans metadata document came from (provenance only; the
+#: document itself is used by inspect_experiment, never classified here).
+METADATA_SOURCE_EXPLICIT = "explicit"
+METADATA_SOURCE_DATASHEET = "datasheet"
+METADATA_SOURCE_EMBEDDED = "embedded"
+METADATA_SOURCE_NONE = "none"
 
 
 class LoadReport(Report):
@@ -68,9 +87,9 @@ def _register_l112_once() -> None:
 def _attach_metadata(data: Any, metadata: Any) -> None:
     if metadata is None:
         return
-    # The metadata reader is the internal _load_metadata helper (the public
-    # digest entry is read_meta); import errors are NOT swallowed here so a
-    # future rename fails loudly instead of silently dropping metadata.
+    # The metadata reader is the internal _load_metadata helper; import errors
+    # are NOT swallowed here so a future rename fails loudly instead of
+    # silently dropping metadata.
     from peaksMCP.pxt_utils.metadata import _load_metadata
 
     payload = _load_metadata(metadata)
@@ -109,74 +128,50 @@ def _index_from_stem(stem: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def _scan_kind_of(is_gold: bool, data_format: str) -> str:
-    """Datasheet-based kind (no data read): gold/cut/mapping/unknown."""
-    if is_gold or "au" in (data_format or "").lower() or "金" in (data_format or ""):
-        return "gold"
-    lowered = (data_format or "").lower()
-    if "sweep" in lowered:
-        return "cut"
-    if "mapping" in lowered:
-        return "mapping"
-    return "unknown"
-
-
 @dataclass
 class ScanEntry:
-    """One file in a LoadedScans index: identity + decision metadata."""
+    """One file in a LoadedScans index: identity + representation only.
+
+    Decision metadata is deliberately absent: what a scan IS (gold/cut/
+    mapping kind, offsets, windows, shape conflicts) is classified once by
+    ``inspect_experiment`` from the experiment metadata document combined
+    with this entry's ``sizes`` — never here.
+    """
 
     stem: str
     path: str
-    file_kind: str  # "pxt" | "netcdf"
-    index: int | None = None
-    data_format: str = ""
-    is_gold: bool = False
-    scan_kind: str = "unknown"
-    theta_offset_deg: float | None = None
-    energy_window_eV: tuple[float, float] | None = None
-    #: Dimensions read from the file header (PXT wave header / NetCDF
+    #: raw_pxt | netcdf | processed_netcdf — what the file on disk is.
+    representation: str
+    #: Experiment record index parsed from the stem or the file header
+    #: (``BP_0020`` -> 20); None when unparseable.
+    experiment_index: int | None = None
+    #: Dimension sizes read from the file header (PXT wave header / NetCDF
     #: metadata) without materialising any data block; None when unreadable.
     sizes: dict[str, int] | None = None
-    #: True for preprocessing products (``<stem>_processed.nc``, the single
-    #: preprocess_batch output naming): they index as their own entry, tagged
-    #: processed, and inherit the datasheet identity of the raw stem.
-    processed: bool = False
-    #: None = unknown (e.g. explicit list); True = NetCDF present; False =
-    #: raw PXT without its converted sibling (still needs conversion).
-    converted: bool | None = None
+
+    @property
+    def file_kind(self) -> str:
+        """``"pxt"`` or ``"netcdf"``, derived from the representation."""
+        return "pxt" if self.representation == REPRESENTATION_RAW_PXT else "netcdf"
+
+    @property
+    def processed(self) -> bool:
+        """True for preprocessing products (``<stem>_processed.nc``)."""
+        return self.representation == REPRESENTATION_PROCESSED_NETCDF
+
+    @property
+    def converted(self) -> bool:
+        """True when a NetCDF exists for this entry (raw PXT needs conversion)."""
+        return self.representation != REPRESENTATION_RAW_PXT
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "stem": self.stem,
             "path": self.path,
-            "file_kind": self.file_kind,
-            "index": self.index,
-            "data_format": self.data_format,
-            "is_gold": self.is_gold,
-            "scan_kind": self.scan_kind,
-            "theta_offset_deg": self.theta_offset_deg,
-            "energy_window_eV": self.energy_window_eV,
+            "representation": self.representation,
+            "experiment_index": self.experiment_index,
             "sizes": self.sizes,
-            "processed": self.processed,
-            "converted": self.converted,
         }
-
-
-def _fill_from_record(entry: ScanEntry, index: int | None, record: Any) -> ScanEntry:
-    """Fill decision metadata from one datasheet/embedded record."""
-    if index is not None:
-        entry.index = index
-    experiment = (record or {}).get("experiment") or {}
-    data_format = str(experiment.get("data_format") or "")
-    entry.data_format = data_format
-    entry.is_gold = bool(record.get("is_gold_reference"))
-    entry.scan_kind = _scan_kind_of(entry.is_gold, data_format)
-    offset = record.get("theta_offset_deg")
-    entry.theta_offset_deg = float(offset) if isinstance(offset, (int, float)) else None
-    start, stop = experiment.get("energy_start_eV"), experiment.get("energy_stop_eV")
-    if isinstance(start, (int, float)) and isinstance(stop, (int, float)):
-        entry.energy_window_eV = (float(start), float(stop))
-    return entry
 
 
 def _datasheet_candidates(directory: Path) -> list[Path]:
@@ -197,26 +192,34 @@ def _datasheet_candidates(directory: Path) -> list[Path]:
     return candidates
 
 
-def _auto_datasheet_payload(directory: Path) -> dict[str, Any] | None:
-    """Translate the experiment's ``datasheet.csv`` once for a directory load."""
+def _auto_datasheet_payload(directory: Path) -> tuple[dict[str, Any] | None, Path | None]:
+    """Translate the experiment's ``datasheet.csv`` once for a directory load.
+
+    Returns ``(document, datasheet_path)`` or ``(None, None)`` when no
+    readable datasheet exists.
+    """
     for datasheet in _datasheet_candidates(directory):
         if not datasheet.exists():
             continue
         try:
             from peaksMCP.pxt_utils.csv_translator import translate_datasheet
 
-            return translate_datasheet(datasheet).model_dump(mode="python")
+            return translate_datasheet(datasheet).model_dump(mode="python"), datasheet
         except Exception:
-            return None
-    return None
+            return None, None
+    return None, None
 
 
-def _scan_nc_header(path: Path) -> tuple[int | None, Any, dict[str, int] | None]:
-    """Read a converted NetCDF's header: sizes, index and embedded record.
+def _scan_nc_header(
+    path: Path,
+) -> tuple[int | None, dict[str, Any] | None, dict[str, int] | None]:
+    """Read a converted NetCDF's header: sizes, index and embedded document.
 
-    NetCDF arrays carry ``sizes`` plus the converted ``experiment_index`` /
+    NetCDF arrays carry ``sizes`` plus the ``experiment_index`` /
     ``experiment_metadata_json`` attributes; reading the header is cheap and
-    never loads the data blocks.
+    never loads the data blocks.  Returns ``(experiment_index, document,
+    sizes)`` where ``document`` is the full embedded metadata payload (all
+    records) or None.
     """
     try:
         data, _ = _single(path, lazy=True)
@@ -225,10 +228,12 @@ def _scan_nc_header(path: Path) -> tuple[int | None, Any, dict[str, int] | None]
     try:
         sizes = dict(data.sizes) if data.sizes else None
         index = data.attrs.get("experiment_index")
+        index = int(index) if isinstance(index, (int, float)) else index
         raw = data.attrs.get("experiment_metadata_json")
-        payload = json.loads(raw) if isinstance(raw, str) else (raw or {})
-        records = payload.get("records") or {}
-        return index, records.get(str(index)), sizes
+        document = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        if not isinstance(document, dict):
+            document = {}
+        return index, document, sizes
     except Exception:
         return None, None, None
 
@@ -245,28 +250,39 @@ def _scan_pxt_header_sizes(path: Path) -> dict[str, int] | None:
         return None
 
 
-def _record_of(payload: dict[str, Any] | None, index: int | None) -> Any:
-    if payload is None or index is None:
-        return None
-    try:
-        return (payload.get("records") or {}).get(str(index))
-    except Exception:
-        return None
-
-
 def _conversion_sibling_dir(folder: Path) -> Path | None:
     """The conversion target for a raw data folder: sibling <name>_netcdf."""
     return folder.parent / f"{folder.name}_netcdf"
 
 
+def _merge_records_into(document: dict[str, Any], extra: dict[str, Any]) -> None:
+    """Fill per-index records from ``extra`` into ``document`` in place.
+
+    Existing records win (the earlier source — explicit metadata or the
+    datasheet — is authoritative); records absent from ``document`` are
+    filled from the embedded document.
+    """
+    if not isinstance(extra, dict):
+        return
+    records = document.setdefault("records", {})
+    if not isinstance(records, dict):
+        records = {}
+        document["records"] = records
+    for index, record in (extra.get("records") or {}).items():
+        if index not in records:
+            records[index] = record
+
+
 class LoadedScans:
-    """Lightweight experiment index: decision metadata + lazy data layer.
+    """Lightweight experiment index: identity + metadata provenance.
 
     Whatever the file count, constructing the index reads no data blocks:
-    entries carry the datasheet/embedded metadata (kind, gold, offsets,
-    windows, conversion state) and ``scans[stem]`` loads that one file on
-    demand (NetCDF lazily by default).  The index object itself is the
-    shared record left in the notebook.
+    entries carry stem / path / representation / experiment index / header
+    sizes, plus the provenance of the experiment metadata document
+    (datasheet / embedded / explicit / none — the document itself rides
+    along for ``inspect_experiment``, never for classification here).
+    ``scans[stem]`` loads that one file on demand (NetCDF lazily by default).
+    The index object itself is the shared record left in the notebook.
     """
 
     def __init__(
@@ -275,14 +291,25 @@ class LoadedScans:
         *,
         source: str,
         lazy: bool = True,
-        payload: dict[str, Any] | None = None,
+        metadata_document: dict[str, Any] | None = None,
+        metadata_source: str = METADATA_SOURCE_NONE,
+        metadata_path: str | None = None,
     ) -> None:
         entries = sorted(entries, key=lambda entry: entry.stem)
         self.entries = entries
         self._by_stem = {entry.stem: entry for entry in entries}
         self.source = source
         self.lazy = lazy
-        self.payload = payload
+        #: Translated/parsed experiment metadata document (all records) when
+        #: one was found; the single classification owner (inspect_experiment)
+        #: reads it together with entry sizes.  Not part of the model-facing
+        #: index record (to_dict/summary) — provenance fields are.
+        self.metadata_document = metadata_document
+        #: "explicit" | "datasheet" | "embedded" | "none"
+        self.metadata_source = metadata_source
+        #: Path of the metadata source (datasheet.csv / explicit path); None
+        #: for embedded or none.
+        self.metadata_path = metadata_path
         self._cache: dict[str, Any] = {}
 
     # -- mapping-style access ------------------------------------------------
@@ -302,23 +329,11 @@ class LoadedScans:
     def keys(self) -> list[str]:
         return self.stems
 
-    # -- decision helpers ----------------------------------------------------
+    # -- representation-derived views ---------------------------------------
     @property
     def raw_entries(self) -> list[ScanEntry]:
         """Original scans only (preprocessing products excluded)."""
         return [entry for entry in self.entries if not entry.processed]
-
-    @property
-    def gold(self) -> list[str]:
-        return [entry.stem for entry in self.raw_entries if entry.scan_kind == "gold"]
-
-    @property
-    def cuts(self) -> list[str]:
-        return [entry.stem for entry in self.raw_entries if entry.scan_kind == "cut"]
-
-    @property
-    def mappings(self) -> list[str]:
-        return [entry.stem for entry in self.raw_entries if entry.scan_kind == "mapping"]
 
     @property
     def processed(self) -> list[str]:
@@ -326,9 +341,22 @@ class LoadedScans:
         return [entry.stem for entry in self.entries if entry.processed]
 
     @property
+    def converted(self) -> list[str]:
+        """Entries already converted to NetCDF (incl. processed products)."""
+        return [entry.stem for entry in self.entries if entry.converted]
+
+    @property
     def needs_conversion(self) -> list[str]:
         """Raw PXT entries whose converted NetCDF is missing."""
-        return [entry.stem for entry in self.entries if entry.converted is False]
+        return [entry.stem for entry in self.entries if not entry.converted]
+
+    @property
+    def representation_counts(self) -> dict[str, int]:
+        """Per-representation file counts: raw_pxt / netcdf / processed_netcdf."""
+        counts = {REPRESENTATION_RAW_PXT: 0, REPRESENTATION_NETCDF: 0, REPRESENTATION_PROCESSED_NETCDF: 0}
+        for entry in self.entries:
+            counts[entry.representation] = counts.get(entry.representation, 0) + 1
+        return counts
 
     # -- data layer (the extra dimension) ------------------------------------
     def __getitem__(self, stem: str) -> Any:
@@ -344,11 +372,8 @@ class LoadedScans:
             )
         path = Path(entry.path)
         data, _kind = _single(path, lazy=self.lazy)
-        if "experiment_metadata_json" not in data.attrs and self.payload is not None:
-            index = _index_from_stem(stem)
-            record = _record_of(self.payload, index)
-            if record is not None:
-                _attach_to(data, self.payload, index)
+        if "experiment_metadata_json" not in data.attrs and self.metadata_document:
+            _attach_to(data, self.metadata_document, entry.experiment_index)
         self._cache[stem] = data
         return data
 
@@ -357,57 +382,50 @@ class LoadedScans:
         return self[stem]
 
     def summary_line(self) -> str:
-        raw = self.raw_entries
-        counts = {
-            kind: sum(entry.scan_kind == kind for entry in raw)
-            for kind in ("gold", "cut", "mapping", "unknown")
-        }
-        to_convert = len(self.needs_conversion)
-        n_processed = len(self.entries) - len(raw)
-        where = self.source
-        text = (
-            f"load_data: {len(self.entries)} file(s) indexed from {where} "
-            f"(gold={counts['gold']}, cuts={counts['cut']}, "
-            f"mappings={counts['mapping']}, unknown={counts['unknown']}"
+        counts = self.representation_counts
+        head = (
+            f"load_data: {len(self.entries)} file(s) indexed from {self.source} "
+            f"(raw_pxt={counts[REPRESENTATION_RAW_PXT]}, "
+            f"netcdf={counts[REPRESENTATION_NETCDF]}, "
+            f"processed={counts[REPRESENTATION_PROCESSED_NETCDF]})"
         )
-        if n_processed:
-            text += f", processed={n_processed}"
-        text += ")"
-        if self.payload is not None:
-            text += " metadata=datasheet"
-        elif any(entry.file_kind == "netcdf" for entry in raw):
-            text += " metadata=embedded"
-        else:
-            text += " metadata=none"
-        if to_convert:
-            text += f"; {to_convert} still need(s) conversion"
-        gold_names = self.gold[:3]
-        if gold_names and counts["gold"] <= 3:
-            text += "; gold=" + ",".join(gold_names)
-        text += "; data layer via scans[stem]"
-        return text[:200]
+        tail = "; classify with inspect_experiment(scans); data layer via scans[stem]"
+        need = ""
+        if self.needs_conversion:
+            need = f"; {len(self.needs_conversion)} still need(s) conversion"
+        meta = f"; metadata={self.metadata_source}"
+        if self.metadata_path:
+            meta += f" at {self.metadata_path}"
+        reserved = len(need) + len(tail)
+        # Keep the line within 200 chars end to end: the metadata path is only
+        # included when the whole line still fits (truncation must never cut
+        # the actionable conversion/classification tail first).
+        if self.metadata_path and len(head) + len(meta) + reserved > 200:
+            meta = f"; metadata={self.metadata_source}"
+        return (head + meta + need + tail)[:200]
 
     def __repr__(self) -> str:
-        """print(exp) shows the decision summary (the agent's first read)."""
+        """print(exp) shows the identity summary (the agent's first read)."""
         return self.summary_line()
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "source": self.source,
-            "lazy": self.lazy,
+            "metadata_source": self.metadata_source,
+            "metadata_path": self.metadata_path,
             "summary": self.summary_line(),
             "entries": [entry.to_dict() for entry in self.entries],
         }
 
 
-def _attach_to(data: Any, payload: dict[str, Any] | None, index: int | None) -> None:
+def _attach_to(data: Any, document: dict[str, Any] | None, index: int | None) -> None:
     """Embed the experiment metadata document onto a loaded DataArray."""
-    if payload is None:
+    if document is None:
         return
     try:
         if "experiment_metadata_json" in data.attrs:
             return
-        data.attrs["experiment_metadata_json"] = payload
+        data.attrs["experiment_metadata_json"] = document
         if index is not None:
             data.attrs["experiment_index"] = index
     except Exception:
@@ -420,13 +438,18 @@ def load_data(
     lazy: bool = True,
     metadata: str | Path | dict[str, Any] | None = None,
 ) -> Any:
-    """Load data for the agent: metadata first, data as the lazy layer.
+    """Load data for the agent: identity index first, data as the lazy layer.
 
     - one ``.pxt`` / ``.nc`` file  -> a single peaks DataArray;
     - a folder or a path list      -> a :class:`LoadedScans` index: every
-      file's decision metadata (index, data format, gold/cut/mapping kind,
-      theta offset, energy window, conversion state) without reading any
-      data block, plus the data layer through ``scans[stem]`` (NetCDF lazy).
+      file's identity (stem, path, representation raw_pxt/netcdf/
+      processed_netcdf, experiment index, header sizes) plus metadata
+      provenance, without reading any data block, and the data layer
+      through ``scans[stem]`` (NetCDF lazy).
+
+    What each scan IS (gold/cut/mapping, decision lists, offsets, windows,
+    shape conflicts) is classified by ``inspect_experiment(scans)`` — the
+    single classification owner.  This facade never classifies.
 
     Metadata for the index comes from, in order: the explicit ``metadata``
     argument, a sibling ``datasheet.csv`` in the folder, or each NetCDF's
@@ -440,8 +463,8 @@ def load_data(
     lazy : bool, default True
         NetCDF data stays chunked until accessed.
     metadata : str, Path or dict, optional
-        Explicit experiment metadata used for the index and attached to raw
-        PXT arrays on load.
+        Explicit experiment metadata document used for the index and attached
+        to raw PXT arrays on load.
 
     Returns
     -------
@@ -453,6 +476,11 @@ def load_data(
     ValueError
         For missing paths, empty sequences, folders without supported files,
         or an unsupported file type.
+
+    Examples
+    --------
+    >>> scans = load_data("data/")            # index: identity + sizes only
+    >>> summary = inspect_experiment(scans)   # classification lives here
     """
     if isinstance(source, (list, tuple)):
         paths = [Path(item).expanduser() for item in source]
@@ -493,14 +521,24 @@ def load_data(
             groups[0][1], lazy=lazy, metadata=metadata, directory=first_dir
         )
         merged_entries = list(scans.entries)
-        payload = scans.payload
+        document = scans.metadata_document
+        metadata_source = scans.metadata_source
+        metadata_path = scans.metadata_path
         for folder, files in groups[1:]:
             part = _index_paths(
                 files, lazy=lazy, metadata=metadata, directory=folder
             )
             merged_entries.extend(part.entries)
-            if payload is None:
-                payload = part.payload
+            if part.metadata_document is not None:
+                if document is None:
+                    document = part.metadata_document
+                    metadata_source = part.metadata_source
+                    metadata_path = part.metadata_path
+                else:
+                    # Fill per-index record gaps with later sources (e.g. the
+                    # datasheet covers the raw folder; the converted sibling's
+                    # embedded records fill indexes the datasheet lacks).
+                    _merge_records_into(document, part.metadata_document)
         # Deduplicate by stem across subfolders: the converted NetCDF wins
         # over the raw PXT (same scan, full geometry) - unless no NetCDF
         # exists, in which case the raw PXT entry stays (needs conversion).
@@ -515,7 +553,9 @@ def load_data(
             merged_entries,
             source=f"{path.name}/{{{', '.join(subdirs)}}}",
             lazy=lazy,
-            payload=payload,
+            metadata_document=document,
+            metadata_source=metadata_source,
+            metadata_path=metadata_path,
         )
         print(merged.summary_line())
         return merged
@@ -584,60 +624,78 @@ def _index_paths(
         raise ValueError(
             f"load_data: no supported data files (.pxt, .nc){where}.{hint}"
         )
-    payload: dict[str, Any] | None = None
+    document: dict[str, Any] | None = None
+    metadata_source = METADATA_SOURCE_NONE
+    metadata_path: str | None = None
     if metadata is not None:
         if isinstance(metadata, dict):
-            payload = metadata
+            document = metadata
         else:
             try:
                 from peaksMCP.pxt_utils.metadata import _load_metadata
 
-                payload = _load_metadata(metadata)
+                document = _load_metadata(metadata)
             except Exception:
-                payload = None
+                document = None
+        if document is not None:
+            metadata_source = METADATA_SOURCE_EXPLICIT
+            metadata_path = (
+                None if isinstance(metadata, dict) else str(Path(metadata).expanduser())
+            )
     elif directory is not None:
-        payload = _auto_datasheet_payload(directory)
+        translated, datasheet = _auto_datasheet_payload(directory)
+        if translated is not None:
+            document = translated
+            metadata_source = METADATA_SOURCE_DATASHEET
+            metadata_path = str(datasheet)
 
-    sibling = _conversion_sibling_dir(directory) if directory is not None else None
     entries: list[ScanEntry] = []
     for path in paths:
         stem = path.stem
         file_kind = "netcdf" if path.suffix.lower() == ".nc" else "pxt"
-        processed = bool(
-            file_kind == "netcdf" and stem.endswith("_processed")
-        )
+        processed = bool(file_kind == "netcdf" and stem.endswith("_processed"))
         identity_stem = stem[: -len("_processed")] if processed else stem
-        index = _index_from_stem(identity_stem)
-        record = _record_of(payload, index)
-        converted: bool | None
-        if file_kind == "netcdf":
-            converted = True
-        elif sibling is not None:
-            converted = (sibling / f"{stem}.nc").exists()
-        else:
-            converted = None
+        representation = (
+            REPRESENTATION_PROCESSED_NETCDF
+            if processed
+            else (REPRESENTATION_NETCDF if file_kind == "netcdf" else REPRESENTATION_RAW_PXT)
+        )
+        experiment_index = _index_from_stem(identity_stem)
         sizes: dict[str, int] | None = None
         if file_kind == "netcdf":
-            header_index, embedded, header_sizes = _scan_nc_header(path)
+            header_index, embedded_document, header_sizes = _scan_nc_header(path)
             sizes = header_sizes
-            if record is None and embedded is not None:
-                index = header_index if header_index is not None else index
-                record = embedded
+            if header_index is not None:
+                experiment_index = header_index
+            if embedded_document:
+                # The embedded document fills per-index records the earlier
+                # source (explicit metadata / datasheet) did not provide;
+                # provenance stays with the earlier source when it exists.
+                if document is None:
+                    document = embedded_document
+                    metadata_source = METADATA_SOURCE_EMBEDDED
+                    metadata_path = None
+                else:
+                    _merge_records_into(document, embedded_document)
         else:
             sizes = _scan_pxt_header_sizes(path)
-        entry = ScanEntry(
-            stem=stem,
-            path=str(path),
-            file_kind=file_kind,
-            index=index,
-            sizes=sizes,
-            processed=processed,
-            converted=converted,
+        entries.append(
+            ScanEntry(
+                stem=stem,
+                path=str(path),
+                representation=representation,
+                experiment_index=experiment_index,
+                sizes=sizes,
+            )
         )
-        if record is not None:
-            entry = _fill_from_record(entry, index, record)
-        entries.append(entry)
     shown_source = directory.name if directory is not None else "sequence"
-    scans = LoadedScans(entries, source=shown_source, lazy=lazy, payload=payload)
+    scans = LoadedScans(
+        entries,
+        source=shown_source,
+        lazy=lazy,
+        metadata_document=document,
+        metadata_source=metadata_source,
+        metadata_path=metadata_path,
+    )
     print(scans.summary_line())
     return scans

@@ -38,8 +38,9 @@ def test_every_declared_tool_has_curated_metadata():
     from peaksMCP.config.metadata import tool_names
 
     # tool_names() is the single source of truth (metadata_baseline.yaml); the
-    # literal list lives there, not here.
-    assert len(tool_names()) == 9
+    # literal list lives there, not here.  10 tools: 8 read-only/guidance +
+    # 2 mutation (inspect_notebook joined the read-only protocol surface).
+    assert len(tool_names()) == 10
     for name in tool_names():
         metadata = tool_metadata(name)
         assert metadata["title"] and metadata["description"]

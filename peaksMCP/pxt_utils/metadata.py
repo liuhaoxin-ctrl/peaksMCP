@@ -1,19 +1,19 @@
-"""Unified experiment-metadata reading for peaksMCP.
+"""Internal experiment-metadata utilities for peaksMCP (NOT model-facing).
 
-Single home for the field matchers that previously lived separately in the
-datasheet translator (``csv_translator``) and the cut workflow
-(record preprocessing): loading the metadata document (path / parsed dict /
-``DataArray`` attrs), extracting the high-symmetry offset from notes, and
-classifying a ``Data format`` value as gold / sweep / mapping.  ``read_meta``
-builds the structured per-index digest used before preprocessing, so agents
-call one function instead of hand-parsing the JSON repeatedly.
+Single home for the low-level field matchers that would otherwise be copied
+into the datasheet translator (``csv_translator``) and the inspection layer:
+loading the metadata document (path / parsed dict / ``DataArray`` attrs),
+extracting the high-symmetry offset from notes, and classifying a
+``Data format`` value as gold / sweep / mapping.  These helpers are private
+by design — ``inspect_experiment`` (peaksMCP.overrides) is the single public
+classification owner; nothing outside this package calls these names.
 
-Classification contract: ``is_gold_format`` and ``classify_data_format``
-here are the ONLY implementation of the gold/sweep/mapping rules.
-``csv_translator`` derives ``is_gold_reference`` from ``is_gold_format``,
-``read_meta`` derives per-record kinds from ``classify_data_format``, and any
-future record/shape classifier (e.g. an ``inspect_experiment`` facade or a
-batch digest) must delegate here — never re-implement the string rules.
+Classification contract: ``_is_gold_format`` and ``_classify_data_format``
+here are the ONLY implementation of the gold/sweep/mapping string rules.
+``csv_translator`` derives ``is_gold_reference`` from ``_is_gold_format``,
+``_read_meta`` derives per-record kinds from ``_classify_data_format``, and
+any other record/shape classifier must delegate here — never re-implement
+the string rules.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ def _load_metadata(source: str | os.PathLike[str] | dict[str, Any] | Any) -> dic
     return json.loads(raw) if isinstance(raw, str) else raw
 
 
-def theta_offset_deg(text: str) -> float | None:
+def _theta_offset_deg(text: str) -> float | None:
     """Return the first ``theta_offset``-prefixed number in a note, or None."""
     match = _THETA_OFFSET_RE.search(text or "")
     if match is None:
@@ -58,7 +58,7 @@ def theta_offset_deg(text: str) -> float | None:
         return None
 
 
-def is_gold_format(data_format: str) -> bool:
+def _is_gold_format(data_format: str) -> bool:
     """True when ``Data format`` marks this index as a gold (Au) reference.
 
     The datasheet tags gold data (used for Fermi-edge fitting) with ``Au`` /
@@ -78,9 +78,9 @@ def is_gold_format(data_format: str) -> bool:
     return "au" in lowered or "gold" in lowered or "金" in raw
 
 
-def classify_data_format(data_format: str) -> str | None:
+def _classify_data_format(data_format: str) -> str | None:
     """Classify a ``Data format`` value as ``"gold"``, ``"sweep"``, ``"mapping"`` or None."""
-    if is_gold_format(data_format):
+    if _is_gold_format(data_format):
         return "gold"
     lowered = (data_format or "").lower()
     if "sweep" in lowered:
@@ -90,17 +90,17 @@ def classify_data_format(data_format: str) -> str | None:
     return None
 
 
-def read_meta(
+def _read_meta(
     metadata: str | os.PathLike[str] | dict[str, Any] | Any,
     data: dict[int | str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Summarize the experiment record table for cut preprocessing.
+    """Summarize one experiment metadata document into a per-index digest.
 
     Returns a structured digest of ``experiment_metadata.json`` (or an
     already-parsed dict): which indices are sweeps / mappings / gold, plus each
     record's kind, polarization, energy window and theta offset — and, when the
-    loaded DataArrays are supplied, the data dimensionality.  Call this once
-    instead of hand-parsing the JSON repeatedly.
+    loaded DataArrays are supplied, the data dimensionality.  It is the internal digest implementation behind
+    ``peaksMCP.overrides.inspect_experiment``.
 
     Parameters
     ----------
@@ -119,11 +119,6 @@ def read_meta(
         ``sweeps`` / ``mappings`` / ``gold`` index lists, the free-text
         ``notes`` and the distinct ``energy_windows_eV``.
 
-    Examples
-    --------
-    >>> summary = read_meta("experiment_metadata.json", data=scans)
-    >>> summary["sweeps"]
-    [5, 6, 9]
     """
     meta = _load_metadata(metadata)
     records_in = meta.get("records") or {}
@@ -140,8 +135,8 @@ def read_meta(
             index = index_key
         exp = rec.get("experiment") or {}
         data_format = str(exp.get("data_format") or "").strip()
-        is_gold = bool(rec.get("is_gold_reference")) or is_gold_format(data_format)
-        kind = classify_data_format(data_format)
+        is_gold = bool(rec.get("is_gold_reference")) or _is_gold_format(data_format)
+        kind = _classify_data_format(data_format)
         start = exp.get("energy_start_eV")
         stop = exp.get("energy_stop_eV")
         window: tuple[float, float] | None = None

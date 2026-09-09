@@ -145,13 +145,13 @@ def test_validate_arpes_metadata_units_required():
     assert any("no units" in issue for issue in issues)
 
 
-def test_read_meta_classifies_records_and_dimensionality(tmp_path):
+def test_inspect_experiment_classifies_records_and_dimensionality(tmp_path):
     import json
 
     import numpy as np
     import xarray as xr
 
-    from peaksMCP.workflows import read_meta
+    from peaksMCP.overrides.inspection import inspect_experiment
 
     meta = {
         "notes": ["Cut theta_offset=1.5"],
@@ -173,19 +173,22 @@ def test_read_meta_classifies_records_and_dimensionality(tmp_path):
         5: xr.DataArray(np.zeros((10, 10)), dims=("eV", "theta_par")),
         26: xr.DataArray(np.zeros((10, 61, 10)), dims=("eV", "deflector_perp", "theta_par")),
     }
-    summary = read_meta(str(path), data=scans)
+    summary = inspect_experiment(str(path), scans=scans)
 
-    assert summary["sweeps"] == [5, 26]
-    assert summary["gold"] == [20]
-    assert summary["mappings"] == [7]
-    assert summary["energy_windows_eV"] == [(2.2, 2.7), (2.2, 5.0)]
-    assert summary["notes"] == ["Cut theta_offset=1.5"]
-    rec26 = next(r for r in summary["records"] if r["index"] == 26)
-    assert rec26["ndim"] == 3 and rec26["dims"] == ["eV", "deflector_perp", "theta_par"]
-    rec20 = next(r for r in summary["records"] if r["index"] == 20)
-    assert rec20["is_gold"] is True
+    assert summary.gold == [20]
+    # A 3-D cube labelled sweep is a mapping-shaped conflict, not a cut.
+    assert set(summary.mappings) >= {7, 26}
+    assert 5 in summary.cuts
+    assert summary.energy_windows_eV == [(2.2, 2.7), (2.2, 5.0)]
+    assert summary.notes == ["Cut theta_offset=1.5"]
+    rec26 = next(r for r in summary.records if r.index == 26)
+    assert rec26.ndim == 3 and rec26.dims == ["eV", "deflector_perp", "theta_par"]
+    assert rec26.kind.value == "mapping"
+    assert any(c.index == 26 and "mapping-shaped cube" in c.issue for c in summary.conflicts)
+    rec20 = next(r for r in summary.records if r.index == 20)
+    assert rec20.is_gold is True
 
-    # Without data, no dimensionality field but classification still works.
-    bare = read_meta(meta)
-    assert bare["sweeps"] == [5, 26]
-    assert all("ndim" not in r for r in bare["records"])
+    # Without data, no dimensionality field but format classification stands.
+    bare = inspect_experiment(meta)
+    assert set(bare.cuts) == {5, 26}
+    assert all(row.ndim is None for row in bare.records)

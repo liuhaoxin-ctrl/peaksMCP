@@ -42,14 +42,15 @@ apis:
     - 加载PXT
     - 读取PXT
     - 打开PXT
-    summary: Load any data for the agent - one file, or an index of a folder/list.
+    summary: Load any data for the agent - one file, or an identity index of a folder/list.
     inputs: 'source: one file (.pxt/.nc), a folder, or a sequence of paths; lazy:
       bool=True; metadata: optional path/dict'
-    returns: 'peaks DataArray (one file) or LoadedScans (folder/sequence: decision
-      metadata + scans[stem] data layer)'
+    returns: 'peaks DataArray (one file) or LoadedScans (folder/sequence: identity
+      index - stem/path/representation/sizes/metadata provenance + scans[stem] data
+      layer; no classification)'
     preconditions: path(s) exist; folder contains supported files
     errors: missing path; unsupported suffix; empty folder/sequence
-    example: scans = load_data("data/"); gold = scans.gold; cut = scans["BP_0015"]
+    example: scans = load_data("data/"); summary = inspect_experiment(scans); cut = scans["BP_0015"]
   convert_experiment:
     export: peaksMCP.overrides.convert_experiment
     exposure: facade
@@ -83,13 +84,18 @@ apis:
     - 检查实验
     - 实验概览
     - 扫描分类
-    summary: Structured per-record summary of an experiment metadata document with
-      conflicts.
-    inputs: 'metadata: path/dict/DataArray; scans: optional dict index->DataArray'
-    returns: ExperimentSummary (records with ScanKind/dims/windows + conflicts)
-    preconditions: metadata readable; scans keyed by record index
+    summary: 'Classify one experiment: per-record ScanKind, decision lists and
+      shape conflicts (the single classification owner).'
+    inputs: 'scans: LoadedScans from load_data (primary form); standalone documents
+      also accepted: metadata path/dict/DataArray with optional scans= dict of
+      index->DataArray'
+    returns: 'ExperimentSummary (records with ScanKind/dims/energy windows +
+      gold/cuts/mappings decision lists + structured conflicts; JSON-safe)'
+    preconditions: 'index entries carry header sizes; metadata document on the
+      index (datasheet/embedded/explicit) or a readable standalone document'
     errors: unreadable metadata
-    example: summary = inspect_experiment("experiment_metadata.json", scans=loaded)
+    example: 'scans = load_data("data_netcdf/"); summary = inspect_experiment(scans);
+      summary.gold' 
   plot_batch:
     export: peaksMCP.overrides.plot_batch
     exposure: facade
