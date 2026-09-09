@@ -90,3 +90,40 @@ def test_legacy_or_internal_names_never_leak_into_the_public_surface():
     assert "validate_arpes_metadata" not in exported
     assert "Report" not in exported and "report_dict" not in exported
     assert "preprocess_cut" not in exported and "fit_gold_reference" not in exported
+
+
+def test_manifest_examples_only_use_real_parameter_names():
+    """Contract 与实现一致性：example 里的关键字参数必须是运行时签名的参数名。
+
+    Example 是 agent 的用法模板——如果它用了签名里不存在的参数名（例如旧的
+    force= / cpu_limit_percent=），agent 照着写就会失败。这一条把这种漂移挡在
+    manifest 层（可解析的 example 才校验；无法解析的记入 skipped 说明）。
+    """
+    import ast
+
+    document = _manifest_document()
+    skipped: list[str] = []
+    for name, entry in document["apis"].items():
+        export = entry["export"]
+        module_name, _, attr = export.rpartition(".")
+        module = importlib.import_module(module_name)
+        params = set(inspect.signature(getattr(module, attr)).parameters)
+        example = entry.get("example") or ""
+        try:
+            tree = ast.parse(example)
+        except SyntaxError:
+            skipped.append(name)
+            continue
+        keywords = {
+            node2.arg
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            for node2 in node.keywords
+            if node2.arg is not None
+        }
+        unknown = sorted(keywords - params)
+        assert not unknown, (
+            f"manifest {name} example 用了签名里不存在的参数：{unknown}；"
+            f"签名参数：{sorted(params)}"
+        )
+    assert skipped == [], f"example 无法解析的 row 应显式处理：{skipped}"
