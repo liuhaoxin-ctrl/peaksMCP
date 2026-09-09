@@ -1,0 +1,244 @@
+# 端到端 agent 基准：检查项 → 子系统 → 该改哪里
+#
+# 跑完 `run_case.py grade` 之后，每一条失败项都会带上这里的 `fix`。
+# 改 rubric 只需要动这个文件；判定逻辑在 run_case.py 里，按 id 对应。
+#
+# 设计原则：
+# 1. 只检查"agent 跑完后留下的痕迹"（审计日志 + 产物 + notebook），
+#    不依赖任何 agent 的对话记录 —— 所以换任何 agent 都能用。
+# 2. 答案键独立于被测系统（自己解析 datasheet），绝不用 inspect_experiment
+#    给自己打分，否则分类有 bug 时基准会"通过"。
+# 3. 每条检查都归到一个子系统，失败即指向该子系统的具体缺陷。
+
+version: 2
+
+checks:
+
+  # ---------------------------------------------------------------- Contract
+  C1_blackbox_load:
+    subsystem: Contract
+    weight: 2
+    title: 用 load_data 读数据，而不是自己写加载代码
+    fix: >-
+      agent 没走黑箱入口。检查 override_manifest.yaml 里 load_data 的 aliases 是否覆盖
+      用户/agent 的自然说法，以及 server_instructions 有没有把 load_data 立为第一入口。
+
+  C2_blackbox_inspect:
+    subsystem: Contract
+    weight: 3
+    title: 用 inspect_experiment 做分类，而不是自己读 datasheet
+    fix: >-
+      agent 没用 inspect_experiment，说明它没把分类当成一次 API 调用。
+      常见原因：inspect_experiment 的返回值在 notebook 里不可见（Show 缺失），
+      agent 拿不到 gold/cuts 列表，只能退回自己解析 datasheet。先查 Show：
+      run_cell 的 stdout 摘要是否把 print 出来的 summary 回传给了 agent。
+
+  C3_gold_index_correct:
+    subsystem: Contract
+    weight: 3
+    title: fit_gold 用对了那条 Au
+    fix: >-
+      选错了 gold 参考。核对 inspect_experiment 的 gold 列表与 datasheet 的 Data format
+      （本例 index 20 是 "Au sweep"；index 19 的 Comment 也提到 Au 但 Data format 是 sweep，
+      是刻意的歧义）。若契约没说清"以 Data format 为准"，就在 manifest 的
+      inspect_experiment.preconditions 里写明。
+
+  C4_theta_offset_from_contract:
+    subsystem: Contract
+    weight: 2
+    title: theta 偏移量来自元数据，不是猜的
+    fix: >-
+      高对称点偏移应该从 inspect_experiment 报告的 theta_offset_deg 拿（本例 1.5）。
+      若契约没暴露这个字段，就在 manifest 的 returns 里点名 theta_offset_deg。
+
+  C5_ef_from_fit:
+    subsystem: Contract
+    weight: 2
+    title: EF 来自 fit_gold，不是硬编码常数
+    fix: >-
+      出现硬编码的 EF 常数（如 2.6591）说明 agent 记住了答案而不是执行流程。
+      prompts.server_instructions / skill 必须明确"EF 只能由 fit_gold 现场
+      拟合"，manifest 的 fit_gold 契约要写清返回 EF_correction 的用法。
+
+  # ------------------------------------------------------------------ Access
+  A1_get_before_use:
+    subsystem: Access
+    weight: 3
+    title: 用到的每个原生 peaks API 都先 search/get 过
+    fix: >-
+      有 API 没经过 get 验证就用了。检查该 API 是否在索引里
+      （native_catalog.yaml 的别名覆盖是否够），以及 search 的排序
+      能不能把它排到前面 —— 用 tools/benchmark_search.py 复现。
+
+  A2_no_unknown_api_blocks:
+    subsystem: Access
+    weight: 2
+    title: 没有因为"未验证 API"被拦下
+    fix: >-
+      执行被 unknown_refs 拦过。说明 agent 写了一个系统不认识的名字。
+      若反复被拦，说明 search 没把它引导到正确 API：补别名，或在
+      notebook_unsafe 的 unknown_api_first 提示里给更好的候选。
+
+  A3_override_first:
+    subsystem: Access
+    weight: 2
+    title: 有黑箱 adapter 时优先用它
+    fix: >-
+      agent 用了原生/手写做法，而黑箱里已有对应 adapter。
+      检查 api_check_rule 的措辞，以及 search 的 override 优先是否生效
+      （OVERRIDE_MIN_SCORE 只在精确命中时才返回 override 命名空间）。
+
+  # --------------------------------------------------------------------- Run
+  R1_all_targets_processed:
+    subsystem: Run
+    weight: 4
+    title: 该处理的都处理了（产物齐全）
+    fix: >-
+      产物数量对不上。可能是 agent 没识别出全部 cut，也可能中途失败。
+      看报告里的 expected/actual 差集定位漏了哪几条。
+
+  R2_one_gold_fit:
+    subsystem: Run
+    weight: 3
+    title: 只做一次 gold 拟合，然后对每条 cut 复用
+    fix: >-
+      出现多次 fit_gold。SKILL.md 已写明"one gold fit then per-scan conversion"，
+      若 agent 仍然逐条拟合，说明这条规则只在人写的文档里、没进契约 ——
+      把它写进 manifest 或 server_instructions。
+
+  R3_append_only:
+    subsystem: Run
+    weight: 2
+    title: notebook 只追加，没有删改已有 cell
+    fix: >-
+      审计里出现 delete/patch 类操作，与"strictly append-only"的设计冲突。
+      要么把这些工具从工具面撤掉，要么修正设计说明。
+
+  R4_execution_success:
+    subsystem: Run
+    weight: 2
+    title: 执行成功率
+    fix: >-
+      有执行报错。看报告里的错误样本，多半是 API 用法错误或数据形状不匹配。
+
+  # -------------------------------------------------------------------- Show
+  S1_classification_visible:
+    subsystem: Show
+    weight: 3
+    title: agent 看到了分类结果
+    fix: >-
+      notebook 输出里看不到 gold/cut 结论。检查 run_cell 的 stdout 摘要链路：
+      print(summary...) 是否真的进了 notebook 输出并被回传；inspect_notebook
+      的 variable 预览能否显示 ExperimentSummary 字段。
+
+  S2_validation_figure:
+    subsystem: Show
+    weight: 2
+    title: 出了验证图
+    fix: >-
+      没有图像输出也没有 plot_* 调用。核对 plot_validation_pair / plot_batch
+      的别名覆盖，以及 server_instructions 里"必须出图验证"的要求。
+
+  S3_silent_cell_ratio:
+    subsystem: Show
+    weight: 1
+    title: 静默 cell 比例（执行完什么都没看到的 cell）
+    fix: >-
+      静默 cell 过多说明 Show 层没有把结果回传给 agent，
+      agent 在"盲跑"。根因同 S1。
+
+  # -------------------------------------------------------------------- Save
+  V1_outputs_in_place:
+    subsystem: Save
+    weight: 4
+    title: 产物落在指定输出目录
+    fix: >-
+      产物不在约定目录。提示词要写死输出路径；若 agent 仍然乱放，
+      考虑让 save_with_consent 支持一次 session 的默认输出目录。
+
+  V2_no_direct_disk_write:
+    subsystem: Save
+    weight: 4
+    title: 没有绕过网关直接写盘
+    fix: >-
+      cell 代码里出现 to_netcdf / savefig / open(...,'w') 直写。
+      当前 run_cell 会硬阻止这类写入（永不持久化），所以 V2 红说明 agent 没学会
+      正确的持久化路径。修法：确保 prompts.server_instructions 与工具面把
+      save_with_consent 立为唯一持久化动词（staged bytes + sha256 + 结构预览 +
+      人工批准），skill 里不要再出现 da.save / to_netcdf 这类教法。
+
+  V3_consent_trail_complete:
+    subsystem: Save
+    weight: 4
+    title: 每个产物都有对应的批准记录
+    fix: >-
+      save_with_consent 是 MCP 工具（唯一持久化动词）；它故意不在
+      override_manifest 里——manifest 只登记 Python adapter。若仍没有成功的
+      保存记录，按顺序排查：① 人没在 notebook 的保存卡上点同意（status=denied，
+      报告里会写"没有任何成功的保存记录"）；② agent 绕过网关直写（看 V2）；
+      ③ agent 根本不知道有这个动词——在 prompts.server_instructions 里点名
+      "结果只通过 save_with_consent 落盘"。
+
+  V4_no_stray_part:
+    subsystem: Save
+    weight: 1
+    title: 没有残留的 .part 暂存文件
+    fix: >-
+      暂存文件没清理。检查 save.py 的 _cleanup / _discard_ticket 是否覆盖
+      拒绝与过期两条路径。
+
+  # ------------------------------------------------------------ Observability
+  O1_audit_present:
+    subsystem: Observability
+    weight: 2
+    title: 审计日志存在且有本次运行的事件
+    fix: >-
+      审计日志缺失或时间窗内没有事件。确认 PEAKSMCP_HOME 与
+      ~/.peaksMCP/audit/tool_audit.log，以及 MCP server 真的在跑。
+
+  O2_cell_artifact_linkage:
+    subsystem: Observability
+    weight: 3
+    title: 能从审计重建 一次执行 → 用了哪些 API → 产出什么 的链路
+    fix: >-
+      审计事件已带 operation_id / cell_id / api_ids / ticket_id / sha256
+      （同一 operation_id 可把 called→语义结果关联起来）。若仍失败，缺的是
+      **产物**那一环：run_cell 语义事件没有 artifact 路径，save 事件没有发起
+      cell id。在工具层把最终产物路径与发起 cell id 补进语义事件，链路才闭环。
+
+  O3_api_call_trail:
+    subsystem: Observability
+    weight: 1
+    title: search/get 的调用轨迹完整
+    fix: >-
+      没有 get 事件，说明 agent 完全没走 Access 层。同 A1。
+
+  # ------------------------------------------------------------------ Quality
+  Q1_kspace_dims:
+    subsystem: Result
+    weight: 4
+    title: 输出确实是 k 空间（含 kx 维）
+    fix: >-
+      k_convert 没跑或没生效。核对 da.k_convert 是否在索引里、契约是否说清前置条件。
+
+  Q2_ef_zeroed:
+    subsystem: Result
+    weight: 4
+    title: EF 已归零
+    fix: >-
+      set_EF_correction 没生效或 EF 值不对。看 C5 是否也失败。
+
+  Q3_theta_zeroed:
+    subsystem: Result
+    weight: 3
+    title: 高对称点已归零
+    fix: >-
+      theta 偏移没应用或符号反了。核对 C4。
+
+  Q4_matches_human_reference:
+    subsystem: Result
+    weight: 5
+    title: 与人工处理的结果一致
+    fix: >-
+      有人工参考文件可比对却对不上。看报告里逐条的坐标/数值差异，
+      定位是 EF、theta 还是 k 转换的偏差。
