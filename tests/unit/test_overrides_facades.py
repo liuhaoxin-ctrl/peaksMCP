@@ -437,21 +437,26 @@ def test_preprocess_batch_validates_inputs(tmp_path):
         preprocess_batch([missing], calibration=2.6, output_dir=tmp_path)
 
 
-def test_preprocess_batch_run_item_skip_and_fail(tmp_path, monkeypatch):
+def test_preprocess_batch_run_item_stages_without_publishing(tmp_path, monkeypatch):
+    """The worker only processes and stages: no target file is ever written,
+    a skipped-existing item reports early, failures raise (executor maps)."""
     from peaksMCP.overrides.batch_preprocess import (
         BatchPreprocessItem,
         _run_item,
     )
 
+    (tmp_path / "a.nc").write_bytes(b"src")
+    (tmp_path / "b.nc").write_bytes(b"src")
+    (tmp_path / "c.nc").write_bytes(b"src")
     existing = tmp_path / "a_processed.nc"
     existing.write_bytes(b"old")
     item = BatchPreprocessItem(index=1, source=str(tmp_path / "a.nc"), kind="cut",
                                output=str(existing))
-    # Existing output without force -> skipped before any loading happens.
     result = _run_item(item, 2.6)
-    assert result.status == "skipped" and result.output_exists is True
+    assert result == {"skipped_existing": str(existing)}
+    assert existing.read_bytes() == b"old"
 
-    # A load failure becomes a structured failed item (never an exception).
+    # A load failure raises (executor turns it into a failed item).
     def boom(source):
         raise FileNotFoundError(source)
 
@@ -461,10 +466,139 @@ def test_preprocess_batch_run_item_skip_and_fail(tmp_path, monkeypatch):
     out = tmp_path / "b_processed.nc"
     item2 = BatchPreprocessItem(index=2, source=str(tmp_path / "b.nc"), kind="cut",
                                 theta_par_offset_deg=1.5, output=str(out))
-    result2 = _run_item(item2, 2.6)
-    assert result2.status == "failed"
-    assert result2.error_type == "FileNotFoundError"
+    with pytest.raises(FileNotFoundError):
+        _run_item(item2, 2.6)
     assert not out.exists()
+
+    # Successful processing stages hidden bytes next to the target: the
+    # target itself does not exist until the gateway publishes it.
+    monkeypatch.setattr(batch, "_load_array",
+                        lambda source: xr.DataArray(np.ones((3, 4)),
+                                                    dims=("eV", "theta_par")))
+    import peaksMCP.overrides.preprocess as preprocess_module
+
+    def fake_impl(cut, *, calibration, theta_par_offset_deg, eV, kx, quiet):
+        from peaksMCP.overrides.preprocess import ProcessingReport, ProcessingResult
+
+        report = ProcessingReport(operation="preprocess_cut", dims_in=["eV", "theta_par"],
+                                  dims_out=["eV", "kx"])
+        out_array = xr.DataArray(np.arange(12).reshape(3, 4), dims=("eV", "kx"),
+                                 coords={"eV": [0, 1, 2], "kx": [0, 1, 2, 3]})
+        return ProcessingResult(out_array, report)
+
+    monkeypatch.setattr(preprocess_module, "_preprocess_cut_impl", fake_impl)
+    item3 = BatchPreprocessItem(index=3, source=str(tmp_path / "c.nc"), kind="cut",
+                                theta_par_offset_deg=1.0, output=str(tmp_path / "c_processed.nc"))
+    staged = _run_item(item3, 2.6)
+    assert "pending" in staged
+    pending = staged["pending"]
+    assert str(pending.path).endswith("c_processed.nc")
+    assert not pending.path.exists()          # target untouched
+    assert pending.tmp_path.exists()          # staged bytes ready
+    pending.tmp_path.unlink(missing_ok=True)
+
+
+def _fake_batch_executor(monkeypatch, run_fn):
+    """Replace the process-pool executor with an inline runner for tests."""
+    import peaksMCP.batch as batch_module
+
+    class _FakeExecutor:
+        def __init__(self, budget):
+            self.budget = budget
+
+        def run(self, function, items, progress=None):
+            from peaksMCP.batch.models import BatchItemResult, BatchResult
+
+            results = []
+            for idx, item in enumerate(items):
+                try:
+                    output = function(item)
+                    results.append(BatchItemResult(idx, item, "completed", output=output))
+                except Exception as exc:
+                    results.append(BatchItemResult(
+                        idx, item, "failed", error_type=type(exc).__name__, error=str(exc)))
+            return BatchResult(items=results, duration_s=0.0)
+
+    monkeypatch.setattr(batch_module, "BatchExecutor", _FakeExecutor)
+
+
+def test_preprocess_batch_approval_publishes_all(tmp_path, monkeypatch, capsys):
+    """Processing results are staged under one ticket; approval publishes."""
+    from peaksMCP.overrides import save as save_module
+    from peaksMCP.overrides.batch_preprocess import (
+        BatchPreprocessItem,
+        preprocess_batch,
+    )
+    from peaksMCP.overrides.preprocess import ProcessingReport, ProcessingResult
+
+    def fake_impl(cut, *, calibration, theta_par_offset_deg, eV, kx, quiet):
+        return ProcessingResult(
+            xr.DataArray(np.ones((2, 3)), dims=("eV", "kx")),
+            ProcessingReport(operation="preprocess_cut", dims_in=["eV", "theta_par"],
+                             dims_out=["eV", "kx"]),
+        )
+
+    import peaksMCP.overrides.batch_preprocess as batch_module
+    import peaksMCP.overrides.preprocess as preprocess_module
+
+    monkeypatch.setattr(preprocess_module, "_preprocess_cut_impl", fake_impl)
+    monkeypatch.setattr(batch_module, "_load_array",
+                        lambda source: xr.DataArray(np.ones((2, 3)),
+                                                    dims=("eV", "theta_par")))
+    _fake_batch_executor(monkeypatch, lambda *a: None)
+    seen = {}
+    monkeypatch.setattr(save_module, "_APPROVAL_CHANNEL",
+                        lambda payload: seen.update(payload=payload) or True)
+
+    (tmp_path / "a.nc").write_bytes(b"src")
+    out_dir = tmp_path / "processed"
+    request = BatchPreprocessItem(index=1, source=str(tmp_path / "a.nc"), kind="cut",
+                                  theta_par_offset_deg=1.0)
+    report = preprocess_batch([request], calibration=2.6, output_dir=out_dir)
+    assert seen["payload"]["operation"] == "preprocess_batch"
+    assert report.completed == 1
+    item = report.items[0]
+    assert item.status == "completed" and item.output_exists is True
+    target = out_dir / "a_processed.nc"
+    assert target.exists()
+    assert item.output == str(target)
+    out = capsys.readouterr().out
+    assert "completed" in out
+
+
+def test_preprocess_batch_denied_writes_nothing(tmp_path, monkeypatch, capsys):
+    from peaksMCP.overrides import save as save_module
+    from peaksMCP.overrides.batch_preprocess import (
+        BatchPreprocessItem,
+        preprocess_batch,
+    )
+    from peaksMCP.overrides.preprocess import ProcessingReport, ProcessingResult
+
+    def fake_impl(cut, *, calibration, theta_par_offset_deg, eV, kx, quiet):
+        return ProcessingResult(
+            xr.DataArray(np.ones((2, 3)), dims=("eV", "kx")),
+            ProcessingReport(operation="preprocess_cut", dims_in=["eV", "theta_par"],
+                             dims_out=["eV", "kx"]),
+        )
+
+    import peaksMCP.overrides.batch_preprocess as batch_module
+    import peaksMCP.overrides.preprocess as preprocess_module
+
+    monkeypatch.setattr(preprocess_module, "_preprocess_cut_impl", fake_impl)
+    monkeypatch.setattr(batch_module, "_load_array",
+                        lambda source: xr.DataArray(np.ones((2, 3)),
+                                                    dims=("eV", "theta_par")))
+    _fake_batch_executor(monkeypatch, lambda *a: None)
+    monkeypatch.setattr(save_module, "_APPROVAL_CHANNEL", lambda payload: False)
+
+    (tmp_path / "a.nc").write_bytes(b"src")
+    out_dir = tmp_path / "processed2"
+    request = BatchPreprocessItem(index=1, source=str(tmp_path / "a.nc"), kind="cut",
+                                  theta_par_offset_deg=1.0)
+    report = preprocess_batch([request], calibration=2.6, output_dir=out_dir)
+    assert report.items[0].status == "denied"
+    assert not (out_dir / "a_processed.nc").exists()
+    assert not list(tmp_path.glob("**/.*.part-*"))
 
 
 def test_inspect_experiment_accepts_datasheet_csv(tmp_path):

@@ -14,7 +14,6 @@ atomically.
 
 from __future__ import annotations
 
-import io
 from pathlib import Path
 from typing import Any, Literal
 
@@ -95,87 +94,68 @@ def _load_array(source: str) -> Any:
     return load(source)
 
 
-def _atomic_netcdf(data: Any, output: str) -> None:
-    """Serialize one DataArray to NetCDF and publish it atomically."""
-    from .save import _atomic_write_bytes
-
-    buffer = io.BytesIO()
-    data.to_netcdf(buffer)
-    _atomic_write_bytes(Path(output), buffer.getvalue())
-
-
 def _run_item(
     item: BatchPreprocessItem,
     calibration: Any,
     force: bool = False,
-) -> BatchPreprocessItemResult:
-    """Load, preprocess and save one item.  Runs inside a worker process, so
-    every dependency is imported locally; exceptions become ``failed`` items."""
-    started = __import__("time").monotonic()
+) -> dict[str, Any]:
+    """Load, preprocess and STAGE one item (never publishes).
 
-    def failed(error_type: str, error: str) -> BatchPreprocessItemResult:
-        return BatchPreprocessItemResult(
-            index=item.index,
-            source=item.source,
-            status="failed",
-            error_type=error_type,
-            error=error,
-        )
+    Runs inside a worker process; dependencies import locally.  Returns
+    ``{"pending": <PendingItem>}`` with the staged bytes when processing
+    succeeded, ``{"skipped_existing": ...}`` for idempotent skips, and
+    raises on failure (the executor maps it to a failed item).
+    """
+    from . import save as save_module
 
     output_path = Path(item.output)
     if output_path.exists() and not force:
-        return BatchPreprocessItemResult(
-            index=item.index,
-            source=item.source,
-            status="skipped",
-            output=str(output_path),
-            output_exists=True,
+        return {"skipped_existing": str(output_path)}
+    data = _load_array(item.source)
+    if item.kind == "cut":
+        if item.theta_par_offset_deg is None:
+            raise ValueError("cut items require theta_par_offset_deg")
+        from .preprocess import _preprocess_cut_impl
+
+        result = _preprocess_cut_impl(
+            data,
+            calibration=calibration,
+            theta_par_offset_deg=item.theta_par_offset_deg,
+            eV=_slice_of(item.eV),
+            kx=_slice_of(item.kx),
+            quiet=item.quiet,
         )
-    try:
-        if not output_path.parent.exists():
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-        data = _load_array(item.source)
-    except Exception as exc:
-        return failed(type(exc).__name__, f"load failed: {exc}")
-    try:
-        if item.kind == "cut":
-            if item.theta_par_offset_deg is None:
-                return failed("ValueError", "cut items require theta_par_offset_deg")
-            from .preprocess import _preprocess_cut_impl
+    else:
+        if not item.normal_emission:
+            raise ValueError("mapping items require normal_emission")
+        from .preprocess import _preprocess_mapping_impl
 
-            result = _preprocess_cut_impl(
-                data,
-                calibration=calibration,
-                theta_par_offset_deg=item.theta_par_offset_deg,
-                eV=_slice_of(item.eV),
-                kx=_slice_of(item.kx),
-                quiet=item.quiet,
-            )
-        else:
-            if not item.normal_emission:
-                return failed("ValueError", "mapping items require normal_emission")
-            from .preprocess import _preprocess_mapping_impl
+        result = _preprocess_mapping_impl(
+            data,
+            calibration=calibration,
+            normal_emission=item.normal_emission,
+            eV=_slice_of(item.eV),
+            kx=_slice_of(item.kx),
+            ky=_slice_of(item.ky),
+            quiet=item.quiet,
+        )
+    pending = save_module._stage_item(result.data, output_path, force)
+    return {"pending": pending}
 
-            result = _preprocess_mapping_impl(
-                data,
-                calibration=calibration,
-                normal_emission=item.normal_emission,
-                eV=_slice_of(item.eV),
-                kx=_slice_of(item.kx),
-                ky=_slice_of(item.ky),
-                quiet=item.quiet,
-            )
-        _atomic_netcdf(result.data, str(output_path))
-    except Exception as exc:
-        return failed(type(exc).__name__, f"preprocess/save failed: {exc}")
-    return BatchPreprocessItemResult(
-        index=item.index,
-        source=item.source,
-        status="completed",
-        output=str(output_path),
-        output_exists=output_path.exists(),
-        duration_s=__import__("time").monotonic() - started,
-    )
+
+def _mark(
+    results: list[BatchPreprocessItemResult],
+    output: Path,
+    status: str,
+    output_exists: bool | None,
+) -> None:
+    """Set the final status on the report row owning ``output``."""
+    for row in results:
+        if row.output == str(output):
+            row.status = status
+            if output_exists is not None:
+                row.output_exists = output_exists
+            return
 
 
 def _default_output_name(item: BatchPreprocessItem, output_dir: Path) -> str:
@@ -242,7 +222,7 @@ def preprocess_batch(
         missing = [item.source for item in resolved if not Path(item.source).expanduser().exists()]
         raise ValueError(f"preprocess_batch: source not found: {missing[0]}.")
 
-    def worker(item: BatchPreprocessItem) -> BatchPreprocessItemResult:
+    def worker(item: BatchPreprocessItem) -> dict[str, Any]:
         return _run_item(item, calibration, force=force)
 
     budget = ResourceBudget(
@@ -250,43 +230,105 @@ def preprocess_batch(
         resume_percent=max(0, cpu_limit_percent - 10),
     )
     batch = BatchExecutor(budget).run(worker, resolved)
+
+    from . import save as save_module
+
+    staged_requests: list[tuple[Any, Any]] = []  # (pending, request)
     results: list[BatchPreprocessItemResult] = []
     for batch_item, request in zip(batch.items, resolved, strict=False):
         if batch_item.status == "failed":
             results.append(
                 BatchPreprocessItemResult(
-                    index=request.index,
-                    source=request.source,
-                    status="failed",
-                    error_type=batch_item.error_type,
+                    index=request.index, source=request.source,
+                    status="failed", error_type=batch_item.error_type,
                     error=batch_item.error,
                 )
             )
-        elif batch_item.status != "completed":
+            continue
+        if batch_item.status != "completed":
             results.append(
                 BatchPreprocessItemResult(
-                    index=request.index,
-                    source=request.source,
-                    status=batch_item.status,
-                    output=request.output,
-                    error_type=batch_item.error_type,
-                    error=batch_item.error,
+                    index=request.index, source=request.source,
+                    status=batch_item.status, output=request.output,
+                    error_type=batch_item.error_type, error=batch_item.error,
                 )
             )
-        else:
+            continue
+        outcome = batch_item.output
+        if isinstance(outcome, dict) and "skipped_existing" in outcome:
             results.append(
                 BatchPreprocessItemResult(
-                    index=request.index,
-                    source=request.source,
-                    status="completed",
-                    output=str(request.output),
-                    output_exists=Path(request.output).exists(),
+                    index=request.index, source=request.source,
+                    status="skipped", output=str(outcome["skipped_existing"]),
+                    output_exists=True, warnings=["output exists"],
                 )
             )
+            continue
+        pending = outcome.get("pending") if isinstance(outcome, dict) else None
+        if pending is None:
+            results.append(
+                BatchPreprocessItemResult(
+                    index=request.index, source=request.source,
+                    status="failed", error="worker returned no staged output",
+                )
+            )
+            continue
+        staged_requests.append((pending, request))
+        results.append(
+            BatchPreprocessItemResult(
+                index=request.index, source=request.source,
+                status="awaiting_consent", output=str(pending.path),
+            )
+        )
+
     report = BatchProcessingReport(items=results)
+    if not staged_requests:
+        print(
+            f"preprocess_batch: {len(results)} item(s) - "
+            f"{report.completed} completed, {report.skipped} skipped, "
+            f"{report.failed} failed (nothing to publish)"
+        )
+        return report
+
+    summary = (
+        f"preprocess_batch: publish {len(staged_requests)} processed "
+        f"file(s) to {output_root}"
+    )
+    ticket = save_module._create_ticket(
+        "preprocess_batch",
+        [pending for pending, _request in staged_requests],
+        summary,
+    )
+    approved = save_module._request_consent(ticket)
+    status: str
+    if approved is None:
+        status = "pending_consent"
+        for pending, _request in staged_requests:
+            _mark(results, pending.path, "pending_consent", None)
+    elif approved:
+        ticket.authorized = True
+        outcome = save_module._publish_batch(ticket.ticket_id)
+        status = "saved"
+        published = {p["path"] for p in outcome["published"]}
+        skipped_now = {s["path"] for s in outcome["skipped"]}
+        for pending, _request in staged_requests:
+            key = str(pending.path)
+            if key in published:
+                _mark(results, pending.path, "completed", True)
+            elif key in skipped_now:
+                _mark(results, pending.path, "skipped", True)
+            else:
+                _mark(results, pending.path, "completed", True)
+    else:
+        status = "denied"
+        save_module._discard_ticket(ticket.ticket_id)
+        for pending, _request in staged_requests:
+            _mark(results, pending.path, "denied", None)
     print(
         f"preprocess_batch: {len(results)} item(s) - "
-        f"{report.completed} completed, {report.skipped} skipped, "
-        f"{report.failed} failed"
+        f"{sum(r.status == 'completed' for r in results)} completed, "
+        f"{sum(r.status == 'skipped' for r in results)} skipped, "
+        f"{sum(r.status == 'failed' for r in results)} failed "
+        f"({status})"
     )
     return report
