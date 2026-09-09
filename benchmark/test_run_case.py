@@ -16,6 +16,7 @@ from benchmark.run_case import (
     _theta_offset_binding_used,
     check_access,
     check_contract,
+    check_observability,
     check_run,
     check_save,
 )
@@ -219,3 +220,56 @@ def test_fetched_names_ignore_failed_gets():
 def test_approved_save_paths_pair_by_operation_id():
     paths = _approved_save_paths(_save_trail(True))
     assert sorted(paths) == ["/out/BP_0005_processed.nc", "/out/BP_0009_processed.nc"]
+
+
+# --------------------------------------------------------------------------- #
+# O2: operation_id chain completeness                                          #
+# --------------------------------------------------------------------------- #
+
+def _op_event(tool, outcome, operation_id, **details):
+    return {"timestamp": "2026-01-01T00:00:00", "tool": tool, "outcome": outcome,
+            "details": {"operation_id": operation_id, **details}}
+
+
+def test_o2_chain_complete_passes():
+    events = [
+        _op_event("run_cell", "called", "op-1", args={"code": "a=1"}),
+        _op_event("run_cell", "executed", "op-1", cell_id="c1"),
+        _op_event("save_with_consent", "called", "op-2",
+                  args={"path": "/out/x.nc"}),
+        _op_event("save_with_consent", "saved", "op-2",
+                  ticket_id="t1", sha256="a" * 16),
+    ]
+    result = _by_name(check_observability(_ctx([], events=events)))["O2_cell_artifact_linkage"]
+    assert result.passed is True, result.detail
+
+
+def test_o2_missing_called_pair_fails():
+    events = [
+        _op_event("run_cell", "called", "op-1", args={"code": "a=1"}),
+        _op_event("run_cell", "executed", "op-1", cell_id="c1"),
+        _op_event("save_with_consent", "saved", "op-ghost", ticket_id="t1"),
+    ]
+    result = _by_name(check_observability(_ctx([], events=events)))["O2_cell_artifact_linkage"]
+    assert result.passed is False
+    assert "找不到同 id 的 called" in result.detail
+
+
+def test_o2_saved_without_ticket_or_sha_fails():
+    events = [
+        _op_event("save_with_consent", "called", "op-2", args={"path": "/out/x.nc"}),
+        _op_event("save_with_consent", "saved", "op-2", ticket_id="t1"),  # 缺 sha256
+    ]
+    result = _by_name(check_observability(_ctx([], events=events)))["O2_cell_artifact_linkage"]
+    assert result.passed is False
+    assert "缺 ticket_id/sha256" in result.detail
+
+
+def test_o2_legacy_audit_without_op_ids_uses_fallback():
+    events = [
+        {"timestamp": "2026-01-01T00:00:00", "tool": "run_cell", "outcome": "executed",
+         "details": {"cell_id": "c1"}},
+    ]
+    result = _by_name(check_observability(_ctx([], events=events)))["O2_cell_artifact_linkage"]
+    assert result.passed is True
+    assert "退回启发式" in result.detail

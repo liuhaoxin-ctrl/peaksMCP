@@ -16,6 +16,7 @@ from peaksMCP.discovery.signatures import describe_api
 
 from ..backend import NotebookBackend, SharedState, UnsafeNotebookBackend, ensure_fresh_index
 from ..security import AuditLogger
+from ..security.audit import operation_context as _operation_context
 
 #: Curated model/user-facing runtime text (config/prompts.yaml), read once at
 #: import so per-call lookups stay cheap and wording lives outside Python.
@@ -308,6 +309,7 @@ def _register(mcp: FastMCP, name: str, function: Any, audit: AuditLogger) -> Non
         # failed / ok), not a blanket "ok".
         operation_id = uuid.uuid4().hex
         audit.write(name, "called", {"operation_id": operation_id, "args": _summarize_arguments(args, kwargs)})
+        token = _operation_context.set(operation_id)
         try:
             result = function(*args, **kwargs)
         except Exception as exc:
@@ -320,6 +322,8 @@ def _register(mcp: FastMCP, name: str, function: Any, audit: AuditLogger) -> Non
                 },
             )
             raise
+        finally:
+            _operation_context.reset(token)
         outcome, details = _semantic_outcome(result)
         audit.write(name, outcome, {"operation_id": operation_id, **details})
         return result

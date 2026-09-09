@@ -700,9 +700,40 @@ def check_observability(ctx: Ctx) -> list[Result]:
     linkage_keys = {"cell_id", "cell", "artifact", "outputs", "save_ticket", "ticket_id"}
     linked = [e for e in ctx.events
               if linkage_keys & set((e.get("details") or {}).keys())]
-    out.append(Result("O2_cell_artifact_linkage", bool(linked),
-                      f"带 cell/产物标识的事件 {len(linked)} 条 —— "
-                      + ("可重建链路" if linked else "事后无法把产物溯源到某次执行")))
+    scope_tools = RUN_TOOLS | SAVE_TOOLS
+    called_ops = {
+        str((e.get("details") or {}).get("operation_id"))
+        for e in ctx.events
+        if e.get("tool") in scope_tools and e.get("outcome") == "called"
+    }
+    semantic = [
+        e for e in ctx.events
+        if e.get("tool") in scope_tools
+        and e.get("outcome") in {"executed", "saved", "denied", "blocked", "failed", "error"}
+    ]
+    if not called_ops:
+        # 旧版审计没有 operation_id：退回“出现 cell/产物标识”的启发式。
+        out.append(Result("O2_cell_artifact_linkage", bool(linked),
+                          f"带 cell/产物标识的事件 {len(linked)} 条（旧版审计无 operation_id，"
+                          "退回启发式）"))
+        return out
+    broken = [
+        e for e in semantic
+        if str((e.get("details") or {}).get("operation_id")) not in called_ops
+    ]
+    save_sem = [e for e in semantic if e.get("tool") in SAVE_TOOLS and e.get("outcome") == "saved"]
+    missing_meta = [
+        e for e in save_sem
+        if not ((e.get("details") or {}).get("ticket_id")
+                and (e.get("details") or {}).get("sha256"))
+    ]
+    ok = not broken and not missing_meta
+    detail = (f"同 operation_id 链：语义事件 {len(semantic)} 条，"
+              f"无 called 配对 {len(broken)} 条；saved 缺 ticket/sha256 {len(missing_meta)} 条"
+              if ok else
+              f"链路断裂：语义事件 {len(semantic)} 条中 {len(broken)} 条找不到同 id 的 called；"
+              f"saved 事件 {len(save_sem)} 条中 {len(missing_meta)} 条缺 ticket_id/sha256")
+    out.append(Result("O2_cell_artifact_linkage", ok, detail))
 
     gets = [e for e in ctx.events if e.get("tool") in GET_TOOLS]
     out.append(Result("O3_api_call_trail", bool(gets), f"get/peaks_get_api 调用 {len(gets)} 次"))
@@ -1225,8 +1256,11 @@ def golden_audit_events(input_dir: str, output_dir: Path, key: dict[str, Any],
                          "persist ONLY through the save_with_consent tool",
             }))
             for extra in range(4, 13):  # 补足成功率：只让 V2 翻红
+                op = f"run-{extra:02d}"
+                events.append(_audit_event("run_cell", "called",
+                                           {"operation_id": op, "args": {"code": "kd = da.mean()"}}))
                 events.append(_audit_event("run_cell", "executed",
-                                           {"operation_id": f"run-{extra:02d}", "cell_id": f"c{extra}"}))
+                                           {"operation_id": op, "cell_id": f"c{extra}"}))
             continue
         events.append(_audit_event("run_cell", "called",
                                    {"operation_id": op, "args": {"code": block}}))
@@ -1236,14 +1270,21 @@ def golden_audit_events(input_dir: str, output_dir: Path, key: dict[str, Any],
         events.append(_audit_event("notebook_delete_cell", "executed",
                                    {"operation_id": "run-99", "cell_id": "c0"}))
     if poisoned == "api_block":
+        events.append(_audit_event("run_cell", "called",
+                                   {"operation_id": "run-98", "args": {"code": "ghost_api()"}}))
         events.append(_audit_event("run_cell", "error", {
             "operation_id": "run-98",
             "error": "Execution blocked: unverifiable API reference ghost_api.",
         }))
         for position in range(4, 13):  # 补足执行成功比例，只让 A2 翻红
+            op = f"run-{position:02d}"
+            events.append(_audit_event("run_cell", "called",
+                                       {"operation_id": op, "args": {"code": "kd = da.mean()"}}))
             events.append(_audit_event("run_cell", "executed",
-                                       {"operation_id": f"run-{position:02d}", "cell_id": f"c{position}"}))
+                                       {"operation_id": op, "cell_id": f"c{position}"}))
     if poisoned == "exec_error":
+        events.append(_audit_event("run_cell", "called",
+                                   {"operation_id": "run-97", "args": {"code": "data['missing_dim']"}}))
         events.append(_audit_event("run_cell", "error", {
             "operation_id": "run-97", "error": "KeyError: 'missing_dim'"}))
     for number, item in enumerate(key["expected_outputs"], start=1):

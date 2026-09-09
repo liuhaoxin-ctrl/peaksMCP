@@ -210,6 +210,7 @@ class SaveGateway:
 
     def ticket_payload(self, ticket: PendingBatch) -> dict[str, Any]:
         return {
+            "ticket_id": ticket.ticket_id,
             "operation": ticket.operation,
             "summary": ticket.summary,
             "items": [item_payload(item) for item in ticket.items],
