@@ -65,6 +65,7 @@ apis:
     module: peaksMCP.overrides.save
     project: true
     exposure: facade
+    side_effects: persists files only after human approval on the consent card (staged gateway)
     aliases:
       - save result
       - save output
@@ -109,10 +110,10 @@ apis:
       - PXT转NetCDF
       - 单文件转换
     docstring_note: |
-      Converts a raw PXT to NetCDF. Idempotent: if the target .nc already
-      exists it is skipped automatically (force=True overwrites). Always run this
-      as the first step before analysis of a raw scan — it is a prerequisite
-      transform, NOT a saved result, so it does not require save consent.
+      LEGACY internal writer (kept only for in-process/tests; not a model
+      verb). Model flows convert through convert_experiment, which stages
+      every output and publishes only after human approval on the consent
+      card.
   convert_path:
     module: peaksMCP.pxt_utils.converter
     project: true
@@ -126,10 +127,9 @@ apis:
       - 目录转换
       - 文件夹转换
     docstring_note: |
-      Batch PXT -> NetCDF conversion with bounded CPU parallelism. Each file is
-      converted idempotently (skips any .nc that already exists). Run this once
-      before processing a folder of raw scans; it is a prerequisite transform,
-      not a saved result.
+      LEGACY internal writer (kept only for in-process/tests; not a model
+      verb). Model flows convert directories through convert_experiment,
+      which stages every output under one consent card before publishing.
   translate_datasheet:
     module: peaksMCP.pxt_utils.csv_translator
     project: true
@@ -266,6 +266,7 @@ apis:
     module: peaksMCP.overrides.conversion
     project: true
     exposure: facade
+    side_effects: persists files only after human approval on the consent card (staged gateway)
     category: ingestion
     kind: converter
     aliases:
@@ -278,11 +279,11 @@ apis:
       - 转换实验
       - 转换文件或目录
     docstring_note: |
-      Unified conversion: one PXT file or a whole folder goes through the same
-      CPU-budgeted, failure-isolated path. Returns a ConversionReport with
-      per-item status, output_exists, errors and CPU statistics; outputs are
-      written atomically, sources are never modified. Idempotent per file
-      (skips an existing .nc unless force=True).
+      Pure conversion + consented publication: each scan is computed (metadata
+      embedded), every output - plus the translated experiment_metadata.json -
+      is staged as one consent card listing real content (path/size/sha256/
+      structure); only human approval publishes the staged bytes atomically.
+      Idempotent per file (skips an existing .nc unless force=True).
   inspect_experiment:
     module: peaksMCP.overrides.inspection
     project: true
@@ -370,6 +371,7 @@ apis:
     module: peaksMCP.overrides.batch_preprocess
     project: true
     exposure: facade
+    side_effects: persists files only after human approval on the consent card (staged gateway)
     category: batch
     kind: batch
     aliases:
@@ -405,6 +407,7 @@ project:
     stability: new
   - name: save_result
     export: peaksMCP.overrides.save_result
+    side_effects: persists files only after human approval on the consent card (staged gateway)
     exposure: facade
     category: persistence
     kind: serializer
@@ -417,6 +420,7 @@ project:
     stability: new
   - name: convert_experiment
     export: peaksMCP.overrides.convert_experiment
+    side_effects: persists files only after human approval on the consent card (staged gateway)
     exposure: facade
     category: ingestion
     kind: converter
@@ -477,6 +481,7 @@ project:
     stability: new
   - name: preprocess_batch
     export: peaksMCP.overrides.preprocess_batch
+    side_effects: persists files only after human approval on the consent card (staged gateway)
     exposure: facade
     category: batch
     kind: batch
