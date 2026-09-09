@@ -6,7 +6,7 @@ inspection, uniform persistence, deterministic plotting conventions).  It
 does NOT pre-compose analysis workflows: fitting, coordinate correction,
 k-space conversion and batch preprocessing are native peaks steps the model
 obtains through search/get and composes in the notebook, then persists
-through the staged, human-approved save flow.
+through the ``save_with_consent`` MCP tool (staged, human-approved).
 
 Adapters:
 
@@ -17,7 +17,8 @@ Adapters:
   lists and shape conflicts);
 - conversion: ``convert_experiment`` (raw PXT -> NetCDF adapter; pure
   computation, outputs are published only after the consent card);
-- persistence: ``save_result`` (staged bytes + approval-gated gateway);
+- persistence: the ``save_with_consent`` MCP tool (staged bytes +
+  approval-gated gateway; ``SaveReceipt`` is the result type);
 - plotting conventions: ``plot_batch`` / ``plot_validation_pair`` /
   ``show_mapping_slice``.
 
@@ -40,29 +41,25 @@ from peaksMCP.workflows.slice_view import show_mapping_slice
 from .conversion import convert_experiment
 from .inspection import ExperimentSummary, ScanKind, ScanSummary, inspect_experiment
 from .load import LoadedScans, ScanEntry, load_data
-from .models import Report, report_dict, report_summary
-from .save import save_result
+from .save import SaveReceipt
 
 __all__ = [
-    # loading and persistence adapters
+    # loading adapters
     "load_data",
     "LoadedScans",
     "ScanEntry",
-    "save_result",
     # conversion + experiment adapters
     "convert_experiment",
     "inspect_experiment",
     "ExperimentSummary",
     "ScanSummary",
     "ScanKind",
+    # save receipt type (the verb is the MCP tool save_with_consent)
+    "SaveReceipt",
     # publication metadata validation (model-visible helper)
     "validate_arpes_metadata",
     # plotting conventions
     "plot_batch",
     "plot_validation_pair",
     "show_mapping_slice",
-    # report plumbing
-    "Report",
-    "report_dict",
-    "report_summary",
 ]

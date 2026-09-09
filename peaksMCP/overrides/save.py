@@ -1,22 +1,28 @@
 """Save gateway: nothing is persisted unless a human approves the staged bytes.
 
-Every model verb that would persist files (save_result, convert_experiment,
-preprocess_batch, ...) funnels through this module:
+Every persistence path funnels through this module:
 
-    1. stage: results are serialised to hidden ``.part`` staging files; a
+    1. stage: the result is serialised into a hidden file in the unified
+       staging area (a per-ticket temp directory with a strict TTL) - never
+       next to the target, never creating the target directory early; a
        one-time ticket binds the EXACT bytes of every item (path, kind,
-       size, sha256, structure) plus an idempotency note.
+       size, sha256, structure).
     2. consent: with an approval channel installed (the notebook frontend) a
        card listing the REAL content of every item is presented; approval
-       publishes all staged bytes (atomic per item), rejection or expiry
-       removes them.
-    3. gateway: publication is a per-item atomic rename of the staged bytes
-       over the target - there is no code path that writes a target without
-       an affirmative human decision, and no code-level approve exists.
+       publishes, rejection or expiry removes the staging area.
+    3. publish: only after an affirmative human decision the target directory
+       is created (if needed) and the staged bytes are copied to a hidden
+       ``.part`` file there, then atomically renamed over the target.  There
+       is no code path that writes a target without an affirmative human
+       decision, and no code-level approve exists.
 
 Consent is a runtime object, never a parameter: gateway functions stay
 underscore-private and refuse unapproved tickets, so notebook code cannot
 self-authorise a write at any layer.
+
+The model-facing save verb is the MCP tool ``save_with_consent`` (registered
+by the server); ``_save_result`` here is its internal implementation and is
+NOT part of the model Python surface.
 """
 
 from __future__ import annotations
@@ -25,6 +31,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import tempfile
 import time
 import uuid
@@ -34,35 +41,29 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-
-from .models import Report
+from pydantic import BaseModel
 
 #: Minutes a staged ticket stays valid before the gateway refuses it.
 _TICKET_TTL_S = 10 * 60
 
 
-class SaveReport(Report):
-    """Outcome of one staged save: saved / pending_consent / blocked / denied."""
+class SaveReceipt(BaseModel):
+    """Receipt of one save_with_consent attempt (one variable, one file)."""
 
-    operation = "save_result"
-    status = "awaiting_consent"
-    path = ""
-    kind = ""
-    approx_bytes = 0
+    operation: str = "save_with_consent"
+    status: str = "awaiting_consent"  # saved | denied | pending_consent | blocked
+    variable_name: str = ""
+    path: str = ""
+    kind: str = ""
+    size_bytes: int | None = None
+    sha256: str | None = None
     dims: dict[str, int] | None = None
     dtype: str | None = None
+    units: Any = None
     overwrite: bool = False
     ticket_id: str | None = None
-    sha256: str | None = None
-
-    def summary_line(self) -> str:
-        dims = self.dims or {}
-        shape = "x".join(str(v) for v in dims.values()) if dims else "-"
-        return (
-            f"save_result: {self.path} ({self.kind}, shape {shape}, "
-            f"~{self.approx_bytes / 1024:.1f} KiB, sha256={str(self.sha256)[:10]})"
-            f"; status={self.status}"
-        )
+    structure: dict[str, Any] | None = None
+    note: str | None = None
 
 
 @dataclass
@@ -76,8 +77,8 @@ class PendingItem:
     sha256: str
     structure: dict[str, Any]
     overwrite: bool
-    #: True when the target already existed at staging time (idempotent
-    #: verbs skip it on publish unless overwrite=True).
+    #: True when the target already existed at staging time (publish skips it
+    #: unless overwrite=True).
     exists_at_stage: bool = False
 
 
@@ -210,14 +211,21 @@ def _structure(data: Any, kind: str) -> dict[str, Any]:
 
 
 def _stage_item(data: Any, path: Path, overwrite: bool) -> PendingItem:
-    """Serialise one result into a hidden staging file next to its target."""
+    """Serialise one result into the unified staging area.
+
+    The staging file lives in its own ``peaksmcp-save-*`` temp directory under
+    the platform temp area - never next to the target, and the target
+    directory is created only at publish time (after human approval).
+    Worker processes can stage their own items the same way; the ticket just
+    collects the items.
+    """
     payload, kind = _serialise(data, path)
     digest = hashlib.sha256(payload).hexdigest()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    staging_dir = Path(tempfile.mkdtemp(prefix="peaksmcp-save-"))
     descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.part-",
+        prefix=f"{path.name}.part-",
         suffix=".tmp",
-        dir=path.parent,
+        dir=staging_dir,
     )
     with os.fdopen(descriptor, "wb") as stream:
         stream.write(payload)
@@ -272,7 +280,7 @@ def _ticket_payload(ticket: PendingBatch) -> dict[str, Any]:
 
 
 def _expire_stale() -> None:
-    """Drop expired tickets and their staging files (best effort)."""
+    """Drop expired tickets and their staging areas (best effort)."""
     expired = [ticket_id for ticket_id, batch in _STAGED.items() if batch.expired()]
     for ticket_id in expired:
         batch = _STAGED.pop(ticket_id, None)
@@ -286,6 +294,14 @@ def _cleanup(batch: PendingBatch) -> None:
             item.tmp_path.unlink(missing_ok=True)
         except OSError:
             pass
+        # Each staged file lives in its own peaksmcp-save-* directory; remove
+        # the directory too (best effort, only for our own staging roots).
+        parent = item.tmp_path.parent
+        if parent.name.startswith("peaksmcp-save-"):
+            try:
+                shutil.rmtree(parent, ignore_errors=True)
+            except OSError:
+                pass
 
 
 def _lookup(ticket_id: str) -> PendingBatch:
@@ -302,9 +318,14 @@ def _lookup(ticket_id: str) -> PendingBatch:
 
 
 def _publish_batch(ticket_id: str) -> dict[str, Any]:
-    """Publish one approved ticket: every staged item is atomically renamed
-    over its target.  Idempotent items whose target appeared meanwhile and
-    lack overwrite are skipped and their staging file removed."""
+    """Publish one approved ticket: each staged item is copied into a hidden
+    ``.part`` file inside its target directory and atomically renamed over the
+    target.  Idempotent items whose target appeared meanwhile and lack
+    overwrite are skipped and their staged bytes removed.
+
+    The target directory is created here, only after human approval; staging
+    never touches it and never leaves a ``.part`` next to the target early.
+    """
     batch = _lookup(ticket_id)
     if not batch.authorized:
         raise PermissionError("save: ticket not authorized by a human approval")
@@ -321,13 +342,23 @@ def _publish_batch(ticket_id: str) -> dict[str, Any]:
                     "status": "exists",
                 }
             )
-            try:
-                item.tmp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
             continue
         try:
-            item.tmp_path.replace(item.path)
+            item.path.parent.mkdir(parents=True, exist_ok=True)
+            descriptor, local_name = tempfile.mkstemp(
+                prefix=f".{item.path.name}.part-",
+                suffix=".tmp",
+                dir=item.path.parent,
+            )
+            os.close(descriptor)
+            local = Path(local_name)
+            try:
+                shutil.copyfile(item.tmp_path, local)
+                with open(local, "rb") as stream:
+                    os.fsync(stream.fileno())
+                local.replace(item.path)
+            finally:
+                local.unlink(missing_ok=True)
             published.append(
                 {
                     "path": str(item.path),
@@ -343,6 +374,7 @@ def _publish_batch(ticket_id: str) -> dict[str, Any]:
                     "status": f"publish failed: {exc}",
                 }
             )
+    _cleanup(batch)
     return {"published": published, "skipped": skipped}
 
 
@@ -369,15 +401,21 @@ def _run_staged(
 ) -> dict[str, Any]:
     """Stage items, ask the human, publish or clean up (gateway primitive).
 
-    ``requests`` are ``(data, target_path, overwrite)`` triples.  Returns a
-    JSON-safe outcome: ``{"status": "saved" | "denied" | "pending_consent",
+    ``requests`` are ``(data, target_path, overwrite)`` triples with an
+    optional fourth ``dict`` merged into the item structure (e.g. the
+    source input path for a conversion manifest row).  Returns a JSON-safe
+    outcome: ``{"status": "saved" | "denied" | "pending_consent",
     "ticket_id": ..., ...}``.  Facades with their own result models call this
     and map the outcome onto their reports.
     """
-    staged = [
-        _stage_item(data, Path(path), overwrite) for data, path, overwrite in requests
-    ]
-    ticket = _create_ticket(operation, staged, summary)
+    ticket = _create_ticket(operation, [], summary)
+    ticket.items = []
+    for request in requests:
+        data, path, overwrite, *extra = request
+        item = _stage_item(data, Path(path), overwrite)
+        if extra and isinstance(extra[0], dict):
+            item.structure.update(extra[0])
+        ticket.items.append(item)
     approved = _request_consent(ticket)
     if approved is None:
         return {"status": "pending_consent", "ticket_id": ticket.ticket_id}
@@ -394,66 +432,85 @@ def _run_staged(
     return {"status": "denied", "ticket_id": ticket.ticket_id}
 
 
-def save_result(
+def _variable_preview(value: Any, path: Path, variable_name: str) -> tuple[dict[str, Any], str]:
+    """Build the normalized preview of ONE variable for the notebook record
+    cell: structure (kind/dims/dtype/units) plus a canonical one-liner.
+
+    This is the "show" step of the save flow: the human sees exactly what
+    would be serialised before any consent card is shown.
+    """
+    kind = "netcdf" if str(path).endswith(".nc") and hasattr(value, "to_netcdf") else "json"
+    structure = _structure(value, kind)
+    dims = structure.get("sizes") or {}
+    shape = "x".join(str(v) for v in dims.values()) if dims else "-"
+    text = (
+        f"save_with_consent: variable {variable_name!r} -> {path} "
+        f"({kind}, shape {shape}, dtype {structure.get('dtype') or '-'}, "
+        f"units {structure.get('units') or '-'})"
+    )
+    return {"kind": kind, "structure": structure, "summary": text}, text
+
+
+def _save_result(
     data: Any,
     path: str | Path,
     *,
     overwrite: bool = False,
-) -> SaveReport:
+    variable_name: str = "",
+) -> SaveReceipt:
     """Stage one result and ask the human through the approval channel.
 
-    Serialises the result to a hidden staging file and creates a one-time
-    ticket bound to the exact staged bytes (path, kind, sha256, structure).
-    With an approval channel installed this presents a card to the user and
-    writes the file only on affirmative approval; otherwise the ticket stays
-    ``pending_consent`` for the approval flow.
+    Internal implementation of the ``save_with_consent`` MCP tool: serialises
+    the result into the unified staging area and creates a one-time ticket
+    bound to the exact staged bytes (path, kind, sha256, structure).  With an
+    approval channel installed this presents a card to the user and writes
+    the file only on affirmative approval; otherwise the ticket stays
+    ``pending_consent``.  Prints nothing - the receipt is the outcome.
 
     There is deliberately NO ``approve`` parameter: code cannot authorise a
     write.  Consent is a runtime object consumed by the gateway.
     """
     target = Path(path).expanduser()
-    if target.exists() and not overwrite:
-        report = SaveReport(status="blocked", path=str(target), kind="", overwrite=False)
-        print(f"save_result: {target} exists; pass overwrite=True after review.")
-        return report
-    staged = [_stage_item(data, target, overwrite)]
-    ticket = _create_ticket(
-        "save_result", staged, f"save_result: {target.name}"
-    )
-    report = SaveReport(
-        status="awaiting_consent",
+    receipt = SaveReceipt(
+        variable_name=variable_name,
         path=str(target),
-        kind=staged[0].kind,
-        approx_bytes=staged[0].approx_bytes,
-        dims={
-            str(key): int(value)
-            for key, value in (staged[0].structure.get("sizes") or {}).items()
-        },
-        dtype=staged[0].structure.get("dtype"),
         overwrite=overwrite,
-        ticket_id=ticket.ticket_id,
-        sha256=staged[0].sha256,
     )
-    print(report.summary_line())
+    if target.exists() and not overwrite:
+        receipt.status = "blocked"
+        receipt.note = f"{target} exists; pass overwrite=True after review."
+        return receipt
+    ticket = _create_ticket("save_with_consent", [], f"save_with_consent: {target.name}")
+    staged = [_stage_item(data, target, overwrite)]
+    ticket.items = staged
+    receipt.kind = staged[0].kind
+    receipt.size_bytes = staged[0].approx_bytes
+    receipt.sha256 = staged[0].sha256
+    receipt.structure = staged[0].structure
+    receipt.dims = dict(staged[0].structure.get("sizes") or {})
+    receipt.dtype = staged[0].structure.get("dtype")
+    receipt.units = staged[0].structure.get("units")
     approved = _request_consent(ticket)
     if approved is None:
-        print(
-            "save_result: staged and waiting for human approval "
-            f"(ticket {ticket.ticket_id}); no frontend approval channel is "
-            "installed."
+        receipt.status = "pending_consent"
+        receipt.ticket_id = ticket.ticket_id
+        receipt.note = (
+            "staged and waiting for human approval; no frontend approval "
+            "channel is installed"
         )
-        return report
+        return receipt
     if approved:
         ticket.authorized = True
         outcome = _publish_batch(ticket.ticket_id)
-        report.status = "saved" if outcome["published"] else "denied"
-        if outcome["skipped"]:
-            print(f"save_result: skipped: {outcome['skipped'][0]['path']}")
-        return report
+        receipt.ticket_id = ticket.ticket_id
+        if outcome["published"]:
+            receipt.status = "saved"
+        elif outcome["skipped"]:
+            receipt.status = "blocked"
+            receipt.note = outcome["skipped"][0].get("status")
+        return receipt
     _discard_ticket(ticket.ticket_id)
-    report.status = "denied"
-    print(
-        f"save_result: the user did not approve; nothing was written "
-        f"({target})."
-    )
-    return report
+    receipt.ticket_id = ticket.ticket_id
+    receipt.status = "denied"
+    receipt.note = "the user did not approve; nothing was written"
+    return receipt

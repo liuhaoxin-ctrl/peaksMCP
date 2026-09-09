@@ -90,3 +90,93 @@ async def test_invalid_tool_arguments_are_rejected():
     async with Client(server.mcp) as client:
         with pytest.raises(ToolError):
             await client.call_tool("peaks_search_api", {"unknown": True})
+
+
+def _save_fake_bridge(state, cells=None):
+    """A connected bridge whose execute/add_cell mirror the frontend contract."""
+    class FakeBridge:
+        connected = True
+
+        def request(self, operation, payload=None, timeout=30.0):
+            if operation == "add_cell":
+                if cells is not None:
+                    cells.append(payload.get("source", ""))
+                return {"id": "cell-1", "cell_type": payload.get("cell_type"),
+                        "source": payload.get("source", "")}
+            raise AssertionError(f"unexpected operation {operation!r}")
+
+    return FakeBridge()
+
+
+@pytest.mark.asyncio
+async def test_save_with_consent_is_the_only_persistence_verb(tmp_path):
+    """save_with_consent: preview record cell first, staged ticket, receipt.
+    With no approval channel the ticket waits (pending_consent) and nothing
+    is written; the model Python surface has no save_result export."""
+    import xarray as xr
+
+    from peaksMCP.overrides import __all__ as overrides_all
+
+    assert "save_result" not in overrides_all
+
+    namespace = {"scan": xr.DataArray([[1.0, 2.0]], dims=("eV", "kx"),
+                                      attrs={"units": "counts"})}
+    cells: list[str] = []
+    state = SharedState(type("_IP", (), {"user_ns": namespace})())
+    state.bridge = _save_fake_bridge(state, cells)
+    server = JupyterPeaksMCPServer(state)
+    async with Client(server.mcp) as client:
+        result = await client.call_tool(
+            "save_with_consent",
+            {"variable_name": "scan", "path": str(tmp_path / "scan.nc")},
+        )
+    data = result.data
+    assert data["operation"] == "save_with_consent"
+    assert data["status"] == "pending_consent"
+    assert data["kind"] == "netcdf"
+    assert data["dims"] == {"eV": 1, "kx": 2}
+    assert data["sha256"] and data["ticket_id"]
+    assert not (tmp_path / "scan.nc").exists()
+    assert cells and "save_with_consent" in cells[0]  # preview record cell
+
+
+@pytest.mark.asyncio
+async def test_save_with_consent_blocks_existing_target_without_overwrite(tmp_path):
+    import xarray as xr
+
+    target = tmp_path / "scan.nc"
+    target.write_bytes(b"existing")
+    state = SharedState(type("_IP", (), {"user_ns": {"scan": xr.DataArray([1], dims="eV")}})())
+    state.bridge = _save_fake_bridge(state)
+    server = JupyterPeaksMCPServer(state)
+    async with Client(server.mcp) as client:
+        result = await client.call_tool(
+            "save_with_consent",
+            {"variable_name": "scan", "path": str(target)},
+        )
+    data = result.data
+    assert data["status"] == "blocked"
+    assert "exists" in (data["note"] or "")
+    assert target.read_bytes() == b"existing"  # untouched
+
+
+@pytest.mark.asyncio
+async def test_save_with_consent_rejects_unknown_variable_and_bad_kind(tmp_path):
+    import xarray as xr
+    from fastmcp.exceptions import ToolError
+
+    state = SharedState(type("_IP", (), {"user_ns": {"scan": xr.DataArray([1], dims="eV")}})())
+    state.bridge = _save_fake_bridge(state)
+    server = JupyterPeaksMCPServer(state)
+    async with Client(server.mcp) as client:
+        with pytest.raises(ToolError, match="does not exist"):
+            await client.call_tool(
+                "save_with_consent",
+                {"variable_name": "ghost", "path": str(tmp_path / "x.nc")},
+            )
+        with pytest.raises(ToolError, match="cannot serialise"):
+            # .txt is neither netcdf nor json-able for an xarray object.
+            await client.call_tool(
+                "save_with_consent",
+                {"variable_name": "scan", "path": str(tmp_path / "x.txt")},
+            )

@@ -523,8 +523,7 @@ def convert_path(
         for path in files
     ]
     # Imported here (not at module top) to keep the import graph acyclic:
-    # batch.models inherits peaksMCP.overrides.models.Report and the
-    # overrides package re-exports this converter, so a module-level batch
+    # batch result models are self-contained dataclasses; conversion    # overrides package re-exports this converter, so a module-level batch
     # import would form batch -> overrides -> converter -> batch.
     from peaksMCP.batch import BatchExecutor, ResourceBudget
 

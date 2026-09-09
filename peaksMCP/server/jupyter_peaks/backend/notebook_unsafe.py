@@ -358,3 +358,65 @@ class UnsafeNotebookBackend:
             raise ValueError("cell_type must be code, markdown, or raw")
         self._authorize("notebook_add_cell", source if cell_type == "code" else "")
         return self.state.bridge.request("add_cell", {"source": source, "cell_type": cell_type})
+
+    def save_with_consent(
+        self,
+        variable_name: str,
+        path: str,
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        """Persist ONE notebook variable through the staged approval flow.
+
+        The flow mirrors the save primitive exactly: the variable's
+        normalized preview (kind, shape, dtype, units, target) is appended to
+        the notebook as a record cell FIRST, so the user sees precisely what
+        would be written; then the result is serialised into the unified
+        staging area and the save consent card asks for approval; only an
+        affirmative decision publishes the exact staged bytes atomically.
+
+        One variable, one file, per call - there is no batch-save and no
+        code-level approve anywhere in the flow.
+        """
+        from pathlib import Path
+
+        from peaksMCP.overrides.save import _save_result, _variable_preview
+
+        value = self.state.namespace.get(variable_name)
+        if value is None:
+            raise KeyError(
+                f"save_with_consent: variable {variable_name!r} does not exist "
+                "in the kernel namespace"
+            )
+        target = Path(path).expanduser()
+        try:
+            _preview, line = _variable_preview(value, target, variable_name)
+        except TypeError as exc:
+            raise ValueError(
+                f"save_with_consent: cannot serialise {type(value).__name__}: {exc}"
+            ) from None
+        receipt = _save_result(
+            value, target, overwrite=overwrite, variable_name=variable_name
+        )
+        if receipt.status == "blocked":
+            # Target exists without overwrite: nothing was staged; record the
+            # refusal in the notebook so the user can review the existing file.
+            record = (
+                f"**save_with_consent** - blocked: {receipt.path} already exists "
+                f"({receipt.note}); nothing was written."
+            )
+        else:
+            record = (
+                f"**save_with_consent** - request recorded before approval.\n\n"
+                f"{line}\n\n"
+                f"The file is written ONLY after your approval on the save card."
+            )
+        try:
+            self.add_cell(record, cell_type="markdown")
+        except Exception:
+            # The record cell is archival, not functional: a failure to append
+            # it must never block the consent decision itself.
+            self.audit.write(
+                "save_with_consent", "error",
+                {"error_type": "record_cell_failed", "error": "could not append the record cell"},
+            )
+        return receipt.model_dump(mode="json")

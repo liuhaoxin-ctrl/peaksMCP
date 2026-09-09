@@ -42,8 +42,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .models import Report
-
 _SUPPORTED_SUFFIXES = {".pxt", ".nc"}
 
 #: Representation of one indexed file: what it IS on disk, nothing more.
@@ -60,13 +58,14 @@ METADATA_SOURCE_EMBEDDED = "embedded"
 METADATA_SOURCE_NONE = "none"
 
 
-class LoadReport(Report):
+@dataclass
+class LoadReport:
     """Result of load_data for the single-file form: which file, how read."""
 
-    operation = "load_data"
-    status = "ok"
-    path = ""
-    kind = ""
+    operation: str = "load_data"
+    status: str = "ok"
+    path: str = ""
+    kind: str = ""
     dims: dict[str, int] | None = None
 
     def summary_line(self) -> str:

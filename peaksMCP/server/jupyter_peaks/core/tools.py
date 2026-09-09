@@ -481,10 +481,32 @@ def register_unsafe_tools(mcp: FastMCP, notebook: UnsafeNotebookBackend, audit: 
             }
         return result
 
+    def save_with_consent(
+        variable_name: str,
+        path: str,
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        """Persist one notebook variable through staged, human-approved saving.
+
+        The result type is ``SaveReceipt`` (operation / status saved|denied|
+        pending_consent|blocked / path / kind / size_bytes / sha256 / dims /
+        dtype / units / overwrite / ticket_id).  One variable, one file, per
+        call - there is no batch save.  Nothing is written unless the user
+        approves the save card in the notebook; overwrite=True only permits
+        replacing an existing target AFTER that approval.
+        """
+        return notebook.save_with_consent(
+            variable_name=variable_name,
+            path=path,
+            overwrite=overwrite,
+        )
+
     functions = {
         # Model-generated code is written through the API-checked entry point.
         "notebook_write_with_api_check": notebook_write_with_api_check,
         "notebook_add_cell": notebook.add_cell,
+        # The one persistence verb (staged bytes + approval card).
+        "save_with_consent": save_with_consent,
     }
     for name, function in functions.items():
         _register(mcp, name, function, audit)

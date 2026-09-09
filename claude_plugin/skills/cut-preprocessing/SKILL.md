@@ -15,7 +15,7 @@ description: Use `peaksMCP` to call the `peaks` package and perform preprocessin
 
 1. Use the fitted gold curve to level the Fermi edge of the $E_k\text{--}k$ data and set the Fermi energy to zero $\rightarrow$ set the high-symmetry point in angle space to zero $\rightarrow$ convert to k-space.
 2. Compose the adapter surface (`peaksMCP.overrides`: `load_data`,
-   `inspect_experiment`, `convert_experiment`, `save_result`) with native
+   `inspect_experiment`, `convert_experiment`) with native
    `peaks` steps obtained via `peaks_search_api` / `peaks_get_api`
    (`da.fit_gold`, `da.metadata.set_EF_correction`, coordinate shifts,
    `da.k_convert`). Never reimplement an existing function.
@@ -42,10 +42,12 @@ description: Use `peaksMCP` to call the `peaks` package and perform preprocessin
 Use `plot` to convey **key** information to the user.
 Save processed cuts with `da.save(path)` (peaks' own writer sanitises metadata
 attrs; raw `da.to_netcdf` can fail on unsanitized attrs). For results the user
-explicitly asks to keep, use `save_result` from `peaksMCP.overrides`: it stages
-the result, shows the user a consent card with the real content summary (path,
-size, sha256, structure) and writes the file only when the user approves on
-that card. There is no code-level approval flag.
+explicitly asks to keep, call the `save_with_consent` MCP tool: it appends a
+preview record cell, stages the variable's exact bytes in a unified temp area,
+shows the user a consent card with the real content summary (path, size,
+sha256, structure) and writes the file only when the user approves on that
+card. There is no code-level approval flag and no save function in the model
+Python surface.
 
 **Use the peaksMCP plotting façades (`plot_batch`, `plot_validation_pair`, `show_mapping_slice`) for figures; when raw matplotlib is unavoidable, follow the figure conventions in the server instructions (constrained_layout, DejaVu Sans with mathtext symbols, English labels, 150/300 dpi).**
 

@@ -53,7 +53,8 @@ class JupyterPeaksMCPServer:
 
 
     def _install_save_approval_channel(self) -> None:
-        """Route save_result's staged-ticket approval to the frontend card.
+        """Route staged-ticket approvals (save_with_consent / conversion) to the
+        frontend card.
 
         The channel receives the ticket preview (the REAL content summary of
         the staged bytes) and asks the user through the same Comm consent

@@ -63,15 +63,20 @@ apis:
     - PXT转换
     - 转换实验
     - 转换文件或目录
-    summary: Convert one PXT file or a whole folder to NetCDF with bounded CPU parallelism.
-    inputs: 'source: file or directory; output_dir; metadata; match: str=''''; force:
-      bool=False; cpu_limit_percent: float=60'
-    returns: ConversionReport (per-item status/output_exists/errors + cpu stats)
-    preconditions: source exists; metadata exists when given
+    summary: Thin PXT-to-NetCDF compatibility boundary under human consent (no
+      analysis freedom; one verb repeated per file).
+    inputs: 'source: file or directory; output_dir; metadata; match: str="";
+      overwrite: bool=False'
+    returns: 'ConversionReport (per-item status/output_exists/errors/warnings);
+      never printed - the report object is the outcome'
+    preconditions: 'source exists; metadata exists when given; the target
+      directory is created only at publish time, after approval'
     errors: source not found; metadata file not found
-    example: report = convert_experiment("raw/", match="BP_")
-    side_effects: persists converted NetCDF files and the translated experiment_metadata.json
-      ONLY after human approval on the conversion consent card
+    example: 'report = convert_experiment("raw/", match="BP_"); report.items'
+    side_effects: 'persists converted NetCDF files + translated experiment_metadata.json
+      ONLY after approval on the consent card (manifest rows: source -> target with
+      dims/dtype/units/warnings); staging in a unified temp area with strict TTL;
+      no code-level approve'
   inspect_experiment:
     export: peaksMCP.overrides.inspect_experiment
     exposure: facade

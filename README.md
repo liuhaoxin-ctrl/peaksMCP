@@ -144,11 +144,12 @@ terminal `Ctrl+C` does **not** stop it — use `peaksMCP stop`.
 > **Data operations are deliberately not CLI commands.** Data access,
 > conversion, translation and saving run as **notebook cells** through the MCP
 > tools, composing the adapter surface of `peaksMCP.overrides` (`load_data` /
-> `inspect_experiment` / `convert_experiment` / `save_result` plus plotting
-> conventions) with native peaks steps obtained via `peaks_search_api` /
-> `peaks_get_api`, so the code scanner, the API check and the consent gate
-> always apply; every persisted file goes through the staged-consent card of
-> `save_result` / `convert_experiment`. The CLI and the operator console only
-> control processes (Jupyter, kernel, MCP) and snapshots.
+> `inspect_experiment` / `convert_experiment` plus plotting conventions) with
+> native peaks steps obtained via `peaks_search_api` / `peaks_get_api`, so the
+> code scanner, the API check and the consent gate always apply; every
+> persisted file goes through the staged-consent card (the `save_with_consent`
+> MCP tool for results, the conversion consent card for converted NetCDF). The
+> CLI and the operator console only control processes (Jupyter, kernel, MCP)
+> and snapshots.
 
 See `docs/ARCHITECTURE.md` for the compact architecture map.

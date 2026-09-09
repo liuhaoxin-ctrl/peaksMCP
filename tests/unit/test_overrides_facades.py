@@ -41,7 +41,8 @@ def _fa():
 
 def test_convert_experiment_stages_and_publishes_after_approval(monkeypatch, tmp_path, capsys):
     """Pure conversion + consent: nothing is written until the card is
-    approved; approved items are published atomically with output_exists."""
+    approved; approved items are published atomically with output_exists;
+    the facade prints nothing (ConversionReport is the outcome)."""
     source = tmp_path / "BP_0001.pxt"
     source.write_bytes(b"fake")
     seen = _fake_conversion(monkeypatch)
@@ -50,8 +51,11 @@ def test_convert_experiment_stages_and_publishes_after_approval(monkeypatch, tmp
     assert payload["operation"] == "convert_experiment"
     item_payload = payload["items"][0]
     assert item_payload["path"].endswith("BP_0001.nc")
+    # The card manifest row carries the conversion boundary info: source ->
+    # target plus dims/dtype from the staged structure.
+    assert item_payload["structure"]["dims"] == ["eV", "theta_par"]
     out = capsys.readouterr().out
-    assert "converted" in out
+    assert out == ""
     target = tmp_path / "BP_0001.nc"
     assert target.exists()
     item = result.items[0]
@@ -71,8 +75,7 @@ def test_convert_experiment_denied_writes_nothing(monkeypatch, tmp_path, capsys)
     assert result.items[0].status == "denied"
     assert not (tmp_path / "BP_0001.nc").exists()
     assert not list(tmp_path.glob(".*.part-*"))
-    out = capsys.readouterr().out
-    assert "not published (denied)" in out
+    assert capsys.readouterr().out == ""
 
 
 def test_convert_experiment_without_channel_stays_awaiting(monkeypatch, tmp_path, capsys):

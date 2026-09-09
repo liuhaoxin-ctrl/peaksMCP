@@ -79,3 +79,19 @@ tools:
       deleted or reordered, so the agent's work history is preserved top to
       bottom. Mutation tool: always scanner-checked and audit-logged; when
       mcp.require_consent is enabled the user first approves it.
+  save_with_consent:
+    title: Save Variable With Consent
+    description: >
+      Persist ONE live notebook variable to a file through the staged,
+      human-approved save flow. A record cell showing the variable's
+      normalized preview (kind, shape, dtype, units, target path) is appended
+      to the notebook first; the result is then serialised into a unified
+      staging area (strict TTL) and the save consent card asks for approval;
+      only an affirmative decision atomically publishes the exact staged
+      bytes. Returns a SaveReceipt: operation / status (saved | denied |
+      pending_consent | blocked) / path / kind / size_bytes / sha256 / dims /
+      dtype / units / overwrite / ticket_id. One variable, one file, per
+      call - never batch. overwrite=True only permits replacing an existing
+      target AFTER approval; without it an existing target is refused
+      (status blocked). The model Python surface has no save function: this
+      tool is the only persistence verb.

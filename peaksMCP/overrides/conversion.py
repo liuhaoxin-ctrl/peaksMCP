@@ -1,15 +1,15 @@
-"""Unified conversion facade: pure conversion + consented publication.
+"""Thin PXT-to-NetCDF compatibility boundary: pure conversion + consented
+publication.  No analysis freedom: one file is converted by repeating the
+single conversion verb per file; nothing else happens here.
 
-``convert_experiment`` never writes by itself: it computes the converted
-arrays (reading raw PXT, embedding the datasheet/metadata record), stages
-every output as a one-time batch ticket (per file: path, size, sha256,
-structure; plus the translated ``experiment_metadata.json`` when a datasheet
-was found), shows ONE consent card listing the real content of every item,
-and only a human approval publishes the staged bytes atomically.
-
-The model verb surface has no write shortcut: the lower-level converter
-functions are internal (not exported from ``peaksMCP.overrides``, marked
-internal in the manifest) and exist only for legacy/in-process use.
+``convert_experiment`` never writes by itself and never prints: it computes
+the converted arrays (reading raw PXT, embedding the datasheet/metadata
+record), stages every output in the unified staging area (strict TTL; the
+target directory is created only at publish time, never early), shows ONE
+consent card whose manifest lists every item as source -> target with
+dims/dtype/units/warnings, and only a human approval atomically publishes
+the staged bytes.  The returned ``ConversionReport`` is the outcome; nothing
+is echoed to stdout.
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any
 
 from . import save as save_module
-from .models import Report  # noqa: F401  (kept for signature clarity)
 
 
 def _load_document(metadata: Any) -> Any | None:
@@ -86,17 +85,20 @@ def convert_experiment(
     output_dir: str | Path | None = None,
     metadata: str | Path | None = None,
     match: str = "",
-    force: bool = False,
-    cpu_limit_percent: float = 60.0,
+    overwrite: bool = False,
 ):
     """Convert one PXT file or a whole folder to NetCDF under human consent.
 
-    Pure computation first: each scan is read and prepared (metadata record
-    embedded), then every output - including the translated
-    ``experiment_metadata.json`` when a datasheet was found - is staged as a
-    one-time ticket and ONE consent card lists the real content of every
-    item.  Nothing is written unless the user approves the card; existing
-    targets are skipped idempotently (unless ``force=True``).
+    Thin compatibility boundary: pure PXT -> NetCDF conversion (one verb,
+    repeated per file - no analysis freedom) plus consented publication.
+    Each scan is read and prepared (metadata record embedded); every output
+    - including the translated ``experiment_metadata.json`` when a datasheet
+    was found - is staged in the unified staging area (strict TTL) and ONE
+    consent card shows the conversion manifest (source -> target, dims,
+    dtype, units, warnings).  Nothing is written unless the user approves
+    the card; existing targets are skipped idempotently unless
+    ``overwrite=True``.  Prints nothing; the ``ConversionReport`` is the
+    outcome.
 
     Parameters
     ----------
@@ -104,16 +106,15 @@ def convert_experiment(
         One ``.pxt`` file, or a directory containing PXT files.
     output_dir : str or Path, optional
         Destination directory for the NetCDF outputs (and the metadata JSON).
+        Never created early - only at publish time, after approval.
     metadata : str or Path, optional
         Explicit ``experiment_metadata.json`` document (otherwise a sibling
         ``datasheet.csv`` is translated automatically).
     match : str, default ""
         Filename substring used to filter a directory batch.
-    force : bool, default False
-        Permit replacing existing outputs.
-    cpu_limit_percent : float, default 60
-        Accepted for interface stability (conversion staging is sequential;
-        the CPU budget governs downstream batch processing).
+    overwrite : bool, default False
+        Permit replacing existing outputs (gateway overwrite policy, only
+        effective after approval).
 
     Returns
     -------
@@ -145,8 +146,6 @@ def convert_experiment(
     files, destination = _plan_targets(source_path, Path(output_dir).expanduser() if output_dir else None)
     if match:
         files = [file for file in files if match in file.name]
-    if destination is not None:
-        destination.mkdir(parents=True, exist_ok=True)
 
     def target_for(file: Path) -> Path:
         if source_path.is_file():
@@ -161,7 +160,7 @@ def convert_experiment(
     planned = 0
     for file in files:
         target = target_for(file)
-        if target.exists() and not force:
+        if target.exists() and not overwrite:
             items.append(
                 ConversionItem(
                     input=str(file), output=str(target), status="skipped",
@@ -186,25 +185,22 @@ def convert_experiment(
             status="awaiting_consent", warnings=warnings,
         )
         staged.append((item, target))
-        requests.append((data, target, force))
+        requests.append(
+            (data, target, overwrite, {"input": str(file), "warnings": warnings})
+        )
         items.append(item)
     # The translated metadata JSON joins the SAME consented batch (no report
     # row of its own - it is conversion plumbing).
     metadata_target: Path | None = None
     if document is not None and planned and destination is not None:
         metadata_target = destination / "experiment_metadata.json"
-        if not metadata_target.exists() or force:
+        if not metadata_target.exists() or overwrite:
             requests.append(
-                (document.model_dump(mode="python"), metadata_target, force)
+                (document.model_dump(mode="python"), metadata_target, overwrite)
             )
 
     report = ConversionReport(items=items, cpu={}, warnings=[])
     if not staged:
-        print(
-            f"convert_experiment: {len(items)} input(s) - "
-            f"{sum(i.status == 'skipped' for i in items)} skipped, "
-            f"{sum(i.status == 'failed' for i in items)} failed"
-        )
         return report
 
     summary = f"convert_experiment: publish {len(requests)} file(s) to {destination}"
@@ -233,10 +229,4 @@ def convert_experiment(
         for item, _target in staged:
             item.status = "denied"
             item.output_exists = False
-    print(
-        f"convert_experiment: {sum(i.status == 'converted' for i in items)} "
-        f"converted, {sum(i.status == 'skipped' for i in items)} skipped, "
-        f"{sum(i.status in {'awaiting_consent', 'denied'} for i in items)} "
-        f"not published ({status})"
-    )
     return report
