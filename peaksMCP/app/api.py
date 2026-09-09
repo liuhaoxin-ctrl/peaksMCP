@@ -9,6 +9,8 @@ startup entry) and binds the live :class:`RuntimeSupervisor`, so it can both
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import secrets
 from datetime import UTC, datetime
 from pathlib import Path
@@ -190,6 +192,116 @@ async def _create_notebook_snapshot(supervisor: RuntimeSupervisor) -> str:
         raise FileExistsError("could not allocate a unique notebook snapshot name")
 
 
+#: 最近操作视图的读取参数（dashboard 只读审计日志，展示最近的活动链）。
+_RECENT_ACTIVITY_MAX_CHAINS = 12
+_RECENT_ACTIVITY_MAX_EVENTS = 600
+
+
+def audit_log_path() -> Path:
+    """Host 侧审计日志路径（dashboard 进程与 kernel 共享 PEAKSMCP_HOME）。"""
+    home = Path(os.environ.get("PEAKSMCP_HOME", str(Path.home() / ".peaksMCP")))
+    return home / "audit" / "tool_audit.log"
+
+
+def recent_audit_chains(
+    path: Path | None = None,
+    *,
+    max_events: int = _RECENT_ACTIVITY_MAX_EVENTS,
+    max_chains: int = _RECENT_ACTIVITY_MAX_CHAINS,
+) -> dict[str, Any]:
+    """读审计日志尾部并聚合出最近的 operation 链。
+
+    每条链 = 同一个 operation_id 下的全部事件（called → blocked/executed/
+    saved/…），终端事件与票据信息（ticket_id / sha256 前缀 / cell_id /
+    api_ids）都聚合出来，供 dashboard 直接渲染"一次操作干了什么"。
+    旧版审计（无 operation_id）退化为单事件行，附在 ``unattached`` 里。
+    """
+    path = path or audit_log_path()
+    raw: list[dict[str, Any]] = []
+    if path.is_file():
+        with path.open(encoding="utf-8") as stream:
+            for line in stream:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    raw.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    raw = raw[-max_events:]
+
+    chains: dict[str, dict[str, Any]] = {}
+    unattached: list[dict[str, Any]] = []
+    for event in raw:
+        operation_id = str((event.get("details") or {}).get("operation_id") or "")
+        if not operation_id:
+            unattached.append(_compact_event(event))
+            continue
+        chain = chains.setdefault(operation_id, {
+            "operation_id": operation_id,
+            "first_at": event.get("timestamp"),
+            "last_at": event.get("timestamp"),
+            "tools": [],
+            "outcomes": [],
+            "cell_ids": [],
+            "api_ids": [],
+            "ticket_id": None,
+            "sha256": None,
+            "target_path": None,
+            "events": [],
+        })
+        chain["last_at"] = event.get("timestamp", chain.get("last_at"))
+        tool = str(event.get("tool") or "")
+        outcome = str(event.get("outcome") or "")
+        if tool and tool not in chain["tools"]:
+            chain["tools"].append(tool)
+        if outcome and outcome not in chain["outcomes"]:
+            chain["outcomes"].append(outcome)
+        details = event.get("details") or {}
+        cell_id = details.get("cell_id")
+        if cell_id and cell_id not in chain["cell_ids"]:
+            chain["cell_ids"].append(str(cell_id))
+        api_ids = details.get("api_ids")
+        if isinstance(api_ids, list):
+            for api_id in api_ids:
+                if api_id not in chain["api_ids"]:
+                    chain["api_ids"].append(str(api_id))
+        if details.get("ticket_id"):
+            chain["ticket_id"] = str(details["ticket_id"])
+        if details.get("sha256"):
+            chain["sha256"] = str(details["sha256"])
+        if outcome == "called":
+            args = details.get("args") or {}
+            if args.get("path"):
+                chain["target_path"] = str(args["path"])
+        chain["events"].append(_compact_event(event))
+
+    ordered = sorted(chains.values(), key=lambda c: str(c.get("last_at") or ""), reverse=True)
+    return {
+        "chains": ordered[:max_chains],
+        "unattached": unattached[-10:],
+        "source": str(path),
+    }
+
+
+def _compact_event(event: dict[str, Any]) -> dict[str, Any]:
+    """一条事件的可展示摘要（只读，不展开 args 里的大对象）。"""
+    details = event.get("details") or {}
+    compact = {
+        "timestamp": event.get("timestamp"),
+        "tool": event.get("tool"),
+        "outcome": event.get("outcome"),
+    }
+    args = details.get("args")
+    if isinstance(args, dict) and "code" in args:
+        code = str(args["code"])
+        compact["code_head"] = code[:160]
+    for key in ("cell_id", "ticket_id", "sha256", "operation_id", "error_type", "error"):
+        if details.get(key):
+            compact[key] = details[key]
+    return compact
+
+
 def create_app(supervisor: RuntimeSupervisor) -> Starlette:
     """Build the operator-console application bound to a live supervisor."""
     web = Path(__file__).with_name("webapp")
@@ -324,6 +436,11 @@ def create_app(supervisor: RuntimeSupervisor) -> Starlette:
         except Exception as exc:
             return JSONResponse({"error_type": type(exc).__name__, "error": str(exc)}, status_code=400)
 
+    async def recent_activity(_request: Request) -> JSONResponse:
+        require_auth(_request)
+        payload = await asyncio.to_thread(recent_audit_chains)
+        return JSONResponse(payload)
+
     async def open_notebook(request: Request):
         require_auth(request)
         return RedirectResponse(
@@ -343,4 +460,5 @@ def create_app(supervisor: RuntimeSupervisor) -> Starlette:
         # the scanner, API check and consent gate apply. The console only
         # controls processes (Jupyter / kernel / MCP) and snapshots.
         Route("/api/notebook/snapshot", snapshot_notebook, methods=["POST"]),
+        Route("/api/activity/recent", recent_activity),
     ])

@@ -84,6 +84,20 @@
       <div id="components" class="components-grid"></div>
     </section>
 
+    <!-- Recent operations: read-only view of the audit operation chains, so
+         a completed agent session can be reviewed without grepping JSONL. -->
+    <section class="card wide activity-section">
+      <div class="panel-header">
+        <h2>Recent Operations</h2>
+        <span id="activity-status" class="status-badge unknown">Loading</span>
+      </div>
+      <div id="activity" class="activity-list">
+        <div class="empty-state">
+          <div class="empty-title">Loading activity…</div>
+        </div>
+      </div>
+    </section>
+
     <!-- Conversion and data loading intentionally have no console form: they
          run as notebook cells through the MCP tools, where the scanner, the
          API check and the consent gate apply. -->

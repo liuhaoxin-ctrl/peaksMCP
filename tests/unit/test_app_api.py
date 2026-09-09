@@ -280,3 +280,68 @@ def test_api_rejects_missing_token_and_cross_origin_control():
 # =====================
 # Conversion
 # =====================
+
+
+# --------------------------------------------------------------------------- #
+# Recent-activity audit chains (Phase 6c)                                     #
+# --------------------------------------------------------------------------- #
+
+def test_recent_audit_chains_groups_by_operation_id(tmp_path):
+    from peaksMCP.app.api import recent_audit_chains
+
+    audit = tmp_path / "tool_audit.log"
+    audit.write_text(
+        "\n".join([
+            '{"timestamp": "2026-01-01T00:00:01", "tool": "run_cell", "outcome": "called",'
+            ' "details": {"operation_id": "op-1", "args": {"code": "scans = load_data(..."}}}',
+            '{"timestamp": "2026-01-01T00:00:02", "tool": "run_cell", "outcome": "executed",'
+            ' "details": {"operation_id": "op-1", "cell_id": "c3"}}',
+            '{"timestamp": "2026-01-01T00:00:05", "tool": "save_with_consent", "outcome": "called",'
+            ' "details": {"operation_id": "op-2", "args": {"path": "/out/BP_0005_processed.nc"}}}',
+            '{"timestamp": "2026-01-01T00:00:06", "tool": "save_with_consent", "outcome": "saved",'
+            ' "details": {"operation_id": "op-2", "ticket_id": "t-abc", "sha256": "deadbeef1234"}}',
+            '{"timestamp": "2026-01-01T00:00:03", "tool": "run_cell", "outcome": "executed",'
+            ' "details": {"cell_id": "old"}}',
+            "not-json-line",
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    payload = recent_audit_chains(audit, max_chains=10)
+    by_id = {chain["operation_id"]: chain for chain in payload["chains"]}
+    # 按 last_at 倒序：op-2 (06) 在前，op-1 (02) 在后。
+    assert [chain["operation_id"] for chain in payload["chains"]] == ["op-2", "op-1"]
+    chain = by_id["op-2"]
+    assert chain["ticket_id"] == "t-abc" and chain["sha256"] == "deadbeef1234"
+    assert chain["target_path"] == "/out/BP_0005_processed.nc"
+    assert chain["tools"] == ["save_with_consent"] and chain["outcomes"] == ["called", "saved"]
+    chain1 = by_id["op-1"]
+    assert chain1["cell_ids"] == ["c3"]
+    assert any(event.get("code_head", "").startswith("scans = load_data") for event in chain1["events"])
+    # 无 operation_id 的旧事件进 unattached；坏行被跳过。
+    assert len(payload["unattached"]) == 1
+    assert payload["unattached"][0]["tool"] == "run_cell"
+
+
+def test_activity_endpoint_requires_auth_and_returns_chains(tmp_path, monkeypatch):
+    from peaksMCP.app.api import create_app
+
+    monkeypatch.setenv("PEAKSMCP_HOME", str(tmp_path))
+    audit = tmp_path / "audit" / "tool_audit.log"
+    audit.parent.mkdir()
+    audit.write_text(
+        '{"timestamp": "2026-01-01T00:00:01", "tool": "run_cell", "outcome": "called",'
+        ' "details": {"operation_id": "op-1", "args": {"code": "x=1"}}}\n',
+        encoding="utf-8",
+    )
+    supervisor = _FakeSupervisor()
+    app = create_app(supervisor)
+    with TestClient(app) as client:
+        assert client.get("/api/activity/recent").status_code == 401
+        response = client.get(
+            "/api/activity/recent",
+            headers={"Authorization": f"Bearer {supervisor.dashboard_token}"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["chains"] and body["chains"][0]["operation_id"] == "op-1"
+        assert body["source"].endswith("tool_audit.log")

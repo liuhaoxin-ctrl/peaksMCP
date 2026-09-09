@@ -209,6 +209,113 @@ function renderComponents(s) {
 }
 
 // =====================
+// Recent operations (audit chains)
+// =====================
+
+function outcomeClass(outcome) {
+  const cls = String(outcome || '').toLowerCase();
+  const known = { executed: 'executed', saved: 'saved', ok: 'ok', blocked: 'blocked',
+                  error: 'error', failed: 'failed', denied: 'denied' };
+  return known[cls] || 'unknown';
+}
+
+function chainRow(chain, unattached = false) {
+  const article = document.createElement('article');
+  article.className = 'activity-chain' + (unattached ? ' unattached' : '');
+
+  const head = document.createElement('div');
+  head.className = 'chain-head';
+  const time = document.createElement('span');
+  time.className = 'chain-time';
+  const last = chain.last_at || chain.timestamp || '';
+  time.textContent = String(last).replace('T', ' ').slice(0, 19);
+  const id = document.createElement('span');
+  id.className = 'chain-id';
+  id.textContent = unattached ? '(legacy event)' : chain.operation_id;
+  head.append(time, id);
+  (chain.tools || (chain.tool ? [chain.tool] : [])).forEach(tool => {
+    const chip = document.createElement('code');
+    chip.textContent = String(tool);
+    head.append(chip);
+  });
+  const outcomes = chain.outcomes || (chain.outcome ? [chain.outcome] : []);
+  outcomes.forEach(outcome => {
+    const badge = document.createElement('span');
+    badge.className = 'outcome ' + outcomeClass(outcome);
+    badge.textContent = String(outcome);
+    head.append(badge);
+  });
+  article.append(head);
+
+  const meta = document.createElement('div');
+  meta.className = 'chain-meta';
+  const bits = [];
+  if (chain.cell_ids && chain.cell_ids.length) bits.push(`cell ${chain.cell_ids.join(',')}`);
+  if (chain.api_ids && chain.api_ids.length) bits.push(`api ${chain.api_ids.join(',')}`);
+  if (chain.ticket_id) bits.push(`ticket ${chain.ticket_id}`);
+  if (chain.sha256) bits.push(`sha ${String(chain.sha256).slice(0, 16)}`);
+  if (chain.target_path) bits.push(`→ ${chain.target_path}`);
+  const error = chain.events && chain.events[chain.events.length - 1];
+  if (error && error.error) bits.push(`error: ${String(error.error).slice(0, 160)}`);
+  meta.textContent = bits.join('  ·  ');
+  if (bits.length) article.append(meta);
+
+  if (chain.events && chain.events.length) {
+    const events = document.createElement('div');
+    events.className = 'chain-events';
+    events.textContent = chain.events
+      .map(e => `${String(e.timestamp || '').replace('T', ' ').slice(11, 19)} ${e.outcome}`)
+      .join(' → ');
+    article.append(events);
+  }
+  return article;
+}
+
+function renderActivity(payload) {
+  const container = $('#activity');
+  const badge = $('#activity-status');
+  const chains = (payload && payload.chains) || [];
+  const unattached = (payload && payload.unattached) || [];
+  if (!container) return;
+  container.replaceChildren();
+  if (payload && payload.error) {
+    const state = document.createElement('div');
+    state.className = 'empty-state';
+    state.innerHTML = `<div class="empty-title">Activity unavailable</div>`;
+    const desc = document.createElement('div');
+    desc.className = 'empty-desc';
+    desc.textContent = String(payload.error);
+    state.append(desc);
+    container.append(state);
+    if (badge) { badge.className = 'status-badge error'; badge.textContent = 'ERROR'; }
+    return;
+  }
+  if (!chains.length && !unattached.length) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-title">No recent operations</div>
+        <div class="empty-desc">Audit chains will appear here once tools are used.</div>
+      </div>`;
+  } else {
+    chains.forEach(chain => container.append(chainRow(chain)));
+    unattached.forEach(event => container.append(chainRow(event, true)));
+  }
+  if (badge) {
+    badge.className = 'status-badge ' + (chains.length ? 'ready' : 'unknown');
+    badge.textContent = chains.length ? `${chains.length} chains` : 'Empty';
+  }
+}
+
+async function loadActivity() {
+  try {
+    const payload = await fetch('/api/activity/recent').then(r => r.json());
+    renderActivity(payload);
+  } catch (e) {
+    renderActivity({ error: String(e) });
+  }
+}
+
+// =====================
 // Refresh with lock & visibility awareness
 // =====================
 
@@ -218,10 +325,14 @@ async function refresh() {
   if (refreshLock) return;
   refreshLock = true;
   try {
-    const s = await fetch('/api/status').then(r => r.json());
+    const [s, activity] = await Promise.all([
+      fetch('/api/status').then(r => r.json()),
+      fetch('/api/activity/recent').then(r => r.json()).catch(() => ({})),
+    ]);
     $('#connection').classList.add('up');
     $('#connection-display').classList.add('up');
     renderComponents(s);
+    renderActivity(activity);
   } catch (e) {
     $('#state').textContent = 'OFFLINE';
     $('#state-large').textContent = 'OFFLINE';
