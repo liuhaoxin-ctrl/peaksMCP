@@ -35,6 +35,7 @@ prompts:
     unknown_api_retry: "Execution blocked: these names were already reported as unverifiable this session ({names}) and no successful get has followed. Call search, then get(<canonical id>) once for each name, then resubmit the cell."
     api_check_rule: "Prefer a peaksMCP override API whenever one fits the user's intent; use the native peaks API only when no override applies, and non-Peaks functions only when Peaks has no corresponding API. Unrecognised method names block execution."
     import_not_exported: "Import blocked: {names} cannot be imported from peaks/peaksMCP — not a real export. Use search to find the correct API, or import from a generic library instead."
+    proven_scope_mismatch: "注意：{names} 已经被 get 过，但现有证明的 scope/module 与这次调用不匹配（同名 API 在不同 scope 存在）。用 search 找到本次调用对应 scope 的 canonical id 并重新 get 一次。"
     star_import_rejected: "Star import from {module} is rejected: importing every name would defeat the API check. Import the names you need explicitly."
 
   # --------------------------------------------------------- code scanner

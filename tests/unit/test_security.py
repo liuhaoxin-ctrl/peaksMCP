@@ -740,3 +740,35 @@ def test_project_import_gate_rejects_ghost_exports_and_star_imports(tmp_path):
         result = nb.write_with_api_check(code, timeout=5)
         assert result["blocked"] is True
         assert "Star import" in result["message"]
+
+
+def test_scope_mismatch_hint_distinguishes_proven_name(tmp_path):
+    """已 get 同名 API 但 scope 不匹配 → 提示语明确区分，而不是只说"从未验证"。"""
+    from unittest.mock import Mock
+
+    from peaksMCP.discovery.index import build_index
+    from peaksMCP.server.jupyter_peaks.backend import (
+        SharedState,
+        UnsafeNotebookBackend,
+    )
+    from peaksMCP.server.jupyter_peaks.security import AuditLogger, ConsentManager
+
+    state = SharedState(Mock(user_ns={}))
+    state.require_consent = False
+    state.api_index = build_index()
+    state.bridge = Mock()
+    state.bridge.request.return_value = {"ok": True}
+    nb = UnsafeNotebookBackend(state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl"))
+
+    # 只证明 dataarray scope 的 k_convert。
+    entry = next(
+        e for e in state.api_index.entries
+        if e["name"] == "k_convert" and e["scope"] == "dataarray"
+    )
+    _prove(state, state.api_index, "k_convert", "dataarray")
+
+    # 裸调用 k_convert(...) 需要 module/top scope 的证明 → scope 不匹配。
+    result = nb.write_with_api_check("k_convert(da, quiet=True)", timeout=5)
+    assert result.get("blocked") is True
+    assert "scope" in result["message"] or "不匹配" in result["message"]
+    assert "dataarray" in entry["id"]

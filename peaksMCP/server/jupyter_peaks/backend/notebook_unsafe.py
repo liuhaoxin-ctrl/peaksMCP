@@ -382,6 +382,17 @@ class UnsafeNotebookBackend:
             # get.  First occurrence is advisory (with candidates); a
             # repeated occurrence of the same unproven name is a hard refusal
             # until the model actually gets the API.
+            ledger_names = {
+                str(snapshot.get("name"))
+                for snapshot in self.state.verified_apis.values()
+            }
+            scope_mismatch = sorted({
+                name for name in ledger_names
+                if any(unproven["name"] == name for unproven in unknown)
+            })
+            scope_hint = ""
+            if scope_mismatch:
+                scope_hint = "\n" + _PROMPTS["proven_scope_mismatch"].format(names=", ".join(scope_mismatch))
             attempts = self.state.unknown_api_attempts
             for name in [u["name"] for u in unknown]:
                 attempts[name] = attempts.get(name, 0) + 1
@@ -399,7 +410,7 @@ class UnsafeNotebookBackend:
                     "requires_search": True,
                     "hard_refusal": True,
                     "unknown_refs": hard_names,
-                    "message": _PROMPTS["unknown_api_retry"].format(names=hard_names),
+                    "message": _PROMPTS["unknown_api_retry"].format(names=hard_names) + scope_hint,
                     "api_check": {
                         "verified_peaks_apis": verified,
                         "generic_refs": generic,
@@ -429,7 +440,7 @@ class UnsafeNotebookBackend:
                     suggestions={
                         u["name"]: u["suggested"] for u in unknown if u["suggested"]
                     },
-                ),
+                ) + scope_hint,
                 "api_check": {
                     "verified_peaks_apis": verified,
                     "generic_refs": generic,
