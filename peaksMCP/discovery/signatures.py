@@ -163,17 +163,26 @@ def describe_api(entry: dict[str, Any], package_dir: str | None = None) -> dict[
         doc = details.get("docstring") or ""
         details["docstring"] = f"{note}\n\n{doc}".strip()
     signature = details.get("signature") or entry.get("signature")
-    result = {
-        **entry,
-        **details,
+    # Model-facing detail is a whitelist: the caller gets the canonical id,
+    # tier/module context, the signature and a bounded docstring.  Never
+    # source paths, aliases, legacy ids or the full index entry - get is the
+    # detail step AFTER search returned the canonical id.
+    docstring = str(details.get("docstring") or "").strip()
+    return {
+        "id": str(entry.get("id") or ""),
+        "name": str(entry.get("name") or ""),
+        "module": entry.get("module"),
+        "scope": entry.get("scope"),
+        "tier": entry.get("tier"),
+        "exposure": entry.get("exposure"),
+        "kind": entry.get("kind"),
         "signature": signature,
-        "signature_bound": _bound(
-            signature, name, str(entry.get("scope") or "")
-        ),
+        "signature_bound": _bound(signature, name, str(entry.get("scope") or "")),
+        "docstring": docstring[:_DESCRIBE_DOCSTRING_MAX],
+        "project_added": bool(entry.get("project_added")),
     }
-    if entry.get("project_added"):
-        # Override APIs are black-box interfaces: never leak the internal
-        # implementation path; module/name/signature stay so the caller can
-        # import and call the API.
-        result.pop("source_path", None)
-    return result
+
+
+#: Detail docstrings are trimmed to a review-friendly size (full text stays
+#: available in the notebook/source).
+_DESCRIBE_DOCSTRING_MAX = 3000

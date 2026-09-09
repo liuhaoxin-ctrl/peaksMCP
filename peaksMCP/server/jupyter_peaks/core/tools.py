@@ -375,7 +375,12 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
         index = _require_index(state)
         entry = index.get(canonical_id)
         if entry is None:
-            raise KeyError(f"unknown canonical API ID: {canonical_id}")
+            raise KeyError(
+                f"unknown canonical API ID: {canonical_id}. peaks_get_api "
+                "accepts ONLY the canonical id returned by peaks_search_api "
+                "(module:peaksMCP.overrides:<name> or a peaks module:name) - "
+                "run peaks_search_api first, then get the id from its results."
+            )
         _record_verified_api(state, entry)
         return describe_api(entry)
 

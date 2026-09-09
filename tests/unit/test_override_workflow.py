@@ -112,11 +112,14 @@ def test_black_box_docs_match_how_the_functions_are_used():
     }
     assert set(used) <= set(globals()), "used map must only name overrides imported above"
     for name, params in used.items():
-        entry = index.get(name)
-        assert entry is not None, f"{name} must be discoverable in the index"
-        assert entry["tier"] == "override"
-        assert entry["module"].startswith("peaksMCP.")
-        assert entry.get("aliases"), f"{name} must stay alias-searchable"
+        # Search must surface the facade as a compact row with its canonical id.
+        rows = index.search(name, limit=3)
+        assert rows and rows[0]["name"] == name, f"{name} must be discoverable"
+        assert rows[0]["tier"] == "override"
+        assert rows[0]["module"].startswith("peaksMCP.")
+        # get only takes the canonical id that search returned.
+        entry = index.get(rows[0]["id"])
+        assert entry is not None and entry["name"] == name
 
         detail = describe_api(entry)
         assert "source_path" not in detail, f"{name} must stay a black box"

@@ -728,6 +728,46 @@ def _filter_entries(
     return [entry for entry in entries if keep(entry)]
 
 
+def _compact_entry(item: dict[str, Any], score: int | None = None) -> dict[str, Any]:
+    """One search result row: canonical id, name, tier and a one-line summary.
+
+    Deliberately NOT the full index entry: no docstring body, aliases, legacy
+    ids, signature or source paths.  Model-facing search output stays small
+    and black-box; the detail belongs to peaks_get_api (canonical id only).
+    """
+    summary = str(item.get("summary") or "")
+    if not summary:
+        summary = (str(item.get("docstring") or "").splitlines() or [""])[0]
+    return {
+        "id": str(item.get("id") or ""),
+        "name": str(item.get("name") or ""),
+        "module": item.get("module"),
+        "scope": item.get("scope"),
+        "tier": item.get("tier")
+        or (TIER_OVERRIDE if item.get("project_added") else TIER_NATIVE),
+        "exposure": item.get("exposure"),
+        "summary": summary[:160],
+        "score": score,
+    }
+
+
+def _compact_rows(
+    rows: list[tuple[int, str, dict[str, Any]]], limit: int
+) -> list[dict[str, Any]]:
+    """Deduplicate ranked rows by (module, name), keep score, cap to limit."""
+    seen: set[tuple[str, str]] = set()
+    output: list[dict[str, Any]] = []
+    for score, _, item in rows:
+        key = (str(item.get("module", "")), str(item.get("name", "")))
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(_compact_entry(item, score))
+        if len(output) == limit:
+            break
+    return output
+
+
 def search_index(
     entries: list[dict[str, Any]],
     query: str,
@@ -769,8 +809,11 @@ def search_index(
     query = query.strip().lower()
     limit = max(1, min(int(limit), 20))
     if not query:
-        return _filter_entries(entries, scope, tier, include_advanced=include_advanced)[:limit]
-    return _trim_rows(
+        return [
+            _compact_entry(item)
+            for item in _filter_entries(entries, scope, tier, include_advanced=include_advanced)[:limit]
+        ]
+    return _compact_rows(
         _rank_entries(entries, query, scope, tier, include_advanced=include_advanced),
         limit,
     )
@@ -805,13 +848,16 @@ def search_index_tiered(
     query = query.strip().lower()
     limit = max(1, min(int(limit), 20))
     if not query:
-        return "all", _filter_entries(entries, scope, "all", include_advanced=include_advanced)[:limit]
+        return "all", [
+            _compact_entry(item)
+            for item in _filter_entries(entries, scope, "all", include_advanced=include_advanced)[:limit]
+        ]
     override_rows = _rank_entries(
         entries, query, scope, TIER_OVERRIDE, include_advanced=include_advanced
     )
     if override_rows and override_rows[0][0] >= OVERRIDE_MIN_SCORE:
-        return TIER_OVERRIDE, _trim_rows(override_rows, limit)
-    return TIER_MIXED, _trim_rows(
+        return TIER_OVERRIDE, _compact_rows(override_rows, limit)
+    return TIER_MIXED, _compact_rows(
         _rank_entries(entries, query, scope, "all", include_advanced=include_advanced),
         limit,
     )
@@ -866,30 +912,19 @@ class ApiIndex:
         )
 
     def get(self, canonical_id: str) -> dict[str, Any] | None:
-        """Return one canonical entry.
+        """Return one canonical entry by its EXACT canonical id.
 
-        Accepts the full canonical ID returned by :meth:`search` (e.g.
-        ``module:peaksMCP.overrides:show_mapping_slice``), a bare API name
-        (``show_mapping_slice``), a pre-canonical implementation id (e.g.
-        ``module:peaksMCP.workflows.slice_view:show_mapping_slice``, resolved
-        through ``legacy_ids``), or one of its search aliases (``mapping
-        slice``) — aliases resolve to the canonical entry so a typo'd
-        ``peaks_get_api`` still returns the real API instead of an unknown-ID
-        error.
+        Strict division of labour with :meth:`search`: search returns compact
+        rows (canonical id, name, tier, one-line summary); get accepts only
+        such a canonical id (e.g. ``module:peaksMCP.overrides:show_mapping_slice``)
+        and returns the internal entry for detail lookup.  Bare names, search
+        aliases and legacy implementation ids are refused — a caller that has
+        only a name or alias must search first.
         """
         wanted = canonical_id.strip()
         for entry in self.entries:
-            if (
-                entry["id"] == wanted
-                or entry["name"] == wanted
-                or wanted in entry.get("legacy_ids", [])
-            ):
+            if entry["id"] == wanted:
                 return entry
-        lowered = wanted.lower()
-        if lowered:
-            for entry in self.entries:
-                if lowered in {str(alias).lower() for alias in entry.get("aliases", [])}:
-                    return entry
         return None
 
     def is_stale(self) -> bool:

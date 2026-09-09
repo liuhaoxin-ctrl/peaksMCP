@@ -8,19 +8,21 @@ tools:
       high-level verbs) are searched first and returned alone whenever the
       query hits one of them by exact name or alias; only when no override
       fits does search fall back to the native peaks API index. Each response
-      reports searched_tier ("override" | "native"); prefer override matches,
-      then native peaks APIs. Returns canonical API ids, names, tier and
-      one-line summaries.
+      reports searched_namespace ("override" | "mixed"), match_mode
+      (exact_name | exact_alias | fuzzy | list) and a score per hit. Rows are
+      deliberately compact and black-box: canonical id, name, tier, exposure
+      and a one-line summary - never docstrings, aliases or source paths.
+      Call peaks_get_api with the returned canonical id for details.
   peaks_get_api:
     title: Get Peaks API
     description: >
-      Get the exact signature, parameters, return-value conventions and
-      docstring for one canonical API ID returned by peaks_search_api.
-      Override (peaksMCP) APIs are black-box interfaces: they return the
-      curated name, aliases, import module and usage documentation without
-      internal implementation paths; native peaks APIs include source-backed
-      documentation. Call this after searching and before writing code, to
-      confirm the correct usage.
+      Get details for ONE canonical API ID returned by peaks_search_api -
+      no other input form is accepted (bare names, aliases and legacy ids
+      are refused; search first). Returns the signature (and bound accessor
+      signature), tier/exposure and a bounded docstring. Both override and
+      native APIs are black-box here: no source paths, aliases or internal
+      fields are ever returned. Call this after searching and before writing
+      code, to confirm the correct usage.
   askuserquestion:
     title: Ask User Question
     description: >

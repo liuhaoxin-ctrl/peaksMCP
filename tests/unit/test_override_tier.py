@@ -83,10 +83,12 @@ def test_override_apis_are_black_box_without_source_path():
     assert detail["module"].startswith("peaksMCP.")
     assert detail["docstring"]
 
-    # Native peaks APIs keep their source-backed documentation.
+    # Native peaks APIs get the same clean whitelist: no source path either.
     native = next(item for item in index.entries if item["name"] == "k_convert")
     native_detail = describe_api(native)
-    assert native_detail["source_path"].endswith(".py")
+    assert "source_path" not in native_detail
+    assert native_detail["signature"]
+    assert native_detail["docstring"]
 
 
 def test_search_match_mode_classification():

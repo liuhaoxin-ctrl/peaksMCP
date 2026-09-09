@@ -37,13 +37,16 @@ def test_at_least_sixty_natural_language_aliases_rank_top_three():
     assert sum(reciprocal_ranks) / len(reciprocal_ranks) >= 0.9
 
 
-def test_get_api_returns_source_signature_and_docstring():
+def test_get_api_detail_is_a_clean_whitelist():
+    """peaks_get_api detail must be the whitelist: signature and bounded
+    docstring only - never source paths, aliases or legacy ids."""
     index = build_index()
     entry = next(item for item in index.entries if item["name"] == "k_convert")
     detail = describe_api(entry)
     assert "k_convert(" in detail["signature"]
-    assert detail["source_path"].endswith(".py")
     assert detail["docstring"]
+    for hidden in ("source_path", "aliases", "legacy_ids", "docstring_note", "func_name"):
+        assert hidden not in detail, hidden
 
 
 def test_interactive_widget_apis_are_discoverable_by_intent():
@@ -63,11 +66,10 @@ def test_interactive_widget_apis_are_discoverable_by_intent():
         assert "iplot" not in names, (query, names)
 
 
-def test_get_resolves_canonical_id_name_alias_and_legacy_id():
-    """peaks_get_api must accept the canonical ID (module:peaksMCP.overrides:
-    <name>), the bare API name, a pre-canonical implementation id (legacy)
-    and any search alias (e.g. mapping slice) — all resolve to the same
-    canonical entry."""
+def test_get_is_canonical_only_and_search_is_compact():
+    """Division of labour: search returns compact rows (id/name/tier/summary/
+    score, never full entries); get accepts ONLY the canonical id - bare
+    names, aliases and legacy ids are refused and must go through search."""
     index = build_index()
     entry = next(
         item
@@ -75,24 +77,19 @@ def test_get_resolves_canonical_id_name_alias_and_legacy_id():
         if item["id"] == "module:peaksMCP.overrides:show_mapping_slice"
     )
     assert entry["name"] == "show_mapping_slice"
-    assert entry["module"] == "peaksMCP.overrides"
-    assert "mapping slice" in entry.get("aliases", [])
-    assert index.get(entry["id"]) is not None
-    resolved_name = index.get("show_mapping_slice")
-    assert resolved_name is not None and resolved_name["id"] == entry["id"]
-    resolved_alias = index.get("mapping slice")
-    assert resolved_alias is not None and resolved_alias["id"] == entry["id"]
-    # Pre-canonical implementation id resolves through legacy_ids but is never
-    # a searchable entry itself.
-    legacy = index.get("module:peaksMCP.workflows.slice_view:show_mapping_slice")
-    assert legacy is not None and legacy["id"] == entry["id"]
-    assert "module:peaksMCP.workflows.slice_view:show_mapping_slice" in entry["legacy_ids"]
-    assert not any(
-        item["id"] == "module:peaksMCP.workflows.slice_view:show_mapping_slice"
-        for item in index.entries
-    )
-    # A bare implementation-module call name resolves too.
-    assert index.get("show_mapping_slice")["module"] == "peaksMCP.overrides"
+    # get: exact canonical id only.
+    assert index.get(entry["id"]) is entry
+    assert index.get("show_mapping_slice") is None
+    assert index.get("mapping slice") is None
+    assert index.get("module:peaksMCP.workflows.slice_view:show_mapping_slice") is None
+    # search rows are compact: the alias query surfaces the canonical id.
+    rows = index.search("mapping slice", limit=3)
+    assert rows and rows[0]["id"] == entry["id"]
+    assert rows[0]["name"] == "show_mapping_slice"
+    assert rows[0]["tier"] == "override"
+    assert rows[0]["score"] == 900  # exact alias hit
+    for hidden in ("docstring", "aliases", "source_path", "signature", "legacy_ids"):
+        assert hidden not in rows[0], hidden
 
 
 def test_bound_drops_receiver_by_name_not_scope():
