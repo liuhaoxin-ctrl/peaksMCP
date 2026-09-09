@@ -158,9 +158,9 @@ cases:
   - query: "find the fermi level"
     expect: estimate_EF
   - query: "用金数据拟合费米边"
-    expect: fit_gold_reference
+    expect: fit_gold
   - query: "fit the fermi edge from a gold reference"
-    expect: fit_gold_reference
+    expect: fit_gold
   # --- plotting -----------------------------------------------------------
   - query: "批量画一组谱图"
     expect: plot_grid

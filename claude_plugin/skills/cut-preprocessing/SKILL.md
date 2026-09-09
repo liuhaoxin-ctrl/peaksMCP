@@ -14,18 +14,22 @@ description: Use `peaksMCP` to call the `peaks` package and perform preprocessin
 ## Workflow
 
 1. Use the fitted gold curve to level the Fermi edge of the $E_k\text{--}k$ data and set the Fermi energy to zero $\rightarrow$ set the high-symmetry point in angle space to zero $\rightarrow$ convert to k-space.
-2. Compose the curated peaksMCP facades (`peaksMCP.overrides`) found via
-   `peaks_search_api` / `peaks_get_api`; fall back to native `peaks` only when no
-   facade fits. Never reimplement an existing function.
+2. Compose the adapter surface (`peaksMCP.overrides`: `load_data`,
+   `inspect_experiment`, `convert_experiment`, `save_result`) with native
+   `peaks` steps obtained via `peaks_search_api` / `peaks_get_api`
+   (`da.fit_gold`, `da.metadata.set_EF_correction`, coordinate shifts,
+   `da.k_convert`). Never reimplement an existing function.
 3. When performing 4th-order polynomial fitting (`poly4`) on gold data, outliers must be excluded prior to fitting (`outlier_exclusion=True`).
-4. **One gold fit, then per-scan conversion**: run `fit_gold_reference` once on
-   the Au reference; then preprocess each scan with
-   `preprocess_cut(cut, calibration=cal, theta_par_offset_deg=...)` — the facade
-   applies the EF correction and the theta offset and converts to k-space in one
-   call. There is no shortcut that skips the calibration: never re-fit per cut.
-5. **3-D data must go through `preprocess_mapping`** with the full cube and its
-   normal-emission reference angles — never extract a centre slice and report it
-   as a complete conversion (a sliced result is only a partial preview).
+4. **One gold fit, then per-scan conversion**: run the native
+   `da.fit_gold` once on the Au reference, apply its `EF_correction` with
+   `da.metadata.set_EF_correction(...)`, shift the high-symmetry angle
+   (`da.assign_coords(theta_par=da.theta_par - theta_par_offset_deg)`) and call
+   `da.k_convert()` per scan — compose these in the notebook; there is no
+   shortcut that skips the calibration: never re-fit per cut.
+5. **3-D cubes**: convert the FULL cube (never extract a centre slice and
+   report it as a complete conversion — a sliced result is only a partial
+   preview); set the normal-emission reference angles on the metadata before
+   `k_convert` when the geometry requires it.
 
 ## Required Parameters
 
@@ -38,10 +42,10 @@ description: Use `peaksMCP` to call the `peaks` package and perform preprocessin
 Use `plot` to convey **key** information to the user.
 Save processed cuts with `da.save(path)` (peaks' own writer sanitises metadata
 attrs; raw `da.to_netcdf` can fail on unsanitized attrs). For results the user
-explicitly asks to keep, use the `save_result` facade: it stages the result,
-shows the user a consent card with the real content summary (path, size,
-sha256, structure) and writes the file only when the user approves on that
-card. There is no code-level approval flag.
+explicitly asks to keep, use `save_result` from `peaksMCP.overrides`: it stages
+the result, shows the user a consent card with the real content summary (path,
+size, sha256, structure) and writes the file only when the user approves on
+that card. There is no code-level approval flag.
 
 **Use the peaksMCP plotting façades (`plot_batch`, `plot_validation_pair`, `show_mapping_slice`) for figures; when raw matplotlib is unavoidable, follow the figure conventions in the server instructions (constrained_layout, DejaVu Sans with mathtext symbols, English labels, 150/300 dpi).**
 

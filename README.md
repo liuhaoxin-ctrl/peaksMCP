@@ -141,13 +141,14 @@ peaksMCP profiles path [NAME]                           # print the profile file
 `peaksMCP dash` runs the dashboard host as a detached background process, so a
 terminal `Ctrl+C` does **not** stop it — use `peaksMCP stop`.
 
-> **Data operations are deliberately not CLI commands.** PXT conversion,
-> datasheet translation and loading a scan run as **notebook cells** through the
-> MCP tools, composing the curated facades of `peaksMCP.overrides`
-> (`load_data` / `convert_experiment` / `translate_datasheet` /
-> `fit_gold_reference` / `preprocess_cut` / `preprocess_mapping` /
-> `preprocess_batch` / `save_result`), so the code scanner, the API check and the
-> consent gate always apply. The CLI and the operator console only control
-> processes (Jupyter, kernel, MCP) and snapshots.
+> **Data operations are deliberately not CLI commands.** Data access,
+> conversion, translation and saving run as **notebook cells** through the MCP
+> tools, composing the adapter surface of `peaksMCP.overrides` (`load_data` /
+> `inspect_experiment` / `convert_experiment` / `save_result` plus plotting
+> conventions) with native peaks steps obtained via `peaks_search_api` /
+> `peaks_get_api`, so the code scanner, the API check and the consent gate
+> always apply; every persisted file goes through the staged-consent card of
+> `save_result` / `convert_experiment`. The CLI and the operator console only
+> control processes (Jupyter, kernel, MCP) and snapshots.
 
 See `docs/ARCHITECTURE.md` for the compact architecture map.

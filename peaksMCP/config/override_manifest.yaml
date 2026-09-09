@@ -308,7 +308,7 @@ apis:
   fit_gold_reference:
     module: peaksMCP.overrides.calibration
     project: true
-    exposure: facade
+    exposure: internal
     category: calibration
     kind: calibrator
     aliases:
@@ -329,7 +329,7 @@ apis:
   preprocess_cut:
     module: peaksMCP.overrides.preprocess
     project: true
-    exposure: facade
+    exposure: internal
     category: preprocessing
     kind: transformer
     aliases:
@@ -350,7 +350,7 @@ apis:
   preprocess_mapping:
     module: peaksMCP.overrides.preprocess
     project: true
-    exposure: facade
+    exposure: internal
     category: preprocessing
     kind: transformer
     aliases:
@@ -370,7 +370,7 @@ apis:
   preprocess_batch:
     module: peaksMCP.overrides.batch_preprocess
     project: true
-    exposure: facade
+    exposure: internal
     side_effects: persists files only after human approval on the consent card (staged gateway)
     category: batch
     kind: batch
@@ -395,7 +395,7 @@ apis:
 project:
   - name: load_data
     export: peaksMCP.overrides.load_data
-    exposure: facade
+    exposure: internal
     category: ingestion
     kind: loader
     summary: Load any data for the agent - one file, or an index of a folder/list.
@@ -408,7 +408,7 @@ project:
   - name: save_result
     export: peaksMCP.overrides.save_result
     side_effects: persists files only after human approval on the consent card (staged gateway)
-    exposure: facade
+    exposure: internal
     category: persistence
     kind: serializer
     summary: Stage one result and persist it only after human approval on a content card.
@@ -421,7 +421,7 @@ project:
   - name: convert_experiment
     export: peaksMCP.overrides.convert_experiment
     side_effects: persists files only after human approval on the consent card (staged gateway)
-    exposure: facade
+    exposure: internal
     category: ingestion
     kind: converter
     summary: Convert one PXT file or a whole folder to NetCDF with bounded CPU parallelism.
@@ -433,7 +433,7 @@ project:
     stability: new
   - name: inspect_experiment
     export: peaksMCP.overrides.inspect_experiment
-    exposure: facade
+    exposure: internal
     category: metadata
     kind: inspector
     summary: Structured per-record summary of an experiment metadata document with conflicts.
@@ -442,53 +442,4 @@ project:
     preconditions: "metadata readable; scans keyed by record index"
     errors: "unreadable metadata"
     example: 'summary = inspect_experiment("experiment_metadata.json", scans=loaded)'
-    stability: new
-  - name: fit_gold_reference
-    export: peaksMCP.overrides.fit_gold_reference
-    exposure: facade
-    category: calibration
-    kind: calibrator
-    summary: Fit the Fermi edge of a finite gold scan once and return a JSON-safe calibration.
-    inputs: "gold: finite 1D/2D DataArray with eV; correction: str='poly4'; outlier_exclusion: bool=True; outlier_sigma: float=3.0; plot: bool=True"
-    returns: "GoldCalibration (correction, quality, resolution, rendered)"
-    preconditions: "finite values; eV dimension; ndim <= 2"
-    errors: "non-finite/empty data; unusable fit (no EF_correction)"
-    example: 'cal = fit_gold_reference(gold); preprocess_cut(cut, calibration=cal, theta_par_offset_deg=1.5)'
-    stability: new
-  - name: preprocess_cut
-    export: peaksMCP.overrides.preprocess_cut
-    exposure: facade
-    category: preprocessing
-    kind: transformer
-    summary: EF-flatten one 2-D (eV, theta_par) cut into binding-energy (eV, kx).
-    inputs: "cut: 2D (eV, theta_par); calibration: GoldCalibration/float/dict; theta_par_offset_deg: float; eV/kx: slice=None; quiet: bool=True"
-    returns: "ProcessingResult (data in notebook + JSON-safe ProcessingReport)"
-    preconditions: "2D with eV and theta_par; finite; calibration and offset given"
-    errors: "1D/3D input; missing eV/theta_par; non-finite; missing calibration/offset"
-    example: 'out = preprocess_cut(cut, calibration=cal, theta_par_offset_deg=1.5)'
-    stability: new
-  - name: preprocess_mapping
-    export: peaksMCP.overrides.preprocess_mapping
-    exposure: facade
-    category: preprocessing
-    kind: transformer
-    summary: EF-flatten a full 3-D mapping cube into eV/kx/ky (never a centre slice).
-    inputs: "mapping: 3D cube; calibration; normal_emission: dict; eV/kx/ky: slice=None; quiet: bool=True"
-    returns: "ProcessingResult (full converted cube + JSON-safe report)"
-    preconditions: "3D with eV; finite; calibration and normal_emission given"
-    errors: "non-3D input; missing eV; non-finite; missing calibration/normal_emission"
-    example: 'out = preprocess_mapping(cube, calibration=cal, normal_emission={"theta_par": 0.0, "polar": 0.0})'
-    stability: new
-  - name: preprocess_batch
-    export: peaksMCP.overrides.preprocess_batch
-    side_effects: persists files only after human approval on the consent card (staged gateway)
-    exposure: facade
-    category: batch
-    kind: batch
-    summary: Path-driven per-scan preprocessing with CPU budget and isolated failures.
-    inputs: "items: list[BatchPreprocessItem]; calibration; output_dir; cpu_limit_percent: float=60; force: bool=False"
-    returns: "BatchProcessingReport (per-item statuses + cpu stats)"
-    preconditions: "non-empty items; sources exist; calibration given"
-    errors: "empty items; missing source; invalid item kind"
-    example: 'report = preprocess_batch(items, calibration=cal, output_dir="proc/")'
     stability: new

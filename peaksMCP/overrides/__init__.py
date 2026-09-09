@@ -1,20 +1,29 @@
-"""Curated project surface (facades) on top of peaks.
+"""Curated adapter surface on top of peaks.
 
-The model composes these functions instead of re-implementing analysis; native
-peaks functions stay reachable through search/get.  Every facade:
+The model verb surface holds ONLY compatibility adapters - things that add a
+real boundary peaks cannot cross itself (data access, format conversion,
+metadata, uniform persistence, deterministic plotting conventions).  It does
+NOT pre-compose analysis workflows: fitting, coordinate correction, k-space
+conversion and batch preprocessing are native peaks steps the model obtains
+through search/get and composes in the notebook, then persists through
+``save_result`` (staged + human-approved).
 
-- returns a small JSON-safe dict or a DataArray/Dataset (never prints noise);
-- renders at most one canonical summary line (Show convention);
-- never writes to disk by itself — persistence goes through ``save_result``,
-  which stages the result and publishes it only after a human approves the
-  real-content card (no code-level approve exists).
+Adapters:
 
-Single canonical import surface: every project API (the override tier) is
-importable from ``peaksMCP.overrides``.  The implementation modules below
-(``peaksMCP.plotting.*``, ``peaksMCP.pxt_utils.*``,
-``peaksMCP.workflows.*``) stay importable for Python compatibility, but
-discovery projects their index entries onto ``peaksMCP.overrides`` and never
-shows the implementation module to the model.
+- data access: ``load_data`` (file / experiment index, PXT header dims) and
+  ``inspect_experiment`` (datasheet -> structured experiment summary);
+- conversion: ``convert_experiment`` (raw PXT -> NetCDF adapter; pure
+  computation, outputs are staged and published only after the consent card);
+- persistence: ``save_result`` (staged bytes + approval-gated gateway);
+- plotting conventions: ``plot_batch`` / ``plot_validation_pair`` /
+  ``show_mapping_slice``;
+- metadata helpers: ``read_meta`` / ``classify_data_format`` /
+  ``is_gold_format`` / ``theta_offset_deg`` / ``validate_arpes_metadata``.
+
+Earlier task facades (fit_gold_reference, preprocess_cut, preprocess_mapping,
+preprocess_batch) were demoted out of the model surface: they fixed a
+workflow that the model should compose from native peaks APIs; their code
+remains importable in the internal modules for in-process/tests only.
 """
 
 from __future__ import annotations
@@ -30,50 +39,31 @@ from peaksMCP.pxt_utils.metadata import (
 from peaksMCP.workflows.publication import validate_arpes_metadata
 from peaksMCP.workflows.slice_view import show_mapping_slice
 
-from .batch_preprocess import (
-    BatchPreprocessItem,
-    BatchProcessingReport,
-    preprocess_batch,
-)
-from .calibration import GoldCalibration, fit_gold_reference
 from .conversion import convert_experiment
 from .inspection import ExperimentSummary, ScanKind, ScanSummary, inspect_experiment
 from .load import LoadedScans, ScanEntry, load_data
 from .models import Report, report_dict, report_summary
-from .preprocess import ProcessingReport, ProcessingResult, preprocess_cut, preprocess_mapping
 from .save import save_result
 
 __all__ = [
-    # loading and persistence facades
+    # loading and persistence adapters
     "load_data",
     "LoadedScans",
     "ScanEntry",
     "save_result",
-    # task-level facades
+    # conversion + experiment adapters
     "convert_experiment",
     "inspect_experiment",
-    "fit_gold_reference",
-    "preprocess_cut",
-    "preprocess_mapping",
-    "preprocess_batch",
-    # facade result types
-    "GoldCalibration",
     "ExperimentSummary",
     "ScanSummary",
     "ScanKind",
-    "ProcessingResult",
-    "ProcessingReport",
-    "BatchPreprocessItem",
-    "BatchProcessingReport",
-    # conversion and metadata (translation/legacy writers are NOT model
-    # verbs: use convert_experiment / save_result; the raw converter and
-    # datasheet translator stay importable for legacy/in-process use only)
+    # metadata helpers
     "read_meta",
     "classify_data_format",
     "is_gold_format",
     "theta_offset_deg",
     "validate_arpes_metadata",
-    # plotting and workflows
+    # plotting conventions
     "plot_batch",
     "plot_validation_pair",
     "show_mapping_slice",

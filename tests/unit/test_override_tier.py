@@ -145,7 +145,10 @@ def test_facade_apis_stay_fully_searchable():
     facade_names = {
         item["name"] for item in index.entries if item.get("exposure") == "facade"
     }
-    assert {"load_data", "preprocess_cut", "plot_batch"} <= facade_names
+    assert {"load_data", "convert_experiment", "inspect_experiment", "plot_batch"} <= facade_names
+    # Task facades were demoted to internal: absent from the model surface.
+    assert "preprocess_cut" not in facade_names
+    assert "fit_gold_reference" not in facade_names
     # A generic intent query still lands on the facade (not the advanced twin).
     names = _names(index.search("convert a file to netcdf", limit=5))
     assert "convert_experiment" in names
