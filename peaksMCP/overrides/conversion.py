@@ -1,16 +1,83 @@
-"""Unified conversion facade: one entry for a single file or a folder.
+"""Unified conversion facade: pure conversion + consented publication.
 
-``convert_experiment`` routes every conversion through the same CPU-budgeted,
-failure-isolated path and returns a :class:`ConversionReport` (JSON-safe via
-``model_dump(mode="json")``) with per-item status, ``output_exists``, errors
-and aggregate CPU statistics.  It is the model-facing conversion verb; the
-lower-level ``convert_pxt`` / ``convert_path`` stay importable (advanced
-tier) but carry no separate search aliases.
+``convert_experiment`` never writes by itself: it computes the converted
+arrays (reading raw PXT, embedding the datasheet/metadata record), stages
+every output as a one-time batch ticket (per file: path, size, sha256,
+structure; plus the translated ``experiment_metadata.json`` when a datasheet
+was found), shows ONE consent card listing the real content of every item,
+and only a human approval publishes the staged bytes atomically.
+
+The model verb surface has no write shortcut: the lower-level converter
+functions are internal (not exported from ``peaksMCP.overrides``, marked
+internal in the manifest) and exist only for legacy/in-process use.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
+
+from . import save as save_module
+from .models import Report  # noqa: F401  (kept for signature clarity)
+
+
+def _load_document(metadata: Any) -> Any | None:
+    """Read an explicit experiment-metadata JSON path into its model."""
+    if metadata is None:
+        return None
+    from peaksMCP.pxt_utils.models import ExperimentMetadata
+
+    target = Path(metadata).expanduser()
+    if not target.is_file():
+        raise ValueError(
+            f"convert_experiment: metadata file not found: {metadata}."
+        )
+    return ExperimentMetadata.model_validate_json(target.read_text(encoding="utf-8"))
+
+
+def _auto_document(source: Path) -> Any | None:
+    """Translate the sibling datasheet once (pure; no file is written)."""
+    from peaksMCP.pxt_utils.converter import _find_datasheet
+    from peaksMCP.pxt_utils.csv_translator import translate_datasheet
+
+    datasheet = _find_datasheet(source)
+    if datasheet is None:
+        return None
+    try:
+        return translate_datasheet(datasheet)
+    except Exception:
+        return None
+
+
+def _plan_targets(
+    source: Path,
+    output_dir: Path | None,
+) -> tuple[list[Path], Path | None]:
+    """Resolve the source files and their output directory.
+
+    A file input converts just it; a directory input converts every matching
+    ``.pxt`` inside.  Default outputs follow the converter conventions:
+    single file -> ``<stem>.nc`` next to the source (or in ``output_dir``);
+    folder -> sibling ``<folder>_netcdf/`` (or ``output_dir``).
+    """
+    files: list[Path] = []
+    destination: Path | None
+    if source.is_file():
+        files = [source]
+        if output_dir is None:
+            destination = source.parent
+        else:
+            destination = output_dir
+    else:
+        files = sorted(
+            item
+            for item in source.iterdir()
+            if item.is_file()
+            and item.suffix.lower() == ".pxt"
+            and not item.name.startswith(".")
+        )
+        destination = output_dir or source.parent / f"{source.name}_netcdf"
+    return files, destination
 
 
 def convert_experiment(
@@ -22,41 +89,50 @@ def convert_experiment(
     force: bool = False,
     cpu_limit_percent: float = 60.0,
 ):
-    """Convert one PXT file or a whole folder to NetCDF.
+    """Convert one PXT file or a whole folder to NetCDF under human consent.
 
-    Unified entry: a file input converts that one scan (idempotently), a
-    directory input converts every matching PXT file with bounded CPU
-    parallelism.  Outputs are written atomically next to the source (or into
-    ``output_dir``) and the source is never modified.
+    Pure computation first: each scan is read and prepared (metadata record
+    embedded), then every output - including the translated
+    ``experiment_metadata.json`` when a datasheet was found - is staged as a
+    one-time ticket and ONE consent card lists the real content of every
+    item.  Nothing is written unless the user approves the card; existing
+    targets are skipped idempotently (unless ``force=True``).
 
     Parameters
     ----------
     source : str or Path
         One ``.pxt`` file, or a directory containing PXT files.
     output_dir : str or Path, optional
-        Destination directory (single-file and batch inputs share the rule).
+        Destination directory for the NetCDF outputs (and the metadata JSON).
     metadata : str or Path, optional
-        Translated ``experiment_metadata.json`` document (the converter
-        embeds each index's record into the matching NetCDF).
+        Explicit ``experiment_metadata.json`` document (otherwise a sibling
+        ``datasheet.csv`` is translated automatically).
     match : str, default ""
         Filename substring used to filter a directory batch.
     force : bool, default False
-        Replace an existing NetCDF output only when explicitly enabled.
+        Permit replacing existing outputs.
     cpu_limit_percent : float, default 60
-        System CPU threshold above which no new work is submitted.
+        Accepted for interface stability (conversion staging is sequential;
+        the CPU budget governs downstream batch processing).
 
     Returns
     -------
     peaksMCP.pxt_utils.models.ConversionReport
-        Per-item outcomes (status, ``output_exists``, errors) plus aggregate
-        CPU and duration statistics.  JSON-safe: ``report.model_dump(mode="json")``.
+        Per-item outcomes.  ``status`` is ``converted`` only after the human
+        approved and the gateway published the staged bytes; ``skipped`` for
+        idempotent skips; ``awaiting_consent``/``denied`` when no approval
+        happened.  JSON-safe via ``model_dump(mode="json")``.
 
     Raises
     ------
     ValueError
-        When the source does not exist or the metadata document is missing.
+        When the source does not exist.
     """
-    from peaksMCP.pxt_utils.converter import convert_path
+    from peaksMCP.pxt_utils.converter import (
+        _converted_array,
+        _index_from_path,
+    )
+    from peaksMCP.pxt_utils.models import ConversionItem, ConversionReport
 
     source_path = Path(source).expanduser()
     if not source_path.exists():
@@ -64,23 +140,103 @@ def convert_experiment(
             f"convert_experiment: source not found: {source_path}. "
             "Check the path before retrying."
         )
-    if metadata is not None and not Path(metadata).expanduser().exists():
-        raise ValueError(
-            f"convert_experiment: metadata file not found: {metadata}."
+    explicit = _load_document(metadata)
+    document = explicit if explicit is not None else _auto_document(source_path)
+    files, destination = _plan_targets(source_path, Path(output_dir).expanduser() if output_dir else None)
+    if match:
+        files = [file for file in files if match in file.name]
+    if destination is not None:
+        destination.mkdir(parents=True, exist_ok=True)
+
+    def target_for(file: Path) -> Path:
+        if source_path.is_file():
+            if output_dir is None:
+                return file.with_suffix(".nc")
+            return destination / f"{file.stem}.nc"
+        return destination / f"{file.stem}.nc"
+
+    items: list[ConversionItem] = []
+    staged: list[tuple[ConversionItem, Path]] = []
+    requests: list[tuple[Any, Path, bool]] = []
+    planned = 0
+    for file in files:
+        target = target_for(file)
+        if target.exists() and not force:
+            items.append(
+                ConversionItem(
+                    input=str(file), output=str(target), status="skipped",
+                    output_exists=True, warnings=["output exists"],
+                )
+            )
+            continue
+        planned += 1
+        try:
+            index = _index_from_path(file)
+            data, warnings = _converted_array(file, index, document)
+        except Exception as exc:
+            items.append(
+                ConversionItem(
+                    input=str(file), output=str(target), status="failed",
+                    error_type=type(exc).__name__, error=str(exc),
+                )
+            )
+            continue
+        item = ConversionItem(
+            input=str(file), output=str(target), index=index,
+            status="awaiting_consent", warnings=warnings,
         )
-    report = convert_path(
-        source_path,
-        output_dir,
-        metadata_path=metadata,
-        substring=match,
-        force=force,
-        cpu_limit_percent=cpu_limit_percent,
-    )
-    converted = sum(item.status == "converted" for item in report.items)
-    skipped = sum(item.status == "skipped" for item in report.items)
-    failed = sum(item.status == "failed" for item in report.items)
+        staged.append((item, target))
+        requests.append((data, target, force))
+        items.append(item)
+    # The translated metadata JSON joins the SAME consented batch (no report
+    # row of its own - it is conversion plumbing).
+    metadata_target: Path | None = None
+    if document is not None and planned and destination is not None:
+        metadata_target = destination / "experiment_metadata.json"
+        if not metadata_target.exists() or force:
+            requests.append(
+                (document.model_dump(mode="python"), metadata_target, force)
+            )
+
+    report = ConversionReport(items=items, cpu={}, warnings=[])
+    if not staged:
+        print(
+            f"convert_experiment: {len(items)} input(s) - "
+            f"{sum(i.status == 'skipped' for i in items)} skipped, "
+            f"{sum(i.status == 'failed' for i in items)} failed"
+        )
+        return report
+
+    summary = f"convert_experiment: publish {len(requests)} file(s) to {destination}"
+    outcome = save_module._run_staged("convert_experiment", requests, summary)
+    status = outcome["status"]
+    if status == "saved":
+        published = {p["path"] for p in outcome.get("published", [])}
+        skipped_now = {s["path"] for s in outcome.get("skipped", [])}
+        for item, target in staged:
+            key = str(target)
+            if key in skipped_now:
+                item.status = "skipped"
+                item.output_exists = True
+                item.warnings = item.warnings + ["output exists at publish"]
+            elif key in published:
+                item.status = "converted"
+                item.output_exists = True
+            else:
+                item.status = "converted"
+                item.output_exists = True
+    elif status == "pending_consent":
+        for item, _target in staged:
+            item.status = "awaiting_consent"
+            item.output_exists = False
+    else:
+        for item, _target in staged:
+            item.status = "denied"
+            item.output_exists = False
     print(
-        f"convert_experiment: {len(report.items)} input(s) - "
-        f"{converted} converted, {skipped} skipped, {failed} failed"
+        f"convert_experiment: {sum(i.status == 'converted' for i in items)} "
+        f"converted, {sum(i.status == 'skipped' for i in items)} skipped, "
+        f"{sum(i.status in {'awaiting_consent', 'denied'} for i in items)} "
+        f"not published ({status})"
     )
     return report

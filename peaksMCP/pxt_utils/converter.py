@@ -305,6 +305,38 @@ def _publish_output(temporary: Path, target: Path, *, force: bool) -> bool:
     return True
 
 
+def _converted_array(
+    source: Path,
+    index: int | None,
+    document: ExperimentMetadata | None,
+) -> tuple[xr.DataArray, list[str]]:
+    """Pure conversion: read one PXT and build the NetCDF-ready DataArray.
+
+    Loads the wave, embeds the matching metadata record (when a translated
+    document is supplied) and sanitises attrs for serialisation.  Nothing is
+    written here - publication is the caller's decision (consented gateway).
+    """
+    data = load_pxt(source)
+    warnings: list[str] = []
+    if document is not None:
+        record = document.records.get(str(index)) if index is not None else None
+        if record is None:
+            warnings.append(f"no metadata record for Index {index}")
+        else:
+            payload = record.model_dump(mode="json")
+            data.attrs["experiment_metadata_json"] = json.dumps(
+                payload, ensure_ascii=False
+            )
+            data.attrs["experiment_index"] = record.index
+            data.attrs["experiment_title"] = document.title
+            data.attrs["experiment_source_sha256"] = document.source_sha256
+    _attach_peaks_metadata(data, source)
+    data.attrs = _safe_attrs(dict(data.attrs))
+    for coordinate in data.coords.values():
+        coordinate.attrs = _safe_attrs(dict(coordinate.attrs))
+    return data, warnings
+
+
 def convert_pxt(
     input_path: str | Path,
     output_path: str | Path | None = None,
@@ -354,25 +386,9 @@ def convert_pxt(
                 status="skipped",
                 warnings=["output exists"],
             )
-        data = load_pxt(source)
-        document = _load_metadata(metadata_path)
-        warnings: list[str] = []
-        if document is not None:
-            record = document.records.get(str(index)) if index is not None else None
-            if record is None:
-                warnings.append(f"no metadata record for Index {index}")
-            else:
-                payload = record.model_dump(mode="json")
-                data.attrs["experiment_metadata_json"] = json.dumps(
-                    payload, ensure_ascii=False
-                )
-                data.attrs["experiment_index"] = record.index
-                data.attrs["experiment_title"] = document.title
-                data.attrs["experiment_source_sha256"] = document.source_sha256
-        _attach_peaks_metadata(data, source)
-        data.attrs = _safe_attrs(dict(data.attrs))
-        for coordinate in data.coords.values():
-            coordinate.attrs = _safe_attrs(dict(coordinate.attrs))
+        data, warnings = _converted_array(
+            source, index, _load_metadata(metadata_path)
+        )
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = _temporary_output(target)
         data.to_netcdf(temporary, engine="h5netcdf")

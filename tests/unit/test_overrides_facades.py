@@ -22,44 +22,118 @@ def test_convert_experiment_validates_source_and_metadata(tmp_path):
         convert_experiment(source, metadata=tmp_path / "nope.json")
 
 
-def test_convert_experiment_forwards_args_and_prints_summary(monkeypatch, tmp_path, capsys):
-    from peaksMCP.pxt_utils.models import ConversionItem, ConversionReport
+def _fake_conversion(monkeypatch, array=None, doc=None):
+    """Patch pure conversion + install an approval channel; returns (channel
+    payload accessor, monkeypatch)."""
+    from peaksMCP.overrides import save as save_module
+
+    monkeypatch.setattr("peaksMCP.pxt_utils.converter._converted_array",
+                        lambda file, index, document: (array or _fa(), []))
+    seen: dict = {}
+    monkeypatch.setattr(save_module, "_APPROVAL_CHANNEL", lambda payload: seen.update(payload=payload) or True)
+    return seen
+
+
+def _fa():
+    return xr.DataArray(np.arange(12, dtype=float).reshape(3, 4),
+                        dims=("eV", "theta_par"))
+
+
+def test_convert_experiment_stages_and_publishes_after_approval(monkeypatch, tmp_path, capsys):
+    """Pure conversion + consent: nothing is written until the card is
+    approved; approved items are published atomically with output_exists."""
+    source = tmp_path / "BP_0001.pxt"
+    source.write_bytes(b"fake")
+    seen = _fake_conversion(monkeypatch)
+    result = convert_experiment(str(source))
+    payload = seen["payload"]
+    assert payload["operation"] == "convert_experiment"
+    item_payload = payload["items"][0]
+    assert item_payload["path"].endswith("BP_0001.nc")
+    out = capsys.readouterr().out
+    assert "converted" in out
+    target = tmp_path / "BP_0001.nc"
+    assert target.exists()
+    item = result.items[0]
+    assert item.status == "converted" and item.output_exists is True
+    assert item.output == str(target)
+
+
+def test_convert_experiment_denied_writes_nothing(monkeypatch, tmp_path, capsys):
+    from peaksMCP.overrides import save as save_module
 
     source = tmp_path / "BP_0001.pxt"
     source.write_bytes(b"fake")
-    metadata = tmp_path / "m.json"
-    metadata.write_text("{}", encoding="utf-8")
-    report = ConversionReport(
-        items=[
-            ConversionItem(input=str(source), output=str(source.with_suffix(".nc")),
-                           status="converted", output_exists=True),
-            ConversionItem(input=str(source), status="skipped", output_exists=True),
-            ConversionItem(input=str(source), status="failed", error="boom"),
-        ]
-    )
-    captured: dict = {}
-
-    def fake_convert_path(*args, **kwargs):
-        captured["args"] = args
-        captured["kwargs"] = kwargs
-        return report
-
-    monkeypatch.setattr("peaksMCP.pxt_utils.converter.convert_path", fake_convert_path)
-    result = convert_experiment(
-        source, output_dir=tmp_path / "out", metadata=metadata,
-        match="BP_", force=True, cpu_limit_percent=42,
-    )
-    assert result is report
-    assert captured["args"][0] == source
-    assert captured["kwargs"] == {
-        "metadata_path": metadata, "substring": "BP_",
-        "force": True, "cpu_limit_percent": 42,
-    }
+    monkeypatch.setattr("peaksMCP.pxt_utils.converter._converted_array",
+                        lambda file, index, document: (_fa(), []))
+    monkeypatch.setattr(save_module, "_APPROVAL_CHANNEL", lambda payload: False)
+    result = convert_experiment(str(source))
+    assert result.items[0].status == "denied"
+    assert not (tmp_path / "BP_0001.nc").exists()
+    assert not list(tmp_path.glob(".*.part-*"))
     out = capsys.readouterr().out
-    assert "1 converted, 1 skipped, 1 failed" in out
-    # ConversionReport stays JSON-safe.
-    payload = result.model_dump(mode="json")
-    assert payload["items"][0]["output_exists"] is True
+    assert "not published (denied)" in out
+
+
+def test_convert_experiment_without_channel_stays_awaiting(monkeypatch, tmp_path, capsys):
+    from peaksMCP.overrides import save as save_module
+
+    source = tmp_path / "BP_0001.pxt"
+    source.write_bytes(b"fake")
+    monkeypatch.setattr(save_module, "_APPROVAL_CHANNEL", None)
+    monkeypatch.setattr("peaksMCP.pxt_utils.converter._converted_array",
+                        lambda file, index, document: (_fa(), []))
+    result = convert_experiment(str(source))
+    assert result.items[0].status == "awaiting_consent"
+    assert not (tmp_path / "BP_0001.nc").exists()
+
+
+def test_convert_experiment_directory_skips_existing(monkeypatch, tmp_path, capsys):
+    from peaksMCP.overrides import save as save_module
+
+    data = tmp_path / "data"
+    data.mkdir()
+    for stem in ("BP_0001", "BP_0002"):
+        (data / f"{stem}.pxt").write_bytes(b"fake")
+    (data.parent / "data_netcdf").mkdir()
+    done = data.parent / "data_netcdf" / "BP_0001.nc"
+    done.write_bytes(b"existing")
+    monkeypatch.setattr("peaksMCP.pxt_utils.converter._converted_array",
+                        lambda file, index, document: (_fa(), []))
+    monkeypatch.setattr(save_module, "_APPROVAL_CHANNEL", lambda payload: True)
+    result = convert_experiment(str(data))
+    by_input = {item.input.split("/")[-1]: item for item in result.items}
+    assert by_input["BP_0001.pxt"].status == "skipped"  # idempotent skip
+    assert done.read_bytes() == b"existing"
+    assert by_input["BP_0002.pxt"].status == "converted"
+    assert (data.parent / "data_netcdf" / "BP_0002.nc").exists()
+
+
+def test_convert_experiment_directory_includes_metadata_json_item(monkeypatch, tmp_path):
+    """A sibling datasheet adds experiment_metadata.json to the same ticket."""
+    from peaksMCP.overrides import save as save_module
+
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "BP_0005.pxt").write_bytes(b"fake")
+    (data / "datasheet.csv").write_text(
+        "Experiment title,,,,\n"
+        "Index,Theta,Polarization,Temperture,Ei,Central Energy,Ef,slit,"
+        "Pass E.,Data format,Comment\n"
+        "5,430,S,9.4,2.2,,2.7,400,5,sweep,,\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("peaksMCP.pxt_utils.converter._converted_array",
+                        lambda file, index, document: (_fa(), []))
+    seen = {}
+    monkeypatch.setattr(save_module, "_APPROVAL_CHANNEL",
+                        lambda payload: seen.update(payload=payload) or True)
+    result = convert_experiment(str(data))
+    assert result.items[0].status == "converted"
+    kinds = {item["kind"] for item in seen["payload"]["items"]}
+    assert kinds == {"netcdf", "json"}
+    json_path = data.parent / "data_netcdf" / "experiment_metadata.json"
+    assert json_path.exists()
 
 
 # --------------------------------------------------------------------------- #
