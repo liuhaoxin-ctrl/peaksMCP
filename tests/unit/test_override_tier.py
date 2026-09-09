@@ -16,11 +16,19 @@ def test_every_entry_is_tagged_with_a_tier():
     # The tagged set must mirror the curated declaration exactly.  Compare
     # against the declaration source (manifest) instead of a hard-coded count,
     # so adding/removing a facade only touches the manifest, never this test.
+    from peaksMCP.discovery.index import load_api_overrides
+
     declared = load_project_added()
     override = [item for item in index.entries if item.get("project_added")]
-    # Project entries live under ONE canonical module (module:peaksMCP.overrides:<name>).
+    # Project entries live under ONE canonical module (module:peaksMCP.overrides:<name>);
+    # internal (write-verb) entries are not model-facing.
     assert {item["module"] for item in override} == {CANONICAL_MODULE}
-    assert len(override) == len(declared)
+    internal = {
+        name
+        for name, config in load_api_overrides().items()
+        if config.get("project") and config.get("exposure") == "internal"
+    }
+    assert len(override) == len(declared) - len(internal)
     for item in index.entries:
         expected = TIER_OVERRIDE if item.get("project_added") else TIER_NATIVE
         assert item["tier"] == expected, item["id"]
@@ -111,7 +119,8 @@ def test_advanced_apis_are_hidden_until_exact_or_opt_in():
     advanced_names = {
         item["name"] for item in index.entries if item.get("exposure") == "advanced"
     }
-    assert "convert_pxt" in advanced_names and "read_meta" in advanced_names
+    assert "convert_pxt" not in advanced_names  # demoted to internal
+    assert "read_meta" in advanced_names
     assert advanced_names <= {
         item["name"] for item in index.entries if item.get("project_added")
     }
@@ -120,19 +129,15 @@ def test_advanced_apis_are_hidden_until_exact_or_opt_in():
         names = _names(index.search(query, limit=10))
         assert not any(name in advanced_names for name in names), (query, names)
     # ... but include_advanced=True lets them participate.
-    names = _names(index.search("translate datasheet", limit=10, include_advanced=True))
-    assert "translate_datasheet" in names
+    names = _names(index.search("read experiment metadata", limit=10, include_advanced=True))
+    assert "read_meta" in names
     # Exact-name queries are always allowed (score 1000).
     tier, matches = index.search_tiered("read_meta", limit=3)
     assert tier == TIER_OVERRIDE and matches[0]["name"] == "read_meta"
     # Exact aliases resolve too (score 900).
-    tier, matches = index.search_tiered("convert pxt", limit=3)
-    assert tier == TIER_OVERRIDE and matches[0]["name"] == "convert_pxt"
-    # Broad user-intent aliases reach the facade, not the advanced twin.
-    names = _names(index.search("batch convert a folder", limit=10))
-    assert "convert_path" not in names
-    names = _names(index.search("batch convert a folder", limit=10, include_advanced=True))
-    assert "convert_path" in names
+    tier, matches = index.search_tiered("classify format", limit=3)
+    assert tier == TIER_OVERRIDE and matches[0]["name"] == "classify_data_format"
+
 
 
 def test_facade_apis_stay_fully_searchable():

@@ -604,7 +604,12 @@ def build_index() -> ApiIndex:
             legacy_ids.append(original_id)
         item["legacy_ids"] = legacy_ids
     fingerprint = source_fingerprint()
-    entries = [item for item in entries if item.get("module") not in _HIDDEN_MODULES]
+    entries = [
+        item
+        for item in entries
+        if item.get("module") not in _HIDDEN_MODULES
+        and item.get("exposure") != "internal"
+    ]
     return ApiIndex(entries=entries, peaks_version=getattr(peaks, "__version__", "?"), fingerprint=fingerprint)
 
 

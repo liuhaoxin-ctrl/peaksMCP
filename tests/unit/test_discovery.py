@@ -153,7 +153,7 @@ def test_project_added_declaration_matches_the_live_index():
     declared_names = {
         str(name)
         for name, config in load_api_overrides().items()
-        if config.get("project")
+        if config.get("project") and config.get("exposure") != "internal"
     }
     assert declared_names, "project_added must not be empty"
     canonical = {
@@ -194,7 +194,7 @@ def test_project_added_entries_are_flagged_in_the_index():
     declared_names = {
         str(name)
         for name, config in load_api_overrides().items()
-        if config.get("project")
+        if config.get("project") and config.get("exposure") != "internal"
     }
     assert flagged == declared_names
 
@@ -206,6 +206,8 @@ def test_alias_and_override_keys_resolve_to_real_apis():
     documented = load_api_overrides()
     assert documented, "config catalogs must define at least one API entry"
     for key, config in documented.items():
+        if config.get("exposure") == "internal":
+            continue  # write verbs stay hidden from the index
         assert key in known, f"entry targets a missing API: {key}"
         if config.get("project"):
             assert config.get("module"), f"project entry without a module: {key}"

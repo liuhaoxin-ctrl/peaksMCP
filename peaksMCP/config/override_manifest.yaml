@@ -98,7 +98,7 @@ apis:
   convert_pxt:
     module: peaksMCP.pxt_utils.converter
     project: true
-    exposure: advanced
+    exposure: internal
     aliases:
       - convert pxt
       - pxt to netcdf
@@ -116,7 +116,7 @@ apis:
   convert_path:
     module: peaksMCP.pxt_utils.converter
     project: true
-    exposure: advanced
+    exposure: internal
     aliases:
       - batch convert
       - convert directory
@@ -133,7 +133,7 @@ apis:
   translate_datasheet:
     module: peaksMCP.pxt_utils.csv_translator
     project: true
-    exposure: advanced
+    exposure: internal
     aliases:
       - datasheet translation
       - translate csv

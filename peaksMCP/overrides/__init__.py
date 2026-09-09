@@ -21,8 +21,6 @@ from __future__ import annotations
 
 from peaksMCP.plotting.layout import plot_batch
 from peaksMCP.plotting.validation import plot_validation_pair
-from peaksMCP.pxt_utils.converter import convert_path, convert_pxt
-from peaksMCP.pxt_utils.csv_translator import translate_datasheet
 from peaksMCP.pxt_utils.metadata import (
     classify_data_format,
     is_gold_format,
@@ -67,10 +65,9 @@ __all__ = [
     "ProcessingReport",
     "BatchPreprocessItem",
     "BatchProcessingReport",
-    # conversion and metadata
-    "convert_pxt",
-    "convert_path",
-    "translate_datasheet",
+    # conversion and metadata (translation/legacy writers are NOT model
+    # verbs: use convert_experiment / save_result; the raw converter and
+    # datasheet translator stay importable for legacy/in-process use only)
     "read_meta",
     "classify_data_format",
     "is_gold_format",
