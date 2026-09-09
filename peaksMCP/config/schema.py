@@ -5,10 +5,13 @@ Two documents are curated by hand and consumed by discovery:
 - ``native_catalog.yaml`` (version 1) — upstream peaks presentation only:
   every entry is fixed to the native tier and may carry just ``aliases``
   and ``docstring_note``.
-- ``override_manifest.yaml`` (version 3) — the project black-box exposure
-  record: ``apis`` entries may use the discovery keys (``module``,
-  ``project``, ``aliases``, ``docstring_note``) plus the v3 contract fields;
-  the ``project`` block holds strict facade contracts.
+- ``override_manifest.yaml`` (version 4, breaking) — the single manifest of
+  public project APIs.  One row per adapter: ``export`` (the only identity,
+  ``peaksMCP.overrides.<name>``) plus the full structured contract
+  (``summary``/``inputs``/``returns``/``preconditions``/``side_effects``/
+  ``errors``/``example``) and search aliases.  No module hints, docstring
+  notes or project seeds — signatures are verified at runtime by importing
+  the declared export.
 
 Validation failures are loud by design: a damaged default configuration must
 fail the index build instead of silently degrading to an empty catalog.
@@ -23,19 +26,14 @@ import yaml
 #: v1 native-catalog entry keys (retrieval/display only).
 _NATIVE_ENTRY_KEYS = frozenset({"aliases", "docstring_note"})
 
-#: v3 override-manifest apis-entry keys: discovery keys (today's wiring) plus
-#: the strict contract vocabulary that facades migrate onto.
+#: v4 project-manifest entry keys: the full structured contract per public
+#: adapter.  No module/docstring_note/project seeds: export is the only
+#: identity, signatures are verified at runtime by importing export.
 _OVERRIDE_ENTRY_KEYS = frozenset(
     {
-        "module",
-        "project",
+        "export",
+        "exposure",
         "aliases",
-        "docstring_note",
-        "export",
-        "implementation",
-        "exposure",
-        "category",
-        "kind",
         "summary",
         "inputs",
         "returns",
@@ -43,57 +41,10 @@ _OVERRIDE_ENTRY_KEYS = frozenset(
         "side_effects",
         "errors",
         "example",
-        "stability",
-        "legacy_ids",
-        "shadows_native",
-    }
-)
-
-#: v3 strict facade-contract keys (the ``project`` block).
-_PROJECT_CONTRACT_KEYS = frozenset(
-    {
-        "name",
-        "export",
-        "exposure",
-        "category",
-        "kind",
-        "summary",
-        "inputs",
-        "returns",
-        "preconditions",
-        "side_effects",
-        "errors",
-        "example",
-        "stability",
     }
 )
 
 _EXPOSURES = frozenset({"facade", "advanced", "internal"})
-_CATEGORIES = frozenset(
-    {
-        "ingestion",
-        "metadata",
-        "calibration",
-        "preprocessing",
-        "visualization",
-        "persistence",
-        "batch",
-    }
-)
-_KINDS = frozenset(
-    {
-        "loader",
-        "converter",
-        "inspector",
-        "classifier",
-        "calibrator",
-        "transformer",
-        "visualizer",
-        "serializer",
-        "batch",
-    }
-)
-_STABILITIES = frozenset({"new", "stable", "deprecated"})
 
 
 def _unique_key_loader() -> type[yaml.SafeLoader]:
@@ -165,10 +116,10 @@ def validate_native_catalog(document: dict[str, Any]) -> list[str]:
 
 
 def validate_override_manifest(document: dict[str, Any]) -> list[str]:
-    """Validate a v3 override manifest; returns a list of human-readable errors."""
+    """Validate a v4 override manifest; returns a list of human-readable errors."""
     errors: list[str] = []
-    if document.get("version") != 3:
-        errors.append("override_manifest: version must be 3")
+    if document.get("version") != 4:
+        errors.append("override_manifest: version must be 4")
     apis = document.get("apis")
     if not isinstance(apis, dict) or not apis:
         errors.append("override_manifest: apis must be a non-empty mapping")
@@ -180,62 +131,25 @@ def validate_override_manifest(document: dict[str, Any]) -> list[str]:
         unknown = set(entry) - _OVERRIDE_ENTRY_KEYS
         if unknown:
             errors.append(f"override_manifest: {name} has unknown key(s) {sorted(unknown)}")
-        if entry.get("project") and not (
-            entry.get("module") or (entry.get("export") and entry.get("implementation"))
-        ):
-            errors.append(f"override_manifest: project entry {name} needs module or export+implementation")
-        if "exposure" not in entry:
-            errors.append(
-                f"override_manifest: {name} must declare an exposure "
-                "(facade | advanced | internal)"
-            )
+        for required in ("export", "exposure", "summary"):
+            if not entry.get(required):
+                errors.append(f"override_manifest: {name} must declare {required!r}")
         _check_aliases(entry, f"override_manifest: {name}", errors)
-        for field, allowed, label in (
-            ("exposure", _EXPOSURES, "exposure"),
-            ("category", _CATEGORIES, "category"),
-            ("kind", _KINDS, "kind"),
-            ("stability", _STABILITIES, "stability"),
+        export = entry.get("export")
+        if export is not None and (
+            not isinstance(export, str)
+            or not export.startswith("peaksMCP.overrides.")
+            or export.rsplit(".", 1)[-1] != name
         ):
-            value = entry.get(field)
-            if value is not None and value not in allowed:
-                errors.append(
-                    f"override_manifest: {name} has invalid {label} {value!r} "
-                    f"(allowed: {sorted(allowed)})"
-                )
-    # The project block: strict facade contracts that must reference apis
-    # entries and use only contract fields.
-    project = document.get("project")
-    if project is not None:
-        if not isinstance(project, list):
-            errors.append("override_manifest: project must be a list")
-        else:
-            for index, contract in enumerate(project):
-                where = f"override_manifest: project[{index}]"
-                if not isinstance(contract, dict):
-                    errors.append(f"{where} must be a mapping")
-                    continue
-                unknown = set(contract) - _PROJECT_CONTRACT_KEYS
-                if unknown:
-                    errors.append(f"{where} has unknown key(s) {sorted(unknown)}")
-                name = contract.get("name")
-                if not isinstance(name, str) or name not in apis:
-                    errors.append(f"{where} references an apis entry that does not exist: {name!r}")
-                export = contract.get("export")
-                if not isinstance(export, str) or not export.startswith("peaksMCP.overrides."):
-                    errors.append(f"{where} export must be peaksMCP.overrides.<name>: {export!r}")
-                if name and export and export.rsplit(".", 1)[-1] != name:
-                    errors.append(f"{where} export must end with the entry name: {export!r}")
-                for field, allowed, label in (
-                    ("exposure", _EXPOSURES, "exposure"),
-                    ("category", _CATEGORIES, "category"),
-                    ("kind", _KINDS, "kind"),
-                    ("stability", _STABILITIES, "stability"),
-                ):
-                    value = contract.get(field)
-                    if value is not None and value not in allowed:
-                        errors.append(
-                            f"{where} has invalid {label} {value!r} (allowed: {sorted(allowed)})"
-                        )
+            errors.append(
+                f"override_manifest: {name} export must be peaksMCP.overrides.<name>: {export!r}"
+            )
+        exposure = entry.get("exposure")
+        if exposure is not None and exposure not in _EXPOSURES:
+            errors.append(
+                f"override_manifest: {name} has invalid exposure {exposure!r} "
+                f"(allowed: {sorted(_EXPOSURES)})"
+            )
     return errors
 
 

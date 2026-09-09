@@ -128,8 +128,57 @@ def _bound(signature: str | None, name: str, scope: str) -> str | None:
     return f"{name}({', '.join(parts)})"
 
 
+def _describe_contract_api(entry: dict[str, Any]) -> dict[str, Any]:
+    """Describe a manifest (v4) project API from its contract, not its source.
+
+    The export (``peaksMCP.overrides.<name>``) is imported and the signature
+    read via :func:`inspect.signature` — the declared surface is runtime-
+    verified against the real object on every detail call.  Failure to import
+    or resolve the export is reported as ``signature_resolved: false`` (the
+    get tool turns that into an error: manifest/implementation drift).
+
+    The returned dict is a whitelist: canonical identity, tier/module context,
+    the verified signature and the structured manifest contract.  Never source
+    paths, implementation modules, aliases or the raw index entry.
+    """
+    name = str(entry.get("name") or "")
+    export = str(entry.get("export") or f"{entry.get('module')}.{name}")
+    signature: str | None = None
+    resolved = False
+    module_name, _, attr = export.rpartition(".")
+    if attr and module_name.startswith(_ALLOWED_MODULE_PREFIXES):
+        try:
+            module = importlib.import_module(module_name)
+            obj = getattr(module, attr)
+            if callable(obj):
+                signature = f"{name}{inspect.signature(obj)}"
+                resolved = True
+        except Exception:
+            resolved = False
+    scope = str(entry.get("scope") or "module")
+    return {
+        "id": str(entry.get("id") or ""),
+        "name": name,
+        "module": entry.get("module"),
+        "scope": scope,
+        "tier": entry.get("tier"),
+        "exposure": entry.get("exposure"),
+        "kind": entry.get("kind"),
+        "export": export,
+        "signature": signature,
+        "signature_resolved": resolved,
+        "signature_bound": _bound(signature, name, scope) if signature else None,
+        "contract": dict(entry.get("contract") or {}),
+        "project_added": True,
+    }
+
+
 def describe_api(entry: dict[str, Any], package_dir: str | None = None) -> dict[str, Any]:
     """Return detailed, source-backed metadata for an indexed API.
+
+    Project (manifest v4) entries take the contract path: signature verified
+    by importing the declared ``export`` plus the structured contract.  Native
+    entries keep the source-first extraction with runtime fallback.
 
     Parameters
     ----------
@@ -141,7 +190,8 @@ def describe_api(entry: dict[str, Any], package_dir: str | None = None) -> dict[
     Returns
     -------
     dict
-        Merged signature, bound accessor signature, docstring and source location.
+        Whitelisted detail: identity, tier, signature, docstring/contract.
+        Never source paths or aliases.
 
     Examples
     --------
@@ -149,6 +199,8 @@ def describe_api(entry: dict[str, Any], package_dir: str | None = None) -> dict[
     >>> "signature_bound" in details
     True
     """
+    if entry.get("project_added") or entry.get("contract") is not None:
+        return _describe_contract_api(entry)
     if package_dir is None:
         import peaks
 

@@ -25,24 +25,15 @@ def _native(**overrides):
 
 def _override(**overrides):
     doc = {
-        "version": 3,
+        "version": 4,
         "apis": {
             "load_data": {
-                "module": "peaksMCP.overrides.load",
-                "project": True,
-                "aliases": ["load data", "加载"],
-            }
-        },
-        "project": [
-            {
-                "name": "load_data",
                 "export": "peaksMCP.overrides.load_data",
                 "exposure": "facade",
-                "category": "ingestion",
-                "kind": "loader",
-                "stability": "new",
+                "summary": "Load ARPES scans into one experiment object.",
+                "aliases": ["load scans", "加载"],
             }
-        ],
+        },
     }
     doc.update(overrides)
     return doc
@@ -69,32 +60,37 @@ def test_override_manifest_rejects_unknown_fields_and_bad_enums():
     doc["apis"]["load_data"]["exposure"] = "public"
     errors = validate_override_manifest(doc)
     assert any("invalid exposure 'public'" in error for error in errors)
+    # v4 rows are keyed by the API name, which must be the last export segment;
+    # a key/export mismatch is a schema violation, not a seed cross-check.
     doc = _override()
-    doc["apis"]["load_data"]["category"] = "quantum"
+    doc["apis"]["wrong_name"] = doc["apis"].pop("load_data")
     errors = validate_override_manifest(doc)
-    assert any("invalid category 'quantum'" in error for error in errors)
+    assert any("export must be peaksMCP.overrides.<name>" in error for error in errors)
 
 
 def test_override_manifest_project_seeds_are_cross_checked():
-    # A seed that references a ghost apis entry fails.
-    doc = _override(project=[{"name": "ghost_api", "export": "peaksMCP.overrides.ghost_api"}])
-    errors = validate_override_manifest(doc)
-    assert any("does not exist: 'ghost_api'" in error for error in errors)
+    # v4 has no separate ``project`` block: the apis entry itself is the seed.
     # An export that does not end with the entry name fails.
-    doc = _override(project=[{"name": "load_data", "export": "peaksMCP.overrides.save_result"}])
+    doc = _override()
+    doc["apis"]["load_data"]["export"] = "peaksMCP.overrides.save_result"
     errors = validate_override_manifest(doc)
-    assert any("export must end with the entry name" in error for error in errors)
+    assert any("export must be peaksMCP.overrides.<name>" in error for error in errors)
     # An export outside peaksMCP.overrides fails.
-    doc = _override(project=[{"name": "load_data", "export": "peaksMCP.plotting.plot_batch"}])
+    doc = _override()
+    doc["apis"]["load_data"]["export"] = "peaksMCP.plotting.plot_batch"
     errors = validate_override_manifest(doc)
     assert any("peaksMCP.overrides.<name>" in error for error in errors)
 
 
-def test_override_manifest_project_entry_requires_module_or_export():
+def test_override_manifest_project_entry_requires_export():
     doc = _override()
-    del doc["apis"]["load_data"]["module"]
+    del doc["apis"]["load_data"]["export"]
     errors = validate_override_manifest(doc)
-    assert any("needs module or export+implementation" in error for error in errors)
+    assert any("must declare 'export'" in error for error in errors)
+    doc = _override()
+    del doc["apis"]["load_data"]["summary"]
+    errors = validate_override_manifest(doc)
+    assert any("must declare 'summary'" in error for error in errors)
 
 
 def test_real_catalogs_pass_strict_validation():

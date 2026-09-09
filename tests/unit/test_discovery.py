@@ -153,7 +153,7 @@ def test_project_added_declaration_matches_the_live_index():
     declared_names = {
         str(name)
         for name, config in load_api_overrides().items()
-        if config.get("project") and config.get("exposure") != "internal"
+        if config.get("export") and config.get("exposure") != "internal"
     }
     assert declared_names, "project_added must not be empty"
     canonical = {
@@ -194,7 +194,7 @@ def test_project_added_entries_are_flagged_in_the_index():
     declared_names = {
         str(name)
         for name, config in load_api_overrides().items()
-        if config.get("project") and config.get("exposure") != "internal"
+        if config.get("export") and config.get("exposure") != "internal"
     }
     assert flagged == declared_names
 

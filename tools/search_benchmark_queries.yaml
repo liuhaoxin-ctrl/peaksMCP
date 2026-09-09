@@ -7,7 +7,7 @@
 # against ranking regressions.
 version: 1
 cases:
-  # --- load / save / conversion -----------------------------------------
+  # --- load / conversion --------------------------------------------------
   - query: "加载一个pxt文件"
     expect: load_data
   - query: "读取实验数据"
@@ -16,16 +16,11 @@ cases:
     expect: load_data
   - query: "load the dataset from disk"
     expect: load_data
+  # Persistence phrasing ("保存数据 / write the data out / export to a file")
+  # is deliberately absent: saving is the MCP-level save flow (Phase 3), not a
+  # searchable API.  "Save as netcdf" phrasing resolves to the conversion verb.
   - query: "保存成netcdf文件"
-    expect: save_result
-  - query: "保存处理后的数据"
-    expect: save_result
-  - query: "export the result to a file"
-    expect: save_result
-  - query: "write the data out"
-    expect: save_result
-  - query: "保存数据到nc文件"
-    expect: save_result
+    expect: convert_experiment
   # --- cuts / selection --------------------------------------------------
   - query: "提取一条线cut"
     expect: extract_cut

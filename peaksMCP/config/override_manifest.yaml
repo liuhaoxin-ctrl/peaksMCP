@@ -1,445 +1,160 @@
-version: 3
-# peaksMCP project API manifest - the audited black-box exposure record.
+version: 4
+# peaksMCP project API manifest - the model's curated black-box surface.
 #
-# Split from the retired config/manifest.yaml.  Entries with `project: true`
-# make discovery flag an API as project-added (this block doubles as the
-# audited exposure record: adding a public function to peaksMCP without a
-# row here fails the tests).  The `project:` block below carries the v3
-# strict facade contracts (export/exposure/category/kind/summary/inputs/
-# returns/preconditions/errors/example/stability) for the
-# peaksMCP.overrides surface.  Upstream native presentation lives in
-# config/native_catalog.yaml.
+# Exactly six public adapters are registered here; every other peaksMCP
+# function (metadata helpers, legacy writers, old task facades) is a private
+# implementation and is NOT in this manifest.  Entries are constructed
+# statically into the API index (no AST scan of peaksMCP); native peaks APIs
+# are the only dynamically scanned tier.  Signatures are verified at runtime
+# by importing `export`; peaks_get_api returns this structured contract.
 apis:
-  # ========================================================= project-added
-  # Everything below ships with peaksMCP. `project: true` is what makes the
-  # index flag an entry, so this block doubles as the audited exposure record:
-  # adding a public function to peaksMCP without a row here fails the tests.
-
-  # --- loading and saving (unified facades; the PXT reader itself is
-  # internal: peaksMCP.pxt_utils.loader is hidden from the index) ---
   load_data:
-    module: peaksMCP.overrides.load
-    project: true
-    exposure: facade
-    aliases:
-      - load data
-      - load dataset
-      - load folder
-      - load directory
-      - load experiment
-      - load files
-      - 加载目录
-      - 加载文件夹
-      - 批量加载
-      - read dataset
-      - open dataset
-      - open data
-      - read data
-      - load a file
-      - load data file
-      - data file
-      - load pxt
-      - read pxt
-      - open pxt
-      - pxt file
-      - load raw scan
-      - open raw scan
-      - 加载
-      - 读取
-      - 加载数据
-      - 读取数据
-      - 打开数据
-      - 加载PXT
-      - 读取PXT
-      - 打开PXT
-    docstring_note: |
-      Unified loading entry for ANY data, metadata first: one file returns a
-      DataArray; a folder or a path list returns a LoadedScans index with
-      every file's decision metadata (index, data format, gold/cut/mapping
-      kind, theta offset, energy window, conversion state) — data/ and
-      data_netcdf/ index in one call without reading data blocks, and
-      scans[stem] loads one file lazily on demand. Metadata comes from the
-      datasheet.csv sibling, embedded NetCDF records, or an explicit
-      metadata argument. Never writes to disk.
-  save_result:
-    module: peaksMCP.overrides.save
-    project: true
-    exposure: facade
-    side_effects: persists files only after human approval on the consent card (staged gateway)
-    aliases:
-      - save result
-      - save output
-      - write result
-      - write data
-      - write output
-      - write the data out
-      - export result
-      - persist
-      - persist result
-      - save to file
-      - save to disk
-      - write to file
-      - write to disk
-      - save file
-      - store result
-      - 保存
-      - 导出
-      - 保存结果
-      - 导出结果
-      - 写入文件
-      - 落盘
-    docstring_note: |
-      Save facade with the staged-consent loop: the call serialises the
-      result to a hidden staging file, creates a one-time ticket bound to
-      the exact bytes (path, kind, size, sha256, structure summary) and asks
-      the user through a consent card showing that real content summary —
-      the file is written only on approval, and overwrite=True is required
-      when the target already exists. There is no approve flag in code.
-      Use this for every result the user asks to keep.
-  convert_pxt:
-    module: peaksMCP.pxt_utils.converter
-    project: true
-    exposure: internal
-    aliases:
-      - convert pxt
-      - pxt to netcdf
-      - convert to netcdf
-      - convert scan file
-      - single file conversion
-      - 转换PXT
-      - PXT转NetCDF
-      - 单文件转换
-    docstring_note: |
-      LEGACY internal writer (kept only for in-process/tests; not a model
-      verb). Model flows convert through convert_experiment, which stages
-      every output and publishes only after human approval on the consent
-      card.
-  convert_path:
-    module: peaksMCP.pxt_utils.converter
-    project: true
-    exposure: internal
-    aliases:
-      - batch convert
-      - convert directory
-      - convert folder
-      - convert all scans
-      - 批量转换
-      - 目录转换
-      - 文件夹转换
-    docstring_note: |
-      LEGACY internal writer (kept only for in-process/tests; not a model
-      verb). Model flows convert directories through convert_experiment,
-      which stages every output under one consent card before publishing.
-  translate_datasheet:
-    module: peaksMCP.pxt_utils.csv_translator
-    project: true
-    exposure: internal
-    aliases:
-      - datasheet translation
-      - translate csv
-      - datasheet to metadata
-      - parse datasheet
-      - 数据表翻译
-      - datasheet转换
-
-  # --- PXT metadata ---
-  read_meta:
-    module: peaksMCP.pxt_utils.metadata
-    project: true
-    exposure: advanced
-    aliases:
-      - load experiment metadata
-      - read experiment metadata
-      - metadata json
-      - experiment record table
-      - 加载元数据
-      - 读取实验记录
-      - 实验记录表
-      - summarize sweeps
-      - list records
-      - sweep classification
-      - experiment summary
-      - experiment records
-      - read metadata
-      - 汇总记录
-      - 实验记录
-      - 数据清单
-      - 读元数据
-  classify_data_format:
-    module: peaksMCP.pxt_utils.metadata
-    project: true
-    exposure: advanced
-    aliases:
-      - classify format
-      - data format
-      - format detection
-      - sweep or fix
-      - 格式判定
-      - 数据格式分类
-  is_gold_format:
-    module: peaksMCP.pxt_utils.metadata
-    project: true
-    exposure: advanced
-    aliases:
-      - gold format
-      - is gold
-      - gold reference check
-      - 金数据判定
-      - 是否金数据
-  theta_offset_deg:
-    module: peaksMCP.pxt_utils.metadata
-    project: true
-    exposure: advanced
-    aliases:
-      - theta offset
-      - angle offset
-      - high symmetry offset
-      - 角度偏移
-      - 高对称点偏移
-
-  # --- plotting and workflows ---
-  plot_batch:
-    module: peaksMCP.plotting.layout
-    project: true
-    exposure: facade
-    aliases:
-      - publication grid
-      - paper figure grid
-      - publication figure set
-      - 论文配图
-      - 发表级图组
-      - batch plotting
-      - plot batch
-      - batch figures
-      - batch grid
-      - 批量画图
-      - 批量画谱图
-      - 批量绘图
-      - 批量图
-    docstring_note: |
-      Inline grid of matplotlib figures for a list of DataArrays.
-  plot_validation_pair:
-    module: peaksMCP.plotting.validation
-    project: true
-    exposure: facade
-    aliases:
-      - before after validation
-      - before-after pair
-      - raw vs k-space
-      - raw vs kx
-      - validate cut
-      - cut validation
-      - 处理前后对比
-      - 验证图
-      - 单条验证
-    docstring_note: |
-      Inline before/after figure for one cut: raw angle-space vs processed
-      k-space.
-  show_mapping_slice:
-    module: peaksMCP.workflows.slice_view
-    project: true
-    exposure: facade
-    aliases:
-      - mapping slice
-      - slice of mapping
-      - energy map
-      - map slice
-      - constant energy map
-      - 切片图
-      - mapping切片
-      - mapping切片图
-      - 展示mapping
-      - 固定能层图
-  validate_arpes_metadata:
-    module: peaksMCP.workflows.publication
-    project: true
-    exposure: advanced
-    aliases:
-      - validate metadata
-      - arpes metadata check
-      - metadata validation
-      - 元数据校验
-      - ARPES元数据检查
-
-  # --- task-level facades ---
-  convert_experiment:
-    module: peaksMCP.overrides.conversion
-    project: true
-    exposure: facade
-    side_effects: persists files only after human approval on the consent card (staged gateway)
-    category: ingestion
-    kind: converter
-    aliases:
-      - convert experiment
-      - convert scans
-      - convert file or folder
-      - convert experiment folder
-      - single or batch conversion
-      - PXT转换
-      - 转换实验
-      - 转换文件或目录
-    docstring_note: |
-      Pure conversion + consented publication: each scan is computed (metadata
-      embedded), every output - plus the translated experiment_metadata.json -
-      is staged as one consent card listing real content (path/size/sha256/
-      structure); only human approval publishes the staged bytes atomically.
-      Idempotent per file (skips an existing .nc unless force=True).
-  inspect_experiment:
-    module: peaksMCP.overrides.inspection
-    project: true
-    exposure: facade
-    category: metadata
-    kind: inspector
-    aliases:
-      - inspect experiment
-      - experiment summary
-      - list scans and kinds
-      - scan classification
-      - summarize experiment records
-      - 检查实验
-      - 实验概览
-      - 扫描分类
-    docstring_note: |
-      Structured summary of the experiment metadata document: per-record
-      ScanKind, dims (when the scans are supplied), energy window, theta
-      offset and polarisation, plus classification conflicts when the declared
-      Data format does not match the real shape (e.g. a 3-D cube labelled
-      sweep). Use it before choosing preprocess_cut vs preprocess_mapping.
-  fit_gold_reference:
-    module: peaksMCP.overrides.calibration
-    project: true
-    exposure: internal
-    category: calibration
-    kind: calibrator
-    aliases:
-      - fit gold reference
-      - calibrate fermi level
-      - gold calibration
-      - fermi edge fit
-      - EF calibration
-      - 金标定
-      - 费米边拟合标定
-      - 拟合金数据
-    docstring_note: |
-      Fit the Fermi edge of one finite gold scan through peaks' own fit
-      (runs exactly once). Returns a JSON-safe GoldCalibration carrying the
-      EF correction (float or c0..cN dict), quality, average resolution and
-      accuracy; the diagnostic figure renders inline for the user. Apply it
-      with preprocess_cut / preprocess_mapping — never re-fit per cut.
-  preprocess_cut:
-    module: peaksMCP.overrides.preprocess
-    project: true
-    exposure: internal
-    category: preprocessing
-    kind: transformer
-    aliases:
-      - preprocess cut
-      - flatten cut
-      - level cut
-      - process sweep
-      - cut to kx
-      - convert cut to k space
-      - 预处理切片
-      - 切片k空间转换
-      - 切片预处理
-    docstring_note: |
-      Flatten the Fermi edge of one 2-D (eV, theta_par) cut and convert it to
-      binding-energy (eV, kx). Accepts a GoldCalibration (or raw EF
-      correction) plus the high-symmetry theta_par offset; the input array is
-      never modified. 3-D data belongs to preprocess_mapping.
-  preprocess_mapping:
-    module: peaksMCP.overrides.preprocess
-    project: true
-    exposure: internal
-    category: preprocessing
-    kind: transformer
-    aliases:
-      - preprocess mapping
-      - process mapping cube
-      - mapping to k space
-      - kx ky conversion
-      - process 3d scan
-      - 预处理面图
-      - 面图k空间转换
-      - 三维扫描处理
-    docstring_note: |
-      Flatten the Fermi edge of a full 3-D mapping cube (never a centre
-      slice) and convert it with k_convert, producing eV/kx/ky dimensions.
-      Requires normal-emission reference angles and a GoldCalibration.
-      Result dims order varies by geometry — select by dimension name.
-  preprocess_batch:
-    module: peaksMCP.overrides.batch_preprocess
-    project: true
-    exposure: internal
-    side_effects: persists files only after human approval on the consent card (staged gateway)
-    category: batch
-    kind: batch
-    aliases:
-      - preprocess batch
-      - batch preprocess
-      - process many scans
-      - process folder of scans
-      - 批量预处理
-      - 批量处理切片
-      - 批量k空间转换
-    docstring_note: |
-      Path-driven batch preprocessing: each item loads, preprocesses (cut or
-      mapping) and atomically saves its NetCDF under the shared CPU budget,
-      one scan at a time — never the whole experiment in memory. Per-item
-      statuses survive worker crashes and CPU timeouts. The per-item writes
-      are batch-task outputs of a user-requested run (like conversion), not
-      model-initiated result saves.
-
-  # --- batch execution ---
-
-project:
-  - name: load_data
     export: peaksMCP.overrides.load_data
-    exposure: internal
-    category: ingestion
-    kind: loader
+    exposure: facade
+    aliases:
+    - load data
+    - load dataset
+    - load folder
+    - load directory
+    - load experiment
+    - load files
+    - 加载目录
+    - 加载文件夹
+    - 批量加载
+    - read dataset
+    - open dataset
+    - open data
+    - read data
+    - load a file
+    - load data file
+    - data file
+    - load pxt
+    - read pxt
+    - open pxt
+    - pxt file
+    - load raw scan
+    - open raw scan
+    - 加载
+    - 读取
+    - 加载数据
+    - 读取数据
+    - 打开数据
+    - 加载PXT
+    - 读取PXT
+    - 打开PXT
     summary: Load any data for the agent - one file, or an index of a folder/list.
-    inputs: "source: one file (.pxt/.nc), a folder, or a sequence of paths; lazy: bool=True; metadata: optional path/dict"
-    returns: "peaks DataArray (one file) or LoadedScans (folder/sequence: decision metadata + scans[stem] data layer)"
-    preconditions: "path(s) exist; folder contains supported files"
-    errors: "missing path; unsupported suffix; empty folder/sequence"
-    example: 'scans = load_data("data/"); gold = scans.gold; cut = scans["BP_0015"]'
-    stability: new
-  - name: save_result
-    export: peaksMCP.overrides.save_result
-    side_effects: persists files only after human approval on the consent card (staged gateway)
-    exposure: internal
-    category: persistence
-    kind: serializer
-    summary: Stage one result and persist it only after human approval on a content card.
-    inputs: "data; path; overwrite: bool=False"
-    returns: "SaveReport (saved after card approval; pending_consent/blocked/denied)"
-    preconditions: "approval channel installed (frontend); target free or overwrite=True"
-    errors: "target exists without overwrite; unsupported type; ticket expired"
-    example: 'report = save_result(data, "out.nc")  # stages, shows the consent card'
-    stability: new
-  - name: convert_experiment
+    inputs: 'source: one file (.pxt/.nc), a folder, or a sequence of paths; lazy:
+      bool=True; metadata: optional path/dict'
+    returns: 'peaks DataArray (one file) or LoadedScans (folder/sequence: decision
+      metadata + scans[stem] data layer)'
+    preconditions: path(s) exist; folder contains supported files
+    errors: missing path; unsupported suffix; empty folder/sequence
+    example: scans = load_data("data/"); gold = scans.gold; cut = scans["BP_0015"]
+  convert_experiment:
     export: peaksMCP.overrides.convert_experiment
-    side_effects: persists files only after human approval on the consent card (staged gateway)
-    exposure: internal
-    category: ingestion
-    kind: converter
+    exposure: facade
+    aliases:
+    - convert experiment
+    - convert scans
+    - convert file or folder
+    - convert experiment folder
+    - single or batch conversion
+    - PXT转换
+    - 转换实验
+    - 转换文件或目录
     summary: Convert one PXT file or a whole folder to NetCDF with bounded CPU parallelism.
-    inputs: "source: file or directory; output_dir; metadata; match: str=''; force: bool=False; cpu_limit_percent: float=60"
-    returns: "ConversionReport (per-item status/output_exists/errors + cpu stats)"
-    preconditions: "source exists; metadata exists when given"
-    errors: "source not found; metadata file not found"
-    example: 'report = convert_experiment("raw/", match="BP_")'
-    stability: new
-  - name: inspect_experiment
+    inputs: 'source: file or directory; output_dir; metadata; match: str=''''; force:
+      bool=False; cpu_limit_percent: float=60'
+    returns: ConversionReport (per-item status/output_exists/errors + cpu stats)
+    preconditions: source exists; metadata exists when given
+    errors: source not found; metadata file not found
+    example: report = convert_experiment("raw/", match="BP_")
+    side_effects: persists converted NetCDF files and the translated experiment_metadata.json
+      ONLY after human approval on the conversion consent card
+  inspect_experiment:
     export: peaksMCP.overrides.inspect_experiment
-    exposure: internal
-    category: metadata
-    kind: inspector
-    summary: Structured per-record summary of an experiment metadata document with conflicts.
-    inputs: "metadata: path/dict/DataArray; scans: optional dict index->DataArray"
-    returns: "ExperimentSummary (records with ScanKind/dims/windows + conflicts)"
-    preconditions: "metadata readable; scans keyed by record index"
-    errors: "unreadable metadata"
-    example: 'summary = inspect_experiment("experiment_metadata.json", scans=loaded)'
-    stability: new
+    exposure: facade
+    aliases:
+    - inspect experiment
+    - experiment summary
+    - list scans and kinds
+    - scan classification
+    - summarize experiment records
+    - 检查实验
+    - 实验概览
+    - 扫描分类
+    summary: Structured per-record summary of an experiment metadata document with
+      conflicts.
+    inputs: 'metadata: path/dict/DataArray; scans: optional dict index->DataArray'
+    returns: ExperimentSummary (records with ScanKind/dims/windows + conflicts)
+    preconditions: metadata readable; scans keyed by record index
+    errors: unreadable metadata
+    example: summary = inspect_experiment("experiment_metadata.json", scans=loaded)
+  plot_batch:
+    export: peaksMCP.overrides.plot_batch
+    exposure: facade
+    aliases:
+    - publication grid
+    - paper figure grid
+    - publication figure set
+    - 论文配图
+    - 发表级图组
+    - batch plotting
+    - plot batch
+    - batch figures
+    - batch grid
+    - 批量画图
+    - 批量画谱图
+    - 批量绘图
+    - 批量图
+    summary: Deterministic inline grid of matplotlib figures for a list of DataArrays.
+    inputs: 'items: sequence of 1D/2D xarray.DataArray; max_cols=5; shared_colorbar=''auto''|True|False;
+      titles/figsize/dpi optional'
+    returns: list of matplotlib Figure (rendered inline in the notebook)
+    preconditions: arrays are 1D/2D; a shared colorbar needs matching intensity units
+    errors: shared_colorbar=True with incompatible units or ranges; titles length
+      mismatch
+    example: figures = plot_batch([scan_20K, scan_40K], max_cols=2)
+  plot_validation_pair:
+    export: peaksMCP.overrides.plot_validation_pair
+    exposure: facade
+    aliases:
+    - before after validation
+    - before-after pair
+    - raw vs k-space
+    - raw vs kx
+    - validate cut
+    - cut validation
+    - 处理前后对比
+    - 验证图
+    - 单条验证
+    summary: 'Inline before/after figure for one cut: raw angle-space vs processed
+      k-space.'
+    inputs: 'raw/processed: 2D xarray.DataArray with eV + one other dim; shared_scale=''auto''|True|False;
+      share_energy_axis optional; ef_line=True'
+    returns: matplotlib Figure (rendered inline in the notebook)
+    preconditions: both arrays are 2D with an eV dimension
+    errors: not 2D or missing eV; explicit shared_scale=True on incompatible inputs
+    example: fig = plot_validation_pair(raw_cut, kspace_cut)
+  show_mapping_slice:
+    export: peaksMCP.overrides.show_mapping_slice
+    exposure: facade
+    aliases:
+    - mapping slice
+    - slice of mapping
+    - energy map
+    - map slice
+    - constant energy map
+    - 切片图
+    - mapping切片
+    - mapping切片图
+    - 展示mapping
+    - 固定能层图
+    summary: Render one slice of a mapping DataArray and print a one-line report.
+    inputs: 'data: mapping with >=2 dims; dim: str; index=''middle''|int; cmap=''viridis'';
+      debug=False'
+    returns: dict {status, verb, slice, figure} - the figure renders inline for the
+      user
+    preconditions: data has >=2 dims and no empty dims; slicing leaves at most 2 dims
+    errors: ndim<2; empty dimensions; unknown dim; slicing leaves >2 dims
+    example: show_mapping_slice(mapping, dim='eV', index=0)

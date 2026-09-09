@@ -49,9 +49,9 @@ def test_override_alias_query_wins_stage_one_and_returns_only_overrides():
 
 def test_override_exact_name_wins_stage_one():
     index = build_index()
-    tier, matches = index.search_tiered("read_meta", limit=3)
+    tier, matches = index.search_tiered("inspect_experiment", limit=3)
     assert tier == TIER_OVERRIDE
-    assert matches[0]["name"] == "read_meta"
+    assert matches[0]["name"] == "inspect_experiment"
 
 
 def test_native_query_falls_back_to_mixed_namespace():
@@ -83,13 +83,24 @@ def test_empty_query_lists_under_all_tier():
 
 
 def test_override_apis_are_black_box_without_source_path():
+    """Project APIs are described from their manifest contract, never source.
+
+    The export is imported at detail time and the signature runtime-verified;
+    the docstring-free whitelist carries the structured contract instead.
+    """
     index = build_index()
     override = next(item for item in index.entries if item["name"] == "plot_batch")
     detail = describe_api(override)
     assert "source_path" not in detail, "override APIs must not leak source paths"
+    assert "docstring" not in detail
     assert detail["tier"] == TIER_OVERRIDE
-    assert detail["module"].startswith("peaksMCP.")
-    assert detail["docstring"]
+    assert detail["module"] == CANONICAL_MODULE
+    assert detail["export"] == f"{CANONICAL_MODULE}.plot_batch"
+    assert detail["signature_resolved"] is True, "manifest export must import"
+    assert "plot_batch(" in detail["signature"]
+    assert detail["contract"]["summary"]
+    assert detail["contract"]["inputs"]
+    assert detail["contract"]["returns"]
 
     # Native peaks APIs get the same clean whitelist: no source path either.
     native = next(item for item in index.entries if item["name"] == "k_convert")
@@ -114,29 +125,58 @@ def test_search_match_mode_classification():
 
 def test_advanced_apis_are_hidden_until_exact_or_opt_in():
     """exposure=advanced: hidden from generic/fuzzy search and listings;
-    reachable by exact name and via include_advanced=True."""
+    reachable by exact name/alias and via include_advanced=True.
+
+    The v4 manifest curates exactly six public facades today, so the gate is
+    exercised against synthetic advanced rows (the ranker must keep enforcing
+    it the day a low-level row is curated again).
+    """
+    from peaksMCP.discovery.index import load_api_overrides, search_index_tiered
+
     index = build_index()
-    advanced_names = {
-        item["name"] for item in index.entries if item.get("exposure") == "advanced"
+    # Today's manifest declares no advanced/internal project rows.
+    assert {
+        name
+        for name, config in load_api_overrides().items()
+        if config.get("export") and config.get("exposure") != "facade"
+    } == set()
+    assert all(
+        item.get("exposure") == "facade"
+        for item in index.entries
+        if item.get("project_added")
+    )
+
+    advanced = {
+        "id": "module:peaksMCP.overrides:advanced_helper",
+        "scope": "module",
+        "module": CANONICAL_MODULE,
+        "name": "advanced_helper",
+        "kind": "function",
+        "func_name": "advanced_helper",
+        "summary": "low-level conversion helper",
+        "docstring": "low-level conversion helper",
+        "aliases": ["classify format"],
+        "exposure": "advanced",
+        "tier": TIER_OVERRIDE,
+        "project_added": True,
     }
-    assert "convert_pxt" not in advanced_names  # demoted to internal
-    assert "read_meta" in advanced_names
-    assert advanced_names <= {
-        item["name"] for item in index.entries if item.get("project_added")
-    }
-    # Generic fuzzy query must not surface an advanced API by default.
+    entries = [*index.entries, advanced]
+    # Generic fuzzy query must not surface the advanced API by default.
     for query in ("batch conversion helper", "translate a datasheet file"):
-        names = _names(index.search(query, limit=10))
-        assert not any(name in advanced_names for name in names), (query, names)
-    # ... but include_advanced=True lets them participate.
-    names = _names(index.search("read experiment metadata", limit=10, include_advanced=True))
-    assert "read_meta" in names
+        _, matches = search_index_tiered(entries, query, limit=10)
+        names = [m["name"] for m in matches]
+        assert "advanced_helper" not in names, (query, names)
+    # ... but include_advanced=True lets it participate.
+    from peaksMCP.discovery.index import search_index
+
+    names = [m["name"] for m in search_index(entries, "low-level helper", limit=10, include_advanced=True)]
+    assert "advanced_helper" in names
     # Exact-name queries are always allowed (score 1000).
-    tier, matches = index.search_tiered("read_meta", limit=3)
-    assert tier == TIER_OVERRIDE and matches[0]["name"] == "read_meta"
+    tier, matches = search_index_tiered(entries, "advanced_helper", limit=3)
+    assert tier == TIER_OVERRIDE and matches[0]["name"] == "advanced_helper"
     # Exact aliases resolve too (score 900).
-    tier, matches = index.search_tiered("classify format", limit=3)
-    assert tier == TIER_OVERRIDE and matches[0]["name"] == "classify_data_format"
+    tier, matches = search_index_tiered(entries, "classify format", limit=3)
+    assert tier == TIER_OVERRIDE and matches[0]["name"] == "advanced_helper"
 
 
 

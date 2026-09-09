@@ -248,7 +248,7 @@ def test_stage_never_accepts_a_code_level_approve():
 
 # ---------- ③ manifest file parses ----------
 
-def test_override_manifest_v3_exists_and_registers_facades():
+def test_override_manifest_v4_exists_and_registers_public_facades():
     from pathlib import Path
 
     import yaml
@@ -256,9 +256,19 @@ def test_override_manifest_v3_exists_and_registers_facades():
     raw = yaml.safe_load(
         Path("peaksMCP/config/override_manifest.yaml").read_text(encoding="utf-8")
     )
-    assert raw["version"] == 3
-    names = {entry["name"] for entry in raw["project"]}
-    assert {"load_data", "save_result"} <= names
+    assert raw["version"] == 4
+    # v4 is a single manifest: one row per public adapter, keyed by name,
+    # each carrying the full structured contract.  No project-seeds block.
+    assert "project" not in raw
+    names = set(raw["apis"])
+    assert {"load_data", "convert_experiment", "inspect_experiment"} <= names
+    for name, entry in raw["apis"].items():
+        assert entry["export"] == f"peaksMCP.overrides.{name}"
+        assert entry["exposure"] == "facade"
+        assert entry["summary"] and entry["inputs"] and entry["returns"]
+        assert "docstring_note" not in entry
+    # Not registered: the internal/legacy verbs are not model-facing.
+    assert not ({"save_result", "read_meta"} & names)
 
 
 def test_native_catalog_v1_exists_and_holds_only_upstream_entries():

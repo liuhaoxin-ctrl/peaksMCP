@@ -33,10 +33,14 @@ _ADAPTER_SOURCES = (
     "config/metadata_baseline.yaml",
     "server/jupyter_peaks/core/tools.py",
 )
-#: Curated presentation documents: upstream aliases/notes (native tier) and
-#: the project black-box manifest.  ``load_overrides()`` merges their ``apis``
-#: blocks; the retired single-file config/manifest.yaml is read only as a
-#: compatibility fallback when both new catalogs are absent.
+#: Curated presentation documents: ``native_catalog.yaml`` (v1) carries
+#: upstream aliases/notes for the native tier; ``override_manifest.yaml``
+#: (v4, breaking) is the single manifest of public project APIs — one row per
+#: verb with ``export`` plus the full structured contract.  Project rows are
+#: recognised by their ``export`` key; native rows never carry one, so the two
+#: catalogs cannot be confused inside the merged view.  The retired single-file
+#: config/manifest.yaml is read only as a compatibility fallback when both new
+#: catalogs are absent.
 _NATIVE_CATALOG = "config/native_catalog.yaml"
 _OVERRIDE_MANIFEST = "config/override_manifest.yaml"
 _LEGACY_MANIFEST = "config/manifest.yaml"
@@ -57,11 +61,10 @@ TIER_OVERRIDE = "override"
 TIER_NATIVE = "native"
 
 #: Canonical module for every project (override-tier) API.  Search/get expose
-#: project functions ONLY under ``module:peaksMCP.overrides:<name>``; the
-#: implementation module (where the function actually lives, e.g.
-#: ``peaksMCP.plotting.layout``) is projection detail and is never shown.
-#: The original implementation id is kept in each entry's ``legacy_ids`` so
-#: :meth:`ApiIndex.get` can still resolve pre-canonical ids.
+#: project functions ONLY under ``module:peaksMCP.overrides:<name>``, matching
+#: the manifest ``export`` value.  Every public adapter is importable from the
+#: canonical module, and peaks_get_api verifies that import at runtime; the
+#: implementation module is projection detail and never surfaces.
 CANONICAL_MODULE = "peaksMCP.overrides"
 
 #: Searched-namespace label for the fallback stage: no override name/alias hit
@@ -404,24 +407,29 @@ _CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
 
 
 def load_overrides(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
-    """Load the curated API presentation documents.
+    """Load the curated catalogs and return the merged presentation view.
+
+    Two catalogs share one key space but are distinguishable per row:
+    ``config/native_catalog.yaml`` (v1) holds native-tier presentation
+    (aliases/notes for upstream peaks names — no ``export`` key), while
+    ``config/override_manifest.yaml`` (v4, breaking) holds one row per public
+    project API (``export`` + full contract).  Rows are identified by the
+    presence of ``export``; native rows never carry one.
 
     Parameters
     ----------
     path : str or os.PathLike, optional
         Explicit override file to read (any legacy shape, including the
         retired single-file ``config/manifest.yaml``, parsed leniently).
-        When omitted, the merged view of ``config/native_catalog.yaml``
-        (upstream, native tier) and ``config/override_manifest.yaml``
-        (project APIs) is returned after strict schema validation; the
-        legacy single file is read as a compatibility fallback only when
-        both new catalogs are absent.
+        When omitted, the merged view of both new catalogs is returned
+        after strict schema validation; the legacy single file is read as
+        a compatibility fallback only when both new catalogs are absent.
 
     Returns
     -------
     dict
-        Merged document with ``version``, ``apis`` (native entries merged
-        with project entries) and the override manifest's ``project`` seeds.
+        Merged document with ``version`` and ``apis`` (native rows merged
+        with project rows; a name collision resolves to the v4 project row).
 
     Raises
     ------
@@ -445,21 +453,22 @@ def load_overrides(path: str | os.PathLike[str] | None = None) -> dict[str, Any]
     errors = validate_documents(native, overrides)
     if errors:
         raise ValueError("curated config invalid:\n- " + "\n- ".join(errors))
-    merged: dict[str, Any] = {"version": overrides.get("version", 3)}
+    merged: dict[str, Any] = {"version": overrides.get("version", 4)}
     merged_apis: dict[str, Any] = {}
     for document in (native, overrides):
         merged_apis.update(document.get("apis") or {})
     merged["apis"] = merged_apis
-    if overrides.get("project"):
-        merged["project"] = overrides["project"]
     return merged
 
 
 def load_api_overrides(path: str | os.PathLike[str] | None = None) -> dict[str, dict[str, Any]]:
     """Return the per-API presentation entries, keyed by API name.
 
-    Each entry may carry ``aliases`` (extra search terms), ``docstring_note``
-    (prepended to the live docstring), ``module`` and ``project``.
+    Project rows (from the v4 manifest) carry ``export`` plus the structured
+    contract (``summary``/``inputs``/``returns``/``preconditions``/
+    ``side_effects``/``errors``/``example``).  Native rows carry only
+    presentation keys (``aliases``/notes).  Callers distinguish the two by
+    the presence of ``export`` — see :func:`load_project_added`.
 
     Parameters
     ----------
@@ -474,7 +483,7 @@ def load_api_overrides(path: str | os.PathLike[str] | None = None) -> dict[str, 
 
     Examples
     --------
-    >>> "k_convert" in load_api_overrides()
+    >>> "load_data" in load_api_overrides()
     True
     """
     entries = load_overrides(path).get("apis") or {}
@@ -482,12 +491,14 @@ def load_api_overrides(path: str | os.PathLike[str] | None = None) -> dict[str, 
 
 
 def load_project_added(path: str | os.PathLike[str] | None = None) -> set[str]:
-    """Return the ``module:name`` ids this project adds to the API.
+    """Return the canonical ids this project adds to the API.
 
-    Derived from the ``project: true`` flag in ``config/override_manifest.yaml``,
-    so the audited exposure record cannot drift from the aliases and notes that
-    sit next to it. :func:`build_index` marks every matching entry with
-    ``project_added=True`` so callers can tell project code from upstream.
+    Derived from the ``export`` key in ``config/override_manifest.yaml``
+    (v4): every row whose export is ``peaksMCP.overrides.<name>`` is exposed
+    under exactly ``module:peaksMCP.overrides:<name>``.  The audited exposure
+    record therefore cannot drift from the contract that sits next to it.
+    :func:`build_index` marks every matching entry with ``project_added=True``
+    so callers can tell project code from upstream.
 
     Parameters
     ----------
@@ -498,19 +509,18 @@ def load_project_added(path: str | os.PathLike[str] | None = None) -> set[str]:
     Returns
     -------
     set of str
-        ``module:name`` identifiers such as
-        ``peaksMCP.plotting.layout:plot_batch``. Entries missing a ``module``
-        are ignored.
+        Canonical ids such as ``module:peaksMCP.overrides:load_data``.
+        Native-catalog rows (no ``export``) are never included.
 
     Examples
     --------
-    >>> "peaksMCP.plotting.layout:plot_batch" in load_project_added()
+    >>> "module:peaksMCP.overrides:plot_batch" in load_project_added()
     True
     """
     return {
-        f"{config['module']}:{name}"
+        f"module:{CANONICAL_MODULE}:{name}"
         for name, config in load_api_overrides(path).items()
-        if config.get("project") and config.get("module")
+        if config.get("export")
     }
 
 
@@ -545,71 +555,71 @@ def build_index() -> ApiIndex:
     import peaks
 
     package_dir = os.path.dirname(peaks.__file__)
+    # Native tier: the installed Peaks package is the ONLY dynamically
+    # scanned source (runtime descriptors + AST over the peaks package).
     entries = _merge_duplicates([*scan_runtime(), *scan_modules(package_dir)])
-    # The agent should also discover peaksMCP's own analysis API (facades /
-    # plotting / workflows / conversion) without relying on the skill file:
-    # scan the core data layer of this package into the same index.
-    import peaksMCP
 
-    peaksmcp_dir = os.path.dirname(peaksMCP.__file__)
-    entries = _merge_duplicates(
-        [
-            *entries,
-            *scan_modules(
-                peaksmcp_dir,
-                package_name="peaksMCP",
-                include_prefixes=(
-                    "peaksMCP.overrides",
-                    "peaksMCP.plotting",
-                    "peaksMCP.workflows",
-                    "peaksMCP.pxt_utils",
-                    "peaksMCP.batch",
-                ),
-            ),
-        ]
-    )
+    # Project tier: the curated manifest (v4) is the single source.  Every
+    # public adapter is constructed statically - no AST scan of peaksMCP, no
+    # canonical projection, no legacy ids.  The full structured contract
+    # rides on the entry so peaks_get_api can render it without source access.
+    project_entries: list[dict[str, Any]] = []
+    for name, config in load_api_overrides().items():
+        # Only v4 manifest rows (carrying ``export``) become project entries;
+        # native-catalog presentation rows are injected below instead.
+        if not config.get("export"):
+            continue
+        summary = str(config.get("summary") or "")
+        contract = {
+            key: config.get(key)
+            for key in (
+                "summary", "inputs", "returns", "preconditions",
+                "side_effects", "errors", "example",
+            )
+            if config.get(key) is not None
+        }
+        project_entries.append(
+            {
+                "id": f"module:{CANONICAL_MODULE}:{name}",
+                "scope": "module",
+                "module": CANONICAL_MODULE,
+                "name": name,
+                "kind": "function",
+                "func_name": name,
+                "summary": summary,
+                "docstring": summary,
+                "aliases": [str(value) for value in (config.get("aliases") or [])],
+                "exposure": str(config.get("exposure") or "facade"),
+                "tier": TIER_OVERRIDE,
+                "project_added": True,
+                "contract": contract,
+                "export": str(config.get("export") or f"{CANONICAL_MODULE}.{name}"),
+            }
+        )
+    entries = [*entries, *project_entries]
+
+    # Native alias/docstring-note injection (project entries carry their own
+    # aliases and structured contract already).
     api_overrides = load_api_overrides()
-    project_added = load_project_added()
     for item in entries:
+        if item.get("project_added"):
+            continue
         names = {item["name"], item["id"]}
         item_aliases: list[str] = []
         note: str | None = None
         for key, config in api_overrides.items():
+            if config.get("export"):
+                continue
             if key in names or key.lower() == str(item["name"]).lower():
                 item_aliases.extend(str(value) for value in config.get("aliases") or [])
                 if config.get("docstring_note"):
                     note = str(config["docstring_note"])
-                if config.get("exposure"):
-                    item["exposure"] = str(config["exposure"])
         if note is not None:
             item["docstring_note"] = note
         item["aliases"] = sorted(set([*item.get("aliases", []), *item_aliases]))
-        if f"{item.get('module')}:{item.get('name')}" in project_added:
-            item["project_added"] = True
-        # Override tier = this project's black-box APIs; everything else native.
-        item["tier"] = TIER_OVERRIDE if item.get("project_added") else TIER_NATIVE
-    # Single-canonical projection: every project entry is exposed ONLY as
-    # ``module:peaksMCP.overrides:<name>``.  The implementation-module id is
-    # preserved in ``legacy_ids`` so ApiIndex.get still resolves
-    # pre-canonical ids (and python imports of the implementation modules stay
-    # valid, they are just projection detail now).
-    for item in entries:
-        if not item.get("project_added"):
-            continue
-        original_id = str(item["id"])
-        item["id"] = f"module:{CANONICAL_MODULE}:{item['name']}"
-        item["module"] = CANONICAL_MODULE
-        legacy_ids = list(item.get("legacy_ids") or [])
-        if original_id not in legacy_ids:
-            legacy_ids.append(original_id)
-        item["legacy_ids"] = legacy_ids
+        item["tier"] = TIER_NATIVE
     fingerprint = source_fingerprint()
-    entries = [
-        item
-        for item in entries
-        if item.get("module") not in _HIDDEN_MODULES
-        and item.get("exposure") != "internal"
-    ]
+    entries = [item for item in entries if item.get("module") not in _HIDDEN_MODULES]
     return ApiIndex(entries=entries, peaks_version=getattr(peaks, "__version__", "?"), fingerprint=fingerprint)
 
 

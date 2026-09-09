@@ -382,7 +382,14 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
                 "run peaks_search_api first, then get the id from its results."
             )
         _record_verified_api(state, entry)
-        return describe_api(entry)
+        detail = describe_api(entry)
+        if detail.get("project_added") and not detail.get("signature_resolved"):
+            raise RuntimeError(
+                f"manifest export {detail.get('export')!r} is not importable/resolvable "
+                "- the override manifest and its implementation have drifted; fix the "
+                "manifest row or the adapter before use."
+            )
+        return detail
 
     def askuserquestion(prompt: str, hint: str | None = None, options: list[str] | None = None) -> dict[str, Any]:
         return {"status": "needs_input", "prompt": prompt, "hint": hint, "options": options or []}
