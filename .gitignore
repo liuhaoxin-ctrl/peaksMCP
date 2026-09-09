@@ -20,3 +20,4 @@ peaksMCP-snapshot-*.ipynb
 *.part
 .smoke-*
 聊天记录.md
+benchmark/runs/
