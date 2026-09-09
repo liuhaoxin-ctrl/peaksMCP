@@ -5,8 +5,9 @@ peaks functions stay reachable through search/get.  Every facade:
 
 - returns a small JSON-safe dict or a DataArray/Dataset (never prints noise);
 - renders at most one canonical summary line (Show convention);
-- never writes to disk by itself — persistence goes through ``save_result``
-  with an explicit preview -> approve flow (Save convention).
+- never writes to disk by itself — persistence goes through ``save_result``,
+  which stages the result and publishes it only after a human approves the
+  real-content card (no code-level approve exists).
 
 Single canonical import surface: every project API (the override tier) is
 importable from ``peaksMCP.overrides``.  The implementation modules below
