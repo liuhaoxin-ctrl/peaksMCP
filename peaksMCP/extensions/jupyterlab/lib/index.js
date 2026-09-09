@@ -148,6 +148,111 @@ async function showConsentDialog(operation, details, targetCell) {
     });
     return result.button.label === '允许';
 }
+/**
+ * Save consent card: shows the REAL results about to be written. For batch
+ * verbs (convert / preprocess / save) the payload lists every item (path,
+ * kind, size, sha256 of the exact staged bytes, structure/stats, existing
+ * note); approving publishes all of them through the kernel-side gateway.
+ */
+async function showSaveCard(payload) {
+    const body = document.createElement('div');
+    body.style.maxWidth = '760px';
+    body.style.fontSize = '13px';
+    const header = document.createElement('div');
+    header.style.marginBottom = '10px';
+    header.innerHTML =
+        `<strong>将写入以下 ${Array.isArray(payload?.items) ? payload.items.length : 1} 个文件` +
+            `（内容已固定，批准后逐项原子写入）:</strong>`;
+    body.appendChild(header);
+    const items = Array.isArray(payload?.items) && payload.items.length
+        ? payload.items : [payload];
+    const table = document.createElement('table');
+    table.style.borderCollapse = 'collapse';
+    table.style.width = '100%';
+    for (const item of items) {
+        const structure = item?.structure ?? {};
+        const stats = structure?.stats;
+        const rows = [
+            ['路径', String(item?.path ?? '')],
+            ['类型', String(structure?.kind ?? item?.kind ?? '')],
+            ['大小', `${(Number(item?.size_bytes ?? 0) / 1024).toFixed(1)} KiB`],
+            ['sha256', String(item?.sha256 ?? '').slice(0, 16) + '…'],
+        ];
+        if (structure?.name != null) {
+            rows.push(['名称', String(structure.name)]);
+        }
+        if (structure?.dims) {
+            rows.push(['维度', structure.dims.join(', ')]);
+        }
+        if (structure?.sizes) {
+            rows.push(['形状', Object.entries(structure.sizes).map(([d, s]) => `${d}×${s}`).join(', ')]);
+        }
+        if (structure?.dtype) {
+            rows.push(['dtype', String(structure.dtype)]);
+        }
+        if (structure?.units) {
+            rows.push(['单位', String(structure.units)]);
+        }
+        if (stats?.min != null && stats?.max != null) {
+            rows.push(['数值范围', `[${Number(stats.min).toExponential(4)}, ${Number(stats.max).toExponential(4)}]`]);
+        }
+        if (stats?.nan_fraction != null) {
+            rows.push(['NaN 占比', `${(Number(stats.nan_fraction) * 100).toFixed(3)}%`]);
+        }
+        if (item?.exists_at_stage) {
+            rows.push(['状态', '目标已存在（未覆盖时将被跳过）']);
+        }
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.style.padding = '4px 0';
+        td.style.borderBottom = '1px solid #eee';
+        const inner = document.createElement('table');
+        inner.style.borderCollapse = 'collapse';
+        inner.style.width = '100%';
+        for (const [label, value] of rows) {
+            const rowEl = document.createElement('tr');
+            const tdLabel = document.createElement('td');
+            tdLabel.textContent = label;
+            tdLabel.style.fontWeight = 'bold';
+            tdLabel.style.padding = '1px 10px 1px 0';
+            tdLabel.style.verticalAlign = 'top';
+            tdLabel.style.whiteSpace = 'nowrap';
+            const tdValue = document.createElement('td');
+            tdValue.textContent = value;
+            tdValue.style.wordBreak = 'break-all';
+            rowEl.appendChild(tdLabel);
+            rowEl.appendChild(tdValue);
+            inner.appendChild(rowEl);
+        }
+        td.appendChild(inner);
+        tr.appendChild(td);
+        table.appendChild(tr);
+        if (structure?.json_preview != null) {
+            const pre = document.createElement('pre');
+            pre.textContent = String(structure.json_preview);
+            pre.style.maxHeight = '140px';
+            pre.style.overflow = 'auto';
+            pre.style.background = '#f5f5f5';
+            pre.style.padding = '6px';
+            pre.style.borderRadius = '4px';
+            pre.style.border = '1px solid #ddd';
+            pre.style.margin = '2px 0 8px';
+            td.appendChild(pre);
+        }
+    }
+    body.appendChild(table);
+    const widget = new Widget({ node: body });
+    const result = await showDialog({
+        title: 'peaksMCP — 保存确认',
+        body: widget,
+        buttons: [
+            Dialog.cancelButton({ label: '拒绝' }),
+            Dialog.okButton({ label: '保存' })
+        ],
+        defaultButton: 0
+    });
+    return result.button.label === '保存';
+}
 function cellJSON(panel) {
     const notebook = panel.content;
     const cell = notebook.activeCell;
@@ -202,17 +307,6 @@ async function handle(panel, comm, data) {
             case 'read_active_cell':
                 result = cellJSON(panel);
                 break;
-            case 'read_notebook':
-                result = { path: panel.context.path, active_index: notebook.activeCellIndex,
-                    cells: Array.from({ length: notebook.widgets.length }, (_, i) => {
-                        const cell = notebook.widgets[i];
-                        return { id: cell.model.id, index: i, cell_type: cell.model.type, source: cell.model.sharedModel.getSource() };
-                    }) };
-                break;
-            case 'move_cursor':
-                notebook.activeCellIndex = data.direction === 'index' ? data.index : Math.max(0, Math.min(notebook.widgets.length - 1, notebook.activeCellIndex + (data.direction === 'previous' ? -1 : 1)));
-                result = cellJSON(panel);
-                break;
             case 'request_consent': {
                 // Pass the target cell's current source so the consent dialog can show
                 // exactly which cell will be deleted/overwritten and what it holds now.
@@ -225,6 +319,13 @@ async function handle(panel, comm, data) {
                     }
                 }
                 result = { approved: await showConsentDialog(data.requested_operation ?? 'notebook operation', data.details ?? {}, targetSource) };
+                break;
+            }
+            case 'save_ticket': {
+                // Save consent card: shows the staged result's real summary (path,
+                // kind, size, sha256, structure/stats) - approval publishes exactly
+                // those bytes through the kernel-side gateway.
+                result = { approved: await showSaveCard(data.details ?? {}) };
                 break;
             }
             case 'execute_code': {
@@ -277,42 +378,6 @@ async function handle(panel, comm, data) {
                     result = { saved: false, error: saveErr instanceof Error ? saveErr.message : String(saveErr) };
                 }
                 break;
-            case 'read_cell_at': {
-                const idx = typeof data.index === 'number' ? data.index : notebook.activeCellIndex;
-                if (!Number.isInteger(idx) || idx < 0 || idx >= notebook.widgets.length) {
-                    throw new Error('cell index is out of range');
-                }
-                const cell = notebook.widgets[idx];
-                result = {
-                    id: cell.model.id, index: idx, cell_type: cell.model.type,
-                    source: cell.model.sharedModel.getSource(),
-                };
-                break;
-            }
-            case 'delete_cell': {
-                const index = data.index ?? notebook.activeCellIndex;
-                if (!Number.isInteger(index) || index < 0 || index >= notebook.widgets.length) {
-                    throw new Error('cell index is out of range');
-                }
-                const target = notebook.widgets[index];
-                if (target.model.getMetadata('deletable') === false) {
-                    throw new Error('target cell is not deletable');
-                }
-                const targetId = target.model.id;
-                if (typeof data.expected_id === 'string' && targetId !== data.expected_id) {
-                    throw new Error('target cell changed since authorisation — please re-run');
-                }
-                notebook.activeCellIndex = index;
-                // deleteCells() deletes every selected cell, not just activeCellIndex.
-                notebook.deselectAll();
-                NotebookActions.deleteCells(notebook);
-                result = { deleted: true, id: targetId, active_index: notebook.activeCellIndex };
-                break;
-            }
-            case 'apply_patch':
-                // Removed: patching an existing cell would overwrite its source, which
-                // violates the append-only write guarantee. Use execute_code / add_cell.
-                throw new Error('apply_patch is no longer supported (append-only writes)');
             case 'restart_kernel':
                 // Frontend-initiated restart so JupyterLab reconnects the session and the
                 // extension re-opens the Comm (a REST restart would leave the UI detached).
@@ -321,11 +386,11 @@ async function handle(panel, comm, data) {
                 break;
             default: throw new Error(`Unsupported frontend operation: ${data.operation}`);
         }
-        // Persist notebook mutations (executed / inserted / deleted / patched cells)
-        // to disk so the analysis history survives a supervisor or JupyterLab restart.
+        // Persist notebook mutations (executed / inserted cells) to disk so the
+        // analysis history survives a supervisor or JupyterLab restart.
         // A failed save is reported to the caller instead of being silently swallowed:
         // "executed" and "persisted" are distinct outcomes.
-        if (['execute_code', 'add_cell', 'delete_cell'].includes(data.operation)) {
+        if (['execute_code', 'add_cell'].includes(data.operation)) {
             try {
                 await panel.context.save();
                 result.saved = true;
@@ -350,20 +415,9 @@ const plugin = {
         let activePanel = null;
         let panelDisconnectors = [];
         let disconnectKernelStatus = null;
-        let disconnectOutputs = null;
         const isTransitional = (status) => ['restarting', 'autorestarting', 'starting', 'connecting'].includes(String(status ?? ''));
-        const clearOutputBinding = () => {
-            if (disconnectOutputs) {
-                try {
-                    disconnectOutputs();
-                }
-                catch { /* noop */ }
-                disconnectOutputs = null;
-            }
-        };
         const teardown = (why, notify = false) => {
             console.log(`[peaksmcp] teardown comm (${why})`);
-            clearOutputBinding();
             if (heartbeatTimer !== null) {
                 window.clearInterval(heartbeatTimer);
                 heartbeatTimer = null;
@@ -398,35 +452,23 @@ const plugin = {
                 catch { /* noop */ }
                 disconnectKernelStatus = null;
             }
-            clearOutputBinding();
         };
         const publish = (panel, current) => {
             if (activePanel !== panel || panel.isDisposed || comm !== current) {
                 return;
             }
             const cell = cellJSON(panel);
+            // Cursor metadata only: outputs travel with the execute response and the
+            // executed-cell pushes, never with the active-cell notification.
+            const meta = { id: cell.id, index: cell.index, cell_type: cell.cell_type, source: cell.source };
             try {
-                current.send({ type: 'active_cell', cell, outputs: cell.outputs ?? [] });
+                current.send({ type: 'active_cell', cell: meta });
             }
             catch {
                 if (comm === current) {
                     teardown('publish send failed');
                 }
             }
-        };
-        const bindActiveOutputs = (panel, current) => {
-            clearOutputBinding();
-            if (activePanel !== panel || comm !== current) {
-                return;
-            }
-            const active = panel.content.activeCell;
-            const outputs = active && active.model.type === 'code' ? active.model.outputs : null;
-            if (!outputs) {
-                return;
-            }
-            const onOutputsChanged = () => { publish(panel, current); };
-            outputs.changed.connect(onOutputsChanged);
-            disconnectOutputs = () => { outputs.changed.disconnect(onOutputsChanged); };
         };
         const connect = async () => {
             const panel = activePanel;
@@ -496,7 +538,6 @@ const plugin = {
                 }
             }, 2000);
             publish(panel, newComm);
-            bindActiveOutputs(panel, newComm);
         };
         const bindKernelStatus = (panel) => {
             if (disconnectKernelStatus) {
@@ -572,7 +613,6 @@ const plugin = {
                     return;
                 }
                 publish(panel, current);
-                bindActiveOutputs(panel, current);
             };
             const onDisposed = () => {
                 if (activePanel !== panel) {
