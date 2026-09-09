@@ -118,7 +118,10 @@ def _approval(approved: bool):
     return monkeypatch, seen
 
 
-def test_save_result_without_channel_stages_and_waits(tmp_path, capsys):
+def test_save_result_without_channel_stages_and_waits(tmp_path, capsys, monkeypatch):
+    from peaksMCP.overrides import save as save_module
+
+    monkeypatch.setattr(save_module, "_APPROVAL_CHANNEL", None)  # no frontend
     target = tmp_path / "out.nc"
     report = save_result(_array(), str(target))
     out = capsys.readouterr().out
@@ -187,11 +190,12 @@ def test_save_result_json(tmp_path):
     assert "json_preview" in seen["payload"]["structure"]
 
 
-def test_ticket_is_one_time_and_gateway_requires_human_authorization(tmp_path, capsys):
+def test_ticket_is_one_time_and_gateway_requires_human_authorization(tmp_path, capsys, monkeypatch):
     """The gateway cannot write an unapproved ticket: notebook code cannot
     self-authorise (no approve flag exists anywhere in the flow)."""
     from peaksMCP.overrides import save as save_module
 
+    monkeypatch.setattr(save_module, "_APPROVAL_CHANNEL", None)
     target = tmp_path / "out.nc"
     report = save_result(_array(), str(target))  # no channel -> pending
     ticket = report.ticket_id
@@ -533,3 +537,42 @@ def test_load_data_accepts_experiment_root_with_subfolders(monkeypatch, tmp_path
     assert "gold=BP_0020" in out and "data_netcdf" in out
     # repr is the one-line summary for print(exp).
     assert "file(s) indexed" in repr(exp)
+
+
+def test_netcdf_safe_strips_unsafe_attrs_and_stringifies_units():
+    """peaks-loaded arrays carry pint units and pydantic metadata models that
+    raw to_netcdf rejects; the staged copy must survive serialisation while
+    keeping values and coordinates intact."""
+    from dataclasses import dataclass
+
+    from peaksMCP.overrides.save import _netcdf_safe
+
+    @dataclass
+    class FakeModel:
+        loc: str = "L112"
+
+    import pint
+
+    ureg = pint.UnitRegistry()
+    value = xr.DataArray(
+        np.arange(6, dtype=float).reshape(2, 3),
+        dims=("eV", "theta_par"),
+        coords={
+            "eV": xr.DataArray([0.0, 1.0], dims="eV",
+                               attrs={"units": ureg.electron_volt}),
+            "theta_par": xr.DataArray([0.0, 1.0, 2.0], dims="theta_par",
+                                      attrs={"units": "deg"}),
+        },
+        attrs={"units": "counts", "_scan": FakeModel(), "title": "BP"},
+    )
+    safe = _netcdf_safe(value)
+    assert "_scan" not in safe.attrs and safe.attrs["title"] == "BP"
+    assert isinstance(safe.coords["eV"].attrs["units"], str)
+    assert safe.coords["theta_par"].attrs["units"] == "deg"
+    assert np.array_equal(np.asarray(safe.values), np.asarray(value.values))
+    # And the sanitised copy actually serialises.
+    import io
+
+    buffer = io.BytesIO()
+    safe.to_netcdf(buffer)
+    assert buffer.getvalue()

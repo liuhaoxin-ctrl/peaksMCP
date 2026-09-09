@@ -33,6 +33,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from .models import Report
 
 #: Minutes a staged ticket stays valid before the gateway refuses it.
@@ -110,11 +112,55 @@ def _set_approval_channel(channel: Callable[[dict[str, Any]], bool] | None) -> N
     _APPROVAL_CHANNEL = channel
 
 
+def _netcdf_safe(data: Any) -> Any:
+    """Return a copy whose attrs can be serialised to NetCDF.
+
+    peaks.load restores physical units as pint Quantity objects and carries
+    pydantic metadata models (``_scan`` etc.) in attrs; raw ``to_netcdf``
+    rejects both.  The staged copy keeps values and coordinates intact,
+    stringifies unit-like attrs and drops non-serialisable object attrs, so
+    the bytes the user approves are always writable.
+    """
+    def scalar_ok(value: Any) -> bool:
+        if isinstance(value, (str, bytes, bool, int, float)) or value is None:
+            return True
+        if isinstance(value, np.ndarray):
+            return True
+        if isinstance(value, (list, tuple)):
+            return all(scalar_ok(item) for item in value)
+        if isinstance(value, dict):
+            return all(
+                isinstance(key, str) and scalar_ok(item) for key, item in value.items()
+            )
+        return False
+
+    def sanitize_attrs(attrs: dict[str, Any]) -> None:
+        for key in [k for k in attrs.keys()]:
+            value = attrs[key]
+            if scalar_ok(value):
+                continue
+            module = type(value).__module__ or ""
+            if module.startswith("pint") or module.startswith("numpy"):
+                attrs[key] = str(value)
+            else:
+                attrs.pop(key, None)
+
+    copy = data.copy(deep=False)
+    sanitize_attrs(copy.attrs)
+    for coordinate in copy.coords.values():
+        sanitize_attrs(coordinate.attrs)
+    variables = getattr(copy, "data_vars", None)
+    if variables is not None:
+        for name in variables:
+            sanitize_attrs(copy[name].attrs)
+    return copy
+
+
 def _serialise(data: Any, path: Path) -> tuple[bytes, str]:
     """Serialise one result to bytes: NetCDF for xarray, JSON otherwise."""
     if str(path).endswith(".nc") and hasattr(data, "to_netcdf"):
         buffer = io.BytesIO()
-        data.to_netcdf(buffer)
+        _netcdf_safe(data).to_netcdf(buffer)
         return buffer.getvalue(), "netcdf"
     if isinstance(data, (dict, list)):
         return (
@@ -148,8 +194,6 @@ def _structure(data: Any, path: Path, kind: str) -> dict[str, Any]:
         # compute here just for the card).
         if getattr(getattr(data, "data", None), "chunks", None) is None:
             try:
-                import numpy as np
-
                 values = np.asarray(data.values)
                 if values.size and np.isfinite(values).all():
                     structure["stats"] = {

@@ -37,6 +37,7 @@ class JupyterPeaksMCPServer:
         self.consent = ConsentManager(state.bridge)
         self.notebook = NotebookBackend(state)
         self.unsafe = UnsafeNotebookBackend(state, self.consent, self.audit)
+        self._install_save_approval_channel()
         # Pre-build the Peaks API index at server startup instead of lazily on
         # the first search: the dashboard can then report api_index_ready /
         # api_count immediately (and index_stale reflects the current source).
@@ -50,6 +51,34 @@ class JupyterPeaksMCPServer:
         self.mcp = self._build_mcp()
         self._thread: threading.Thread | None = None
         self._uvicorn: uvicorn.Server | None = None
+
+
+    def _install_save_approval_channel(self) -> None:
+        """Route save_result's staged-ticket approval to the frontend card.
+
+        The channel receives the ticket preview (the REAL content summary of
+        the staged bytes) and asks the user through the same Comm consent
+        mechanism; every affirmative/negative decision is audit-logged.  The
+        gateway refuses tickets that never went through this channel.
+        """
+        from peaksMCP.overrides import save as save_module
+
+        def approve(preview: dict) -> bool:
+            approved = self.consent.request("save_ticket", dict(preview))
+            self.audit.write(
+                "save_result_consent",
+                "approved" if approved else "denied",
+                {
+                    "path": preview.get("path"),
+                    "ticket_id": preview.get("ticket_id"),
+                    "sha256": str(preview.get("sha256") or "")[:16],
+                    "kind": preview.get("kind"),
+                    "size_bytes": preview.get("size_bytes"),
+                },
+            )
+            return approved
+
+        save_module._set_approval_channel(approve)
 
     def _build_mcp(self) -> FastMCP:
         mcp = FastMCP(
