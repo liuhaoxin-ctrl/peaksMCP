@@ -22,6 +22,13 @@ Adapters:
 - plotting conventions: ``plot_batch`` / ``plot_validation_pair`` /
   ``show_mapping_slice``.
 
+Surface invariants (enforced by tests):
+
+- ``MODEL_CALLABLE_EXPORTS`` must equal the manifest ``apis`` keys exactly
+  (every model-callable export belongs to the manifest, and nothing else
+  does); ``CONTRACT_TYPES`` are the non-callable record/result types and are
+  explicitly not verbs.
+
 Low-level metadata helpers (``read_meta`` / ``classify_data_format`` /
 ``is_gold_format`` / ``theta_offset_deg``) live in ``pxt_utils.metadata`` as
 private implementation detail and are NOT re-exported here.  Earlier task
@@ -33,33 +40,44 @@ remains importable in the internal modules for in-process/tests only.
 
 from __future__ import annotations
 
-from peaksMCP.plotting.layout import plot_batch
-from peaksMCP.plotting.validation import plot_validation_pair
-from peaksMCP.workflows.publication import validate_arpes_metadata
-from peaksMCP.workflows.slice_view import show_mapping_slice
+from peaksMCP.plotting.layout import plot_batch  # noqa: F401 (public surface)
+from peaksMCP.plotting.validation import plot_validation_pair  # noqa: F401
+from peaksMCP.workflows.slice_view import show_mapping_slice  # noqa: F401
 
-from .conversion import convert_experiment
-from .inspection import ExperimentSummary, ScanKind, ScanSummary, inspect_experiment
-from .load import LoadedScans, ScanEntry, load_data
-from .save import SaveReceipt
+from .conversion import convert_experiment  # noqa: F401
+from .inspection import (  # noqa: F401
+    ExperimentSummary,
+    ScanKind,
+    ScanSummary,
+    inspect_experiment,
+)
+from .load import LoadedScans, ScanEntry, load_data  # noqa: F401
+from .save import SaveReceipt  # noqa: F401
 
-__all__ = [
-    # loading adapters
-    "load_data",
-    "LoadedScans",
-    "ScanEntry",
-    # conversion + experiment adapters
-    "convert_experiment",
-    "inspect_experiment",
-    "ExperimentSummary",
-    "ScanSummary",
-    "ScanKind",
-    # save receipt type (the verb is the MCP tool save_with_consent)
-    "SaveReceipt",
-    # publication metadata validation (model-visible helper)
-    "validate_arpes_metadata",
-    # plotting conventions
-    "plot_batch",
-    "plot_validation_pair",
-    "show_mapping_slice",
-]
+#: The six public adapters registered in ``config/override_manifest.yaml``.
+#: Invariant: ``peaksMCP.overrides.MODEL_CALLABLE_EXPORTS == manifest keys``.
+MODEL_CALLABLE_EXPORTS = frozenset(
+    {
+        "load_data",
+        "convert_experiment",
+        "inspect_experiment",
+        "plot_batch",
+        "plot_validation_pair",
+        "show_mapping_slice",
+    }
+)
+
+#: Non-callable contract/record types re-exported for typing convenience.
+#: They are deliberately NOT model verbs and never appear in the manifest.
+CONTRACT_TYPES = frozenset(
+    {
+        "LoadedScans",
+        "ScanEntry",
+        "ExperimentSummary",
+        "ScanSummary",
+        "ScanKind",
+        "SaveReceipt",
+    }
+)
+
+__all__ = sorted(MODEL_CALLABLE_EXPORTS | CONTRACT_TYPES)

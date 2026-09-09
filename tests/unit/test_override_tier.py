@@ -111,7 +111,7 @@ def test_override_apis_are_black_box_without_source_path():
 
 
 def test_search_match_mode_classification():
-    """peaks_search_api's match_mode must reflect how the query resolved."""
+    """search's match_mode must reflect how the query resolved."""
     from peaksMCP.server.jupyter_peaks.core.tools import _search_match_mode
 
     override_hit = [{"name": "load_data"}]

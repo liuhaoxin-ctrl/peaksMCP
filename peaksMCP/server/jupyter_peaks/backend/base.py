@@ -58,13 +58,13 @@ class SharedState:
     mcp_instance_id: str | None = None
     #: Canonical-API proof ledger: ``canonical id -> entry snapshot``
     #: (id/name/scope/module/tier/exposure) recorded by a successful
-    #: ``peaks_get_api`` this session.  run_cell unlocks an exact-name Peaks
+    #: ``get`` this session.  run_cell unlocks an exact-name Peaks
     #: call ONLY through this ledger (id + scope must match the call) - names
     #: alone never unlock Python symbols and same-name/different-scope APIs
     #: cannot be confused.
     verified_apis: dict[str, dict[str, Any]] = field(default_factory=dict)
     #: Per-name count of unproven write attempts, driving the advisory ->
-    #: hard-refusal escalation until the name is proven with peaks_get_api.
+    #: hard-refusal escalation until the name is proven with get.
     unknown_api_attempts: dict[str, int] = field(default_factory=dict)
 
     @property

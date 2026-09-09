@@ -386,7 +386,7 @@ def test_audit_is_jsonl_and_private(tmp_path):
 
 def test_write_without_proof_blocks_exact_peaks_calls_until_get(tmp_path):
     """Canonical proof is a HARD gate: an exact-name Peaks call without a
-    successful peaks_get_api this session is blocked (advisory).  After the
+    successful get this session is blocked (advisory).  After the
     canonical id lands in the ledger the call runs; invented/typo'd APIs
     always block."""
     from unittest.mock import Mock
@@ -425,7 +425,7 @@ def test_write_without_proof_blocks_exact_peaks_calls_until_get(tmp_path):
 
 def test_unknown_api_first_advisory_then_same_name_hard(tmp_path):
     """First unknown occurrence is advisory; repeating the same unproven name
-    is a hard refusal until the model proves it with peaks_get_api."""
+    is a hard refusal until the model proves it with get."""
     from unittest.mock import Mock
 
     from peaksMCP.discovery.index import build_index
@@ -456,7 +456,7 @@ def test_unknown_api_first_advisory_then_same_name_hard(tmp_path):
 
 
 def _prove(state, index, name, scope=None):
-    """Simulate a successful peaks_get_api: record canonical proof ids."""
+    """Simulate a successful get: record canonical proof ids."""
     from peaksMCP.server.jupyter_peaks.core.tools import _record_verified_api
 
     found = False
@@ -480,7 +480,7 @@ def _prove_all(state, index, index_by_name):
 
 
 def test_get_api_proof_unlocks_only_canonical_name(tmp_path):
-    """peaks_get_api proof unlocks the canonical executable name only.
+    """get proof unlocks the canonical executable name only.
 
     Natural-language aliases are search vocabulary, not Python identifiers:
     writing an alias as a callable must stay blocked even after the entry was
@@ -511,7 +511,7 @@ def test_get_api_proof_unlocks_only_canonical_name(tmp_path):
     first = nb.write_with_api_check(f"{alias_name}(da, dim='eV')", timeout=5)
     assert first["blocked"] is True
 
-    _record_verified_api(state, entry)  # what a successful peaks_get_api records
+    _record_verified_api(state, entry)  # what a successful get records
 
     # The alias still does not unlock a Python symbol after proof.
     again = nb.write_with_api_check(f"{alias_name}(da, dim='eV')", timeout=5)

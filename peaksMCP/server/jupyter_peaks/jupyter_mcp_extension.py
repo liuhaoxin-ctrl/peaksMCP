@@ -48,7 +48,7 @@ def _start(ipython: Any, host: str | None = None, port: int | None = None) -> Ju
             allow_remote=os.environ.get("PEAKSMCP_ALLOW_REMOTE", "false").lower() == "true",
         )
     # Pre-warm the peaks import on the main (extension-loading) thread. The first
-    # peaks_search_api call runs on the FastMCP background thread, where an import
+    # a get call runs on the FastMCP background thread, where an import
     # racing a concurrent main-thread import could deadlock on the import lock.
     if "peaks" not in sys.modules:
         try:

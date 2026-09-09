@@ -19,7 +19,7 @@ prompts:
   # ---------------------------------------------- server-level instructions
   # Delivered on every session through FastMCP server instructions (the most
   # globally visible prompt in the system).
-  server_instructions: "Work through peaksMCP tools only. Query peaks_search_api and peaks_get_api before writing unfamiliar Peaks code. Write model-generated Peaks analysis code through notebook_write_with_api_check, which verifies every Peaks API reference against the live API index before appending and executing a new cell. Inspect xarray variables before analysis and preserve units in every figure. Prefer a peaksMCP plotting facade (plot_batch, plot_validation_pair, show_mapping_slice) over hand-written matplotlib; when raw matplotlib is unavoidable use constrained_layout, DejaVu Sans with mathtext symbols ($k_x$, $E_F$) and English labels, 150 dpi inline and 300 dpi when saving. Figures render inline in the notebook for the user; a rendered cell returns an 'Inline figure rendered ...' line. Describe a figure's type (matplotlib vs bokeh/holoviews) and options only from what the output actually shows. Executing or adding notebook cells appends at the end of the notebook; existing cells remain unchanged. Do not write analysis results to disk: show them in the notebook first and let the user decide. A cell that writes a file or saves a figure pauses for the user's explicit approval in the notebook; never claim a file was saved unless that approval was given."
+  server_instructions: "Work through the five peaksMCP tools only: search, get, inspect_notebook, run_cell, save_with_consent. Query search and get before writing unfamiliar Peaks code - run_cell requires the canonical id of every exact-name Peaks API to be proven by get first (scope must match; pass api_ids to declare them). Write model-generated Peaks analysis code through run_cell, which verifies every Peaks API reference against the live API index before appending and executing a new cell at the end of the notebook (append-only). Inspect the notebook and variables with inspect_notebook (variables/variable/active_cell/cells/cell targets) and preserve units in every figure. Prefer a peaksMCP plotting facade (plot_batch, plot_validation_pair, show_mapping_slice) over hand-written matplotlib; when raw matplotlib is unavoidable use constrained_layout, DejaVu Sans with mathtext symbols ($k_x$, $E_F$) and English labels, 150 dpi inline and 300 dpi when saving. Figures render inline in the notebook for the user; a rendered run_cell reply carries an 'Inline figure rendered ...' line; raw outputs are never returned twice. run_cell is never a persistence path: cells that write files are blocked - persist results or figures exclusively with save_with_consent (staged bytes + approval card; one variable/file per call) and PXT conversion with convert_experiment. Never claim a file was saved unless the receipt says so and the user approved the card."
 
   # ------------------------------------------------------------------ tools
   interactive_omitted_note: "Interactive panel/widget rendered in the notebook for the user; it cannot be embedded here. Consider it done and describe the figure to the user."
@@ -31,10 +31,10 @@ prompts:
   # ------------------------------------------------------- notebook_unsafe
   notebook_unsafe:
     index_build_failed: "The Peaks API index could not be built; restart the kernel."
-    unknown_api_first: "Execution blocked: unverifiable API reference(s) {names}. None of these resolve to a Peaks API by exact name. Use peaks_search_api to find the correct API (candidates: {suggestions}) or fix the typo. If the receiver is complex (e.g. a function return value), assign it to an intermediate variable first. This name must be fetched with peaks_get_api before it can be used."
-    unknown_api_retry: "Execution blocked: these names were already reported as unverifiable this session ({names}) and no successful peaks_get_api has followed. Call peaks_search_api, then peaks_get_api(<canonical id>) once for each name, then resubmit the cell."
+    unknown_api_first: "Execution blocked: unverifiable API reference(s) {names}. None of these resolve to a Peaks API by exact name. Use search to find the correct API (candidates: {suggestions}) or fix the typo. If the receiver is complex (e.g. a function return value), assign it to an intermediate variable first. This name must be fetched with get before it can be used."
+    unknown_api_retry: "Execution blocked: these names were already reported as unverifiable this session ({names}) and no successful get has followed. Call search, then get(<canonical id>) once for each name, then resubmit the cell."
     api_check_rule: "Prefer a peaksMCP override API whenever one fits the user's intent; use the native peaks API only when no override applies, and non-Peaks functions only when Peaks has no corresponding API. Unrecognised method names block execution."
-    import_not_exported: "Import blocked: {names} cannot be imported from peaks/peaksMCP — not a real export. Use peaks_search_api to find the correct API, or import from a generic library instead."
+    import_not_exported: "Import blocked: {names} cannot be imported from peaks/peaksMCP — not a real export. Use search to find the correct API, or import from a generic library instead."
     star_import_rejected: "Star import from {module} is rejected: importing every name would defeat the API check. Import the names you need explicitly."
 
   # --------------------------------------------------------- code scanner
@@ -64,7 +64,7 @@ prompts:
     deserialize_unsafe: "unsafe deserialization via {name}"
     env_mutation: "process environment modification"
     env_mutation_aliased: "process environment modification through an aliased os.environ"
-    savefig_consent: "figure save to disk (savefig) requires explicit user confirmation; figures render inline by default"
+    savefig_consent: "figure save to disk (savefig) is blocked in run_cell: run_cell never persists; use save_with_consent on the figure variable"
     # execution
     exec_dynamic: "dynamic code execution via {name}"
     exec_indirect: "dynamic code execution via indirect fetch of {target}"

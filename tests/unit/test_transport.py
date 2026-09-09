@@ -13,8 +13,8 @@ from peaksMCP.transport.stdio_proxy import EXPECTED_TOOL_NAMES, check_http_mcp_s
     [
         ([], [], [], True),
         (["rogue_tool"], [], [], False),
-        ([], ["peaks_get_api"], [], False),
-        ([], [], ["peaks_search_api"], False),
+        ([], ["get"], [], False),
+        ([], [], ["search"], False),
     ],
 )
 def test_http_probe_requires_exact_tool_inventory(

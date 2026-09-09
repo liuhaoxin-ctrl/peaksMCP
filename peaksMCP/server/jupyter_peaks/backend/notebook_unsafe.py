@@ -63,7 +63,7 @@ class UnsafeNotebookBackend:
         # convert_experiment (PXT -> NetCDF), both of which stage + consent.
         # Notebook autosave (frontend save_notebook) is Run provenance, not
         # analysis-result persistence, and is not affected.
-        if operation in {"notebook_write_with_api_check", "notebook_add_cell"} and scan:
+        if operation in {"run_cell", "add_cell"} and scan:
             persist_issues = [
                 issue
                 for issue in scan.requires_explicit_consent
@@ -96,7 +96,7 @@ class UnsafeNotebookBackend:
         self.audit.write(operation, "approved", {})
 
     def execute_code(self, code: str, timeout: float = 120.0) -> dict[str, Any]:
-        self._authorize("notebook_write_with_api_check", code)
+        self._authorize("run_cell", code)
         return self.state.bridge.request("execute_code", {"code": code}, timeout=timeout)
 
     def _check_project_imports(
@@ -113,7 +113,7 @@ class UnsafeNotebookBackend:
         """
         star = sorted(provenance.star_sources & {"peaks", "peaksMCP"})
         if star:
-            self.audit.write("notebook_write_with_api_check", "blocked", {"reason": "star_import"})
+            self.audit.write("run_cell", "blocked", {"reason": "star_import"})
             return _refused(
                 _PROMPTS["star_import_rejected"].format(module=", ".join(star)),
                 requires_search=True,
@@ -142,7 +142,7 @@ class UnsafeNotebookBackend:
         if not missing:
             return None
         self.audit.write(
-            "notebook_write_with_api_check",
+            "run_cell",
             "blocked",
             {"reason": "unverified_import", "names": missing},
         )
@@ -361,7 +361,7 @@ class UnsafeNotebookBackend:
 
         if unknown:
             # Escalation: an unverifiable name must be proven with a successful
-            # peaks_get_api.  First occurrence is advisory (with candidates); a
+            # get.  First occurrence is advisory (with candidates); a
             # repeated occurrence of the same unproven name is a hard refusal
             # until the model actually gets the API.
             attempts = self.state.unknown_api_attempts
@@ -370,7 +370,7 @@ class UnsafeNotebookBackend:
             hard_names = [u["name"] for u in unknown if attempts[u["name"]] >= 2]
             if hard_names:
                 self.audit.write(
-                    "notebook_write_with_api_check",
+                    "run_cell",
                     "blocked",
                     {"unknown_refs": hard_names, "reason": "unverified_retry"},
                 )
@@ -393,7 +393,7 @@ class UnsafeNotebookBackend:
                     },
                 }
             self.audit.write(
-                "notebook_write_with_api_check",
+                "run_cell",
                 "blocked",
                 {
                     "unknown_refs": [u["name"] for u in unknown],
@@ -461,18 +461,18 @@ class UnsafeNotebookBackend:
         """
         if cell_type not in {"code", "markdown", "raw"}:
             raise ValueError("cell_type must be code, markdown, or raw")
-        self._authorize("notebook_add_cell", source if cell_type == "code" else "")
+        self._authorize("add_cell", source if cell_type == "code" else "")
         return self.state.bridge.request("add_cell", {"source": source, "cell_type": cell_type})
 
     def append_record_cell(self, source: str, cell_type: str = "markdown") -> dict[str, Any]:
         """Append an INTERNAL record cell at the END of the notebook.
 
         Internal plumbing (save intents/outcomes, archival notes) appends
-        directly through the frontend bridge - deliberately NOT through the
-        model-facing ``notebook_add_cell`` consent gate, so an operation that
-        already has its own consent (e.g. the save card) never triggers a
-        second confirmation when ``require_consent`` is on.  The append-only
-        log contract is unchanged; the cell is just not a model-requested
+        directly through the frontend bridge - deliberately NOT through any
+        model-facing add-cell consent gate, so an operation that already has
+        its own consent (e.g. the save card) never triggers a second
+        confirmation when ``require_consent`` is on.  The append-only log
+        contract is unchanged; the cell is just not a model-requested
         mutation.
         """
         if cell_type not in {"code", "markdown", "raw"}:

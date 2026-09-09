@@ -1,6 +1,6 @@
 version: 1
 tools:
-  peaks_search_api:
+  search:
     title: Search Peaks API
     description: >
       MUST be called before writing any Peaks analysis code. Search is
@@ -12,86 +12,59 @@ tools:
       (exact_name | exact_alias | fuzzy | list) and a score per hit. Rows are
       deliberately compact and black-box: canonical id, name, tier, exposure
       and a one-line summary - never docstrings, aliases or source paths.
-      Call peaks_get_api with the returned canonical id for details.
-  peaks_get_api:
+      Call get with the returned canonical id for the full contract.
+  get:
     title: Get Peaks API
     description: >
-      Get details for ONE canonical API ID returned by peaks_search_api -
-      no other input form is accepted (bare names, aliases and legacy ids
-      are refused; search first). Returns the signature (and bound accessor
-      signature), tier/exposure and a bounded docstring. Both override and
-      native APIs are black-box here: no source paths, aliases or internal
-      fields are ever returned. Call this after searching and before writing
-      code, to confirm the correct usage.
-  askuserquestion:
-    title: Ask User Question
-    description: >
-      Report missing experimental information/essential information to the conversation.
-      Returns {"status": "needs_input", ...} — the caller should then ask the user in the
-      conversation. options MUST be a plain list of strings (e.g. ["S", "P"]) — NOT a
-      list of objects. NEVER invent missing physical values (Fermi level, angle
-      conventions, polarization, temperature); ask instead.
-  notebook_list_variables:
-    title: List Notebook Variables
-    description: List useful variables in the live kernel without reading array values.
+      Get details for ONE canonical API ID returned by search - no other
+      input form is accepted (bare names and aliases are refused; search
+      first). Returns the runtime-verified signature and the structured
+      contract (inputs/returns/preconditions/side_effects/errors/example)
+      for override APIs; never source paths. A successful get also records
+      the canonical proof in the run ledger: run_cell executes an exact-name
+      Peaks call only after its canonical id was fetched here with a
+      matching scope.
   inspect_notebook:
     title: Inspect Notebook
     description: >
-      Inspect the live notebook through the generic object-summary protocol.
-      target discriminates the request: "variables" (namespace listing rows),
-      "variable" (one named variable - pass variable_name) or "active_cell"
-      (the currently selected JupyterLab cell). detail selects "summary"
-      (one bounded line per item) or "preview" (structural detail: xarray
-      dims/sizes/dtype/units/lazy state; LoadedScans-like indices report
-      representation counts, conversion state and metadata provenance -
-      never classification, which belongs to inspect_experiment; other
-      objects get bounded reprs). limit caps variable rows (1..50).
-      All outputs are bounded - nothing unbounded reaches the model.
-  notebook_read_variable:
-    title: Read Notebook Variable
-    description: Summarize a variable; xarray results include dims, coordinates, units, attrs, chunks and Peaks accessors.
-  notebook_read_active_cell:
-    title: Read Active Cell
+      Inspect the live notebook through the generic object-summary protocol
+      (bounded; raw cell outputs are NEVER returned - they travel exactly
+      once, settled inside the run_cell reply). target discriminates:
+      "variables" (namespace rows), "variable" (one named variable - pass
+      variable_name), "active_cell" (current cell identity/source metadata),
+      "cells" (bounded trailing notebook history - tail + pagination via
+      limit/offset) or "cell" (one cell by id or index - pass cell). detail
+      selects "summary" (one bounded line per item) or "preview"
+      (structural detail: xarray dims/sizes/dtype/units/lazy state,
+      LoadedScans-like indices report representation counts and conversion
+      state - never classification, which belongs to inspect_experiment;
+      bounded sources for history rows).
+  run_cell:
+    title: Run Cell
     description: >
-      Read the source and identity of the currently selected JupyterLab cell.
-      Raw cell outputs are normalised into an ``output`` list (errors, the
-      "Inline figure rendered ..." line, interactive markers); text-only
-      outputs are not echoed — they are displayed in the notebook for the user.
-  notebook_server_status:
-    title: MCP Server Status
-    description: Return mode, API-index and Comm-bridge readiness for this kernel MCP server.
-  notebook_write_with_api_check:
-    title: Write Code With API Check
-    description: >
-      Write model-generated code to a new notebook cell, execute it, and automatically
-      verify every Peaks API reference against the live API index. Returns the executed
-      cell identity plus a normalised ``output`` list: errors and the "Inline figure
-      rendered ..." line are echoed; text-only outputs are intentionally not echoed
-      (they are displayed in the notebook for the user). Writing files or saving
-      figures always asks for your approval in the notebook before the cell runs.
-      RULE: only use non-Peaks functions when Peaks has no corresponding API.
-      ALL model-generated Peaks analysis code MUST be written through this tool.
-  notebook_add_cell:
-    title: Add Notebook Cell
-    description: >
-      Append a code, Markdown or raw cell to the END of the notebook. The
-      notebook is a strictly append-only log: cells can never be edited,
-      deleted or reordered, so the agent's work history is preserved top to
-      bottom. Mutation tool: always scanner-checked and audit-logged; when
-      mcp.require_consent is enabled the user first approves it.
+      Write model-generated code to a NEW cell at the END of the notebook and
+      execute it (append-only log: cells are never edited, deleted or
+      reordered). Every Peaks API reference is verified against the live
+      index; canonical-API proof is a HARD gate: an exact-name Peaks call
+      runs only after its canonical id was fetched with get this session
+      (scope must match; pass api_ids to declare the ids this cell relies
+      on). run_cell is NEVER a persistence path: cells that write files
+      (savefig / writers / unclear file modes) are hard-blocked - persist
+      results with save_with_consent and PXT conversion with
+      convert_experiment. Returns the executed cell identity plus a
+      normalised output list (errors, figure markers); text stays in the
+      notebook as the shared record.
   save_with_consent:
     title: Save Variable With Consent
     description: >
-      Persist ONE live notebook variable to a file through the staged,
-      human-approved save flow. A record cell showing the variable's
-      normalized preview (kind, shape, dtype, units, target path) is appended
-      to the notebook first; the result is then serialised into a unified
-      staging area (strict TTL) and the save consent card asks for approval;
-      only an affirmative decision atomically publishes the exact staged
-      bytes. Returns a SaveReceipt: operation / status (saved | denied |
-      blocked | failed) / path / kind / size_bytes / sha256 / dims /
-      dtype / units / overwrite / ticket_id. One variable, one file, per
-      call - never batch. overwrite=True only permits replacing an existing
-      target AFTER approval; without it an existing target is refused
-      (status blocked). The model Python surface has no save function: this
-      tool is the only persistence verb.
+      Persist ONE live notebook variable (or matplotlib figure) to a file -
+      the single persistence verb. A record cell showing the normalized
+      preview is appended first, the exact bytes are staged in a unified
+      server-owned temp area (strict TTL, no code-level approve), the save
+      consent card asks for approval, and only an affirmative decision
+      atomically publishes. Returns a SaveReceipt: operation / status
+      (saved | denied | blocked | failed) / path / kind / size_bytes /
+      sha256 / dims / dtype / units / overwrite / ticket_id. Targets: xarray
+      DataArray/Dataset (.nc), dict/list (.json), matplotlib Figure
+      (.png/.svg/.pdf/.jpg). One variable, one file, per call. overwrite=True
+      only permits replacing an existing target AFTER approval.

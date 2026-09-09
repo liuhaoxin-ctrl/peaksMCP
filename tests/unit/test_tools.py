@@ -25,19 +25,24 @@ def test_tool_surface_matches_metadata_baseline():
     assert names(server) == sorted(tool_names())
 
 
-def test_removed_tools_stay_removed():
-    """Regression guards for tool-surface reductions already shipped."""
+def test_five_tool_surface_is_exact():
+    """The model surface is EXACTLY search/get/inspect_notebook/run_cell/
+    save_with_consent - positive list plus negative assertions for every
+    retired tool name."""
     server = JupyterPeaksMCPServer(SharedState(FakeIPython()))
     exposed = set(names(server))
-    assert {"notebook_write_with_api_check", "notebook_add_cell"} <= exposed
-    # The old model-generated code entry points are no longer exposed.
-    assert "notebook_execute_code" not in exposed
-    assert "notebook_execute_with_api_check" not in exposed
-    assert "notebook_execute_active_cell" not in exposed
-    # delete_cell / apply_patch were removed: the notebook is a strictly
-    # append-only log and patching an existing cell would overwrite it.
-    assert "notebook_delete_cell" not in exposed
-    assert "notebook_apply_patch" not in exposed
+    assert exposed == {"search", "get", "inspect_notebook", "run_cell", "save_with_consent"}
+    for retired in (
+        # guidance / read / mutation tools folded into the five.
+        "askuserquestion", "notebook_list_variables", "notebook_read_variable",
+        "notebook_read_active_cell", "notebook_server_status", "notebook_add_cell",
+        # pre-shrink names.
+        "peaks_search_api", "peaks_get_api", "notebook_write_with_api_check",
+        # even older entry points and mutation tools.
+        "notebook_execute_code", "notebook_execute_with_api_check",
+        "notebook_execute_active_cell", "notebook_delete_cell", "notebook_apply_patch",
+    ):
+        assert retired not in exposed, retired
 
 
 def test_tool_metadata_is_nonempty():

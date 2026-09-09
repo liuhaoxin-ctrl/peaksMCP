@@ -29,10 +29,12 @@ operator-console token, and rejects non-loopback binding unless a profile explic
 
 MCP restarts are verified with a per-MCP instance ID, and kernel restarts with a
 per-kernel instance ID. With a live frontend
-(``require_comm``) recovery reports READY only after that ID changes and the extension,
-Comm, MCP initialize, the exact 15-tool inventory and status tool have all recovered; when the
-frontend is offline the restart degrades to a plain REST restart and reports READY
-without the Comm stage (kernel + MCP still fully recovered).
+(``require_comm``) recovery reports READY only after that ID changes and the
+extension, Comm, MCP initialize, the exact 5-tool inventory (search / get /
+inspect_notebook / run_cell / save_with_consent) and the private loopback
+``/healthz`` payload have all recovered; when the frontend is offline the
+restart degrades to a plain REST restart and reports READY without the Comm
+stage (kernel + MCP still fully recovered).
 
 ## Development entry points
 

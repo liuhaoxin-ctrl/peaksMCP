@@ -44,6 +44,23 @@ _OVERRIDE_ENTRY_KEYS = frozenset(
     }
 )
 
+#: Every public adapter must declare the FULL contract - a row that only
+#: carries export/exposure/summary would leave the model without the
+#: usage/limit/side-effect documentation the black-box surface promises.
+_OVERRIDE_REQUIRED_KEYS = frozenset(
+    {
+        "export",
+        "exposure",
+        "summary",
+        "inputs",
+        "returns",
+        "preconditions",
+        "side_effects",
+        "errors",
+        "example",
+    }
+)
+
 _EXPOSURES = frozenset({"facade", "advanced", "internal"})
 
 
@@ -131,8 +148,9 @@ def validate_override_manifest(document: dict[str, Any]) -> list[str]:
         unknown = set(entry) - _OVERRIDE_ENTRY_KEYS
         if unknown:
             errors.append(f"override_manifest: {name} has unknown key(s) {sorted(unknown)}")
-        for required in ("export", "exposure", "summary"):
-            if not entry.get(required):
+        for required in sorted(_OVERRIDE_REQUIRED_KEYS):
+            value = entry.get(required)
+            if value is None or (isinstance(value, str) and not value.strip()):
                 errors.append(f"override_manifest: {name} must declare {required!r}")
         _check_aliases(entry, f"override_manifest: {name}", errors)
         export = entry.get("export")

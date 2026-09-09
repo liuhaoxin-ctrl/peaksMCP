@@ -2,7 +2,7 @@
 #
 # Each case is a natural-language task phrase (English or Chinese) that a user
 # or agent might type, mapped to the API ``name`` that MUST be returned by
-# ``peaks_search_api`` / ``search_index`` for the task. Used by
+# ``search`` / ``search_index`` for the task. Used by
 # ``tools/benchmark_search.py`` to measure Top-1 / Top-3 / MRR and guard
 # against ranking regressions.
 version: 1

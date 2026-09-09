@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Search benchmark: measure Top-1 / Top-3 / MRR of peaks_search_api ranking.
+"""Search benchmark: measure Top-1 / Top-3 / MRR of search ranking.
 
 Loads ``tools/search_benchmark_queries.yaml`` (60+ Chinese and English
 natural-language tasks), runs each against the live ``peaksMCP.discovery`` index
@@ -100,7 +100,7 @@ def report(metrics: dict) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="peaks_search_api ranking benchmark")
+    parser = argparse.ArgumentParser(description="search ranking benchmark")
     parser.add_argument("--top3-required", type=float, default=1.0,
                         help="minimum Top-3 rate to pass (default 1.0)")
     parser.add_argument("--mrr-required", type=float, default=0.9,

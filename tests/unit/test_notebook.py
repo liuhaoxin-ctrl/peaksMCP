@@ -245,3 +245,63 @@ def test_inspect_active_cell_never_returns_raw_outputs():
     assert preview["id"] == "cell-7" and preview["source"].startswith("data.plot()")
     assert "outputs" not in preview
     assert "secret" not in str(preview) and "QUJDREVGRw" not in str(preview)
+
+
+def test_inspect_notebook_cell_history_targets_are_bounded_and_output_free():
+    """cells/cell targets read bounded history through the frontend document
+    model: identity + source + execution metadata only, never raw outputs;
+    pagination via limit/offset; missing cells raise KeyError."""
+    class Bridge:
+        connected = True
+
+        def request(self, operation, payload=None, timeout=5):
+            if operation == "read_cells":
+                limit, offset = payload["limit"], payload["offset"]
+                all_cells = [
+                    {"id": f"c{i}", "index": i, "cell_type": "code",
+                     "execution_count": i, "source": f"source {i}"}
+                    for i in range(5)
+                ]
+                end = len(all_cells) - offset
+                start = max(0, end - limit)
+                return {"cells": all_cells[start:end], "truncated": start > 0}
+            if operation == "read_cell":
+                wanted = payload["cell"]
+                for row in [
+                    {"id": f"c{i}", "index": i, "cell_type": "code",
+                     "execution_count": i,
+                     "source": "data.plot()", "outputs": ["secret-output"]}
+                    for i in range(5)
+                ]:
+                    if wanted == row["id"] or wanted == row["index"]:
+                        return {"cell": row}
+                return {"cell": None}
+            raise AssertionError(f"unexpected op {operation}")
+
+    state = SharedState(FakeIPython({}))
+    state.bridge = Bridge()
+    backend = NotebookBackend(state)
+
+    rows = backend.inspect("cells", detail="summary", limit=2, offset=1)
+    assert rows["count"] == 2 and rows["truncated"] is True
+    assert [cell["index"] for cell in rows["cells"]] == [2, 3]
+    assert rows["cells"][0]["source_preview"].startswith("source 2")
+    assert "outputs" not in rows["cells"][0]
+
+    preview = backend.inspect("cells", detail="preview", limit=50)
+    assert preview["cells"][0]["source"] == "source 0"
+    assert "outputs" not in preview["cells"][0]
+
+    one = backend.inspect("cell", cell="c3", detail="preview")
+    assert one["index"] == 3 and one["source"].startswith("data.plot()")
+    assert "outputs" not in one and "secret-output" not in str(one)
+
+    summary = backend.inspect("cell", cell=1, detail="summary")
+    assert summary["source_preview"] and "outputs" not in summary
+
+    with pytest.raises(KeyError, match="does not exist"):
+        backend.inspect("cell", cell="missing")
+    with pytest.raises(ValueError, match="requires cell"):
+        backend.inspect("cell")
+    with pytest.raises(ValueError, match="unknown target"):
+        backend.inspect("nonsense")

@@ -97,11 +97,14 @@ Claude Desktop <-> STDIO proxy <-> HTTP MCP <-> Jupyter kernel <-> JupyterLab Co
   implementation modules stay importable but never surface in search. The
   full-index fallback is reported as `searched_namespace="mixed"` (never
   "native").
-- `peaksMCP/overrides/` — curated black-box facades: the single canonical
-  import surface (`peaksMCP.overrides`). `load_data` / `save_result`,
-  `convert_experiment` / `inspect_experiment`, `fit_gold_reference`,
-  `preprocess_cut` / `preprocess_mapping` / `preprocess_batch`, plus plotting
-  facades re-exported from their implementation modules.
+- `peaksMCP/overrides/` — curated black-box adapters: the single canonical
+  import surface (`peaksMCP.overrides`) exporting exactly the six manifest
+  verbs (`load_data` / `convert_experiment` / `inspect_experiment` /
+  `plot_batch` / `plot_validation_pair` / `show_mapping_slice`) plus contract
+  types.  Persistence is the `save_with_consent` MCP tool, NOT a Python
+  function; the save gateway lives in `overrides/save.py`; old task facades
+  (`fit_gold_reference`, `preprocess_cut`/`mapping`/`batch`) are internal
+  modules, never exported.
 - `peaksMCP/pxt_utils/` — PXT→NetCDF conversion: `loader.py`, `converter.py`
   (atomic batch), `csv_translator.py`, `models.py`
 - `peaksMCP/batch/` — CPU-budgeted process pool (`executor.py`, `resource_budget.py`)
@@ -112,8 +115,10 @@ Claude Desktop <-> STDIO proxy <-> HTTP MCP <-> Jupyter kernel <-> JupyterLab Co
   `notebook_unsafe` hard-block replies, code/ipython scanner issue descriptions)
 - `peaksMCP/config/native_catalog.yaml` — upstream peaks presentation
   (aliases + docstring notes; fixed native tier; strict v1 schema)
-- `peaksMCP/config/override_manifest.yaml` — project black-box exposure
-  (strict v3 schema: per-API rows + facade contract seeds)
+- `peaksMCP/config/override_manifest.yaml` — the single manifest of public
+  project APIs (strict v4 schema: one row per adapter with the FULL contract
+  - export/exposure/aliases/summary/inputs/returns/preconditions/
+  side_effects/errors/example; no seeds block)
 - `peaksMCP/config/schema.py` — strict validation for both catalogs (duplicate
   keys, unknown fields, enum values, ghost references); a damaged default
   configuration fails the index build loudly
@@ -167,8 +172,8 @@ When adding, removing or renaming an MCP tool, update **all** of these:
 - [ ] Run `ruff check peaksMCP tests tools` and the unit tests
 
 Tool metadata lives in YAML, not hardcoded in Python. `config/metadata.py` loads
-`metadata_baseline.yaml` (9 tools: 7 read-only/guidance + 2 mutation) as the single
-source of truth for titles and
+`metadata_baseline.yaml` (exactly 5 tools: search / get / inspect_notebook /
+run_cell / save_with_consent) as the single source of truth for titles and
 descriptions, and `prompts.yaml` for the runtime prompt text that tools,
 `notebook_unsafe.py` and the code scanners show the model/user.
 
@@ -176,33 +181,39 @@ descriptions, and `prompts.yaml` for the runtime prompt text that tools,
 
 ## 6. Security and consent
 
-All 9 tools (7 read-only/guidance + 2 mutation) are **always exposed**; consent
-for the 2 mutation tools (`notebook_write_with_api_check`, `notebook_add_cell`) is
-governed by two independent triggers:
+The model surface is exactly FIVE tools, always exposed: `search` / `get` /
+`inspect_notebook` / `run_cell` / `save_with_consent`.  Consent has three
+independent layers:
 
 - **Plain execution** follows the single `require_consent` master switch: when
   it is off (default) ordinary analysis cells run without a prompt (the AST
   scanner still hard-blocks dangerous code and every call is audit-logged);
-- **Write-to-disk / network intents** (scanner findings `SAVE001` savefig,
-  `SAVE002` file writers, `FILE002` unclear file mode, `NET001` egress) always
-  require explicit frontend approval in the notebook — no result is persisted
-  unless the user sees the exact cell and approves it, regardless of the switch.
+- **run_cell is never a persistence path**: file-write intents (scanner
+  findings `SAVE001` savefig, `SAVE002` file writers, `FILE002` unclear file
+  mode) are hard-blocked with a pointer to `save_with_consent` /
+  `convert_experiment` — there is no in-cell write that a prompt could unlock;
+- **staged persistence**: `save_with_consent` (and conversion) stage the exact
+  bytes in a server-owned gateway (strict TTL) and only an affirmative
+  decision on the frontend save card publishes them; network egress
+  (`NET001`) keeps the explicit-consent gate.
 
 There is no security mode.
 
-The notebook is a **strictly append-only log**: both mutation tools only append
-a new cell at the END and can never edit, delete or reorder an existing cell, so
-the agent's full work history is preserved top-to-bottom. `notebook_delete_cell`,
-the frontend `delete_cell`/`apply_patch` handlers and the `mcp_list_resources`
-resources system were all removed for exactly this reason (see changelog).
+The notebook is a **strictly append-only log**: `run_cell` only appends a new
+cell at the END (internal record cells append the same way) and nothing can
+edit, delete or reorder an existing cell, so the agent's full work history is
+preserved top-to-bottom. `notebook_delete_cell`, the frontend
+`delete_cell`/`apply_patch` handlers and the `mcp_list_resources` resources
+system were all removed for exactly this reason (see changelog).
 
 The consent master switch is `mcp.require_consent` in the active profile
 (default **false**; the supervisor also exposes `PEAKSMCP_REQUIRE_CONSENT`).
 With consent **disabled** (the default) plain execution shows no frontend
 prompt: the AST code scanner (always-on hard block) and the audit log are the
-only guards for ordinary cells. Write-to-disk cells always prompt for explicit
-frontend consent in the notebook (see above) — there is no way to persist a
-result without the user seeing the cell and approving it. There is no mode that
+only guards for ordinary cells. Persistence is never unlocked by a prompt on a
+write cell (run_cell blocks in-cell writes outright): it happens only through
+the staged `save_with_consent` / conversion cards, so there is no way to
+persist a result without the user approving the card. There is no mode that
 relaxes this policy.
 
 The scanner (`security/code_scanner.py`) is AST-semantic (alias-aware,
@@ -228,12 +239,13 @@ Consent decisions and every tool call are written to the audit log
 %peaksMCP_status         # show status
 ```
 
-There is **no security mode**. Plain-execution consent for the two mutation
-tools follows the single `require_consent` master switch (profile
-`mcp.require_consent`, default **false**): when off, ordinary cells run without
-a prompt (the scanner still hard-blocks dangerous code and every call is
-audit-logged). Write-to-disk intents (savefig / file writers / network egress)
-always require explicit in-notebook approval regardless of the switch.
+There is **no security mode**. Plain-execution consent follows the single
+`require_consent` master switch (profile `mcp.require_consent`, default
+**false**): when off, ordinary cells run without a prompt (the scanner still
+hard-blocks dangerous code and every call is audit-logged). run_cell hard-
+blocks in-cell file writes (never a persistence path); persistence happens
+only through `save_with_consent` / conversion consent cards; network egress
+(`NET001`) keeps its explicit-approval gate.
 
 ---
 
@@ -242,8 +254,8 @@ always require explicit in-notebook approval regardless of the switch.
 **Conversion runs in the notebook, not from a shortcut.** There is deliberately
 no `peaksMCP convert` / `metadata translate` / `load` CLI command and no
 dashboard conversion endpoint: every data operation runs as a notebook cell
-written through `notebook_write_with_api_check`, so the code scanner, the API
-check and the consent gate always apply.
+written through `run_cell`, so the code scanner, the API proof check and the
+persistence policy always apply.
 
 - `convert_pxt` (single file) / `convert_path` (directory) — the CLI and console
   equivalents were removed; the semantics below still hold.
@@ -273,7 +285,7 @@ check and the consent gate always apply.
 ```bash
 peaksMCP dash            # start the dashboard host if needed and open the console (single entry; idempotent)
 peaksMCP status          # host / jupyter / kernel state
-peaksMCP mcp-ping        # verify in-kernel MCP endpoint (expect ok: true, 15 tools)
+peaksMCP mcp-ping        # verify in-kernel MCP endpoint + private /healthz (expect ok: true, 5 tools)
 peaksMCP stop            # stop the dashboard host (and the Jupyter/MCP tree it manages)
 peaksMCP restart         # stop the host and start a fresh one
 peaksMCP restart kernel  # kernel-side reload (the API index now hot-rebuilds itself when the source changes, so no restart is needed for index freshness)
@@ -331,7 +343,7 @@ House rules while developing:
   under the surface that does not earn a facade stays native and passes through.
 - Single canonical source per contract/prompt/output format: manifest, prompts
   YAML and the Show formatter respectively — no duplicated instruction text.
-- Any new file-write path must route through the Save primitive (preview ->
-  consent), never write by itself.
-- Reports converge on one base shape {operation, status, partial, warnings,
-  selection, provenance}; add typed fields only where the model reads them.
+- Any new file-write path must route through the Save gateway (preview ->
+  consent), never write by itself; run_cell never persists.
+- Results are typed models (ExperimentSummary / ConversionReport /
+  SaveReceipt); there is deliberately no generic Report layer.

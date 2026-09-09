@@ -450,15 +450,6 @@ class RuntimeSupervisor:
         finally:
             client.stop_channels()
 
-    def export_variable(self, name: str, value: Any) -> None:
-        """Set a Python variable in the notebook kernel namespace (silent, no cell).
-
-        Used after conversions so the agent can reference e.g. ``CONVERTED_DIR``
-        without guessing the output path. The variable shows up in
-        ``notebook_list_variables`` and can be used in any cell.
-        """
-        self.execute_kernel(f"{name} = {value!r}", timeout=30)
-
     def restart_mcp(self, timeout: float = 45) -> dict[str, Any]:
         """Restart only FastMCP inside the existing kernel, preserving variables."""
         with self._lifecycle_lock:

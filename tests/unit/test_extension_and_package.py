@@ -38,10 +38,12 @@ def test_every_declared_tool_has_curated_metadata():
     from peaksMCP.config.metadata import tool_names
 
     # tool_names() is the single source of truth (metadata_baseline.yaml); the
-    # literal list lives there, not here.  11 tools: 8 read-only/guidance +
-    # 3 mutation (inspect_notebook joined the read-only protocol surface;
-    # save_with_consent is the one persistence verb).
-    assert len(tool_names()) == 11
+    # literal list lives there, not here.  Exactly FIVE tools after the
+    # Phase-4 shrink: search/get/inspect_notebook/run_cell/save_with_consent.
+    assert len(tool_names()) == 5
+    assert tool_names() == frozenset(
+        {"search", "get", "inspect_notebook", "run_cell", "save_with_consent"}
+    )
     for name in tool_names():
         metadata = tool_metadata(name)
         assert metadata["title"] and metadata["description"]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from functools import wraps
 from typing import Any
 
@@ -239,7 +240,7 @@ def _require_index(state: SharedState):
 
 
 def _record_verified_api(state: SharedState, entry: dict[str, Any]) -> None:
-    """Record a canonical API proof after a successful peaks_get_api.
+    """Record a canonical API proof after a successful get.
 
     The ledger is keyed by the CANONICAL ID (with its scope/module snapshot),
     never by a bare name: run_cell unlocks an exact-name call only when an
@@ -300,21 +301,70 @@ def _register(mcp: FastMCP, name: str, function: Any, audit: AuditLogger) -> Non
 
     @wraps(function)
     def audited(*args, **kwargs):
-        # Every tool call is audited (called/ok/error), not only authorisation
-        # decisions — the audit log is the full tool-call trail.
-        audit.write(name, "called", {"args": _summarize_arguments(args, kwargs)})
+        # Every tool call is audited with ONE operation_id spanning the whole
+        # flow (call -> proof -> scanner -> cell -> consent ticket -> publish),
+        # so log lines for one request can be correlated.  The final line
+        # carries the SEMANTIC outcome (executed / blocked / denied / saved /
+        # failed / ok), not a blanket "ok".
+        operation_id = uuid.uuid4().hex
+        audit.write(name, "called", {"operation_id": operation_id, "args": _summarize_arguments(args, kwargs)})
         try:
             result = function(*args, **kwargs)
         except Exception as exc:
             audit.write(
                 name, "error",
-                {"error_type": type(exc).__name__, "error": str(exc)[:500]},
+                {
+                    "operation_id": operation_id,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc)[:500],
+                },
             )
             raise
-        audit.write(name, "ok", {})
+        outcome, details = _semantic_outcome(result)
+        audit.write(name, outcome, {"operation_id": operation_id, **details})
         return result
 
     mcp.tool(name=name, title=metadata["title"], description=metadata["description"])(audited)
+
+
+def _semantic_outcome(result: Any) -> tuple[str, dict[str, Any]]:
+    """Map a tool result to the semantic audit outcome + correlation fields.
+
+    Outcomes: ``executed`` (a cell ran), ``saved`` / ``denied`` / ``failed`` /
+    ``blocked`` (persistence or refusal), ``ok`` otherwise.  Correlation
+    fields: executed cell id, canonical api ids verified by the api check,
+    and the save ticket id/hash when a persistence verb produced one.
+    """
+    if not isinstance(result, dict):
+        return "ok", {}
+    details: dict[str, Any] = {}
+    cell_id = result.get("id")
+    if isinstance(cell_id, str) and cell_id:
+        details["cell_id"] = cell_id
+    api_check = result.get("api_check")
+    if isinstance(api_check, dict):
+        verified = api_check.get("verified_peaks_apis") or []
+        ids: list[str] = []
+        for item in verified:
+            for match in item.get("matches") or []:
+                if isinstance(match, str) and match not in ids:
+                    ids.append(match)
+        if ids:
+            details["api_ids"] = ids
+    ticket_id = result.get("ticket_id")
+    if isinstance(ticket_id, str) and ticket_id:
+        details["ticket_id"] = ticket_id
+    sha256 = result.get("sha256")
+    if isinstance(sha256, str) and sha256:
+        details["sha256"] = sha256[:16]
+    status = result.get("status")
+    if result.get("blocked"):
+        return "blocked", details
+    if status in {"saved", "denied", "failed", "blocked"}:
+        return str(status), details
+    if result.get("execution_success") is not None or "id" in result:
+        return "executed", details
+    return "ok", details
 
 
 def _read_active_cell_normalized(notebook: NotebookBackend) -> dict[str, Any]:
@@ -332,7 +382,7 @@ def _read_active_cell_normalized(notebook: NotebookBackend) -> dict[str, Any]:
 
 
 def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBackend, audit: AuditLogger) -> None:
-    """Register the six read-only and guidance tools.
+    """Register the read-only/guidance tools (search/get/inspect_notebook).
 
     Parameters
     ----------
@@ -347,7 +397,7 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
     --------
     >>> register_safe_tools(mcp, state, notebook)
     """
-    def peaks_search_api(
+    def search(
         query: str,
         scope: str = "all",
         limit: int = 5,
@@ -375,15 +425,15 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
             "matches": matches,
         }
 
-    def peaks_get_api(canonical_id: str) -> dict[str, Any]:
+    def get(canonical_id: str) -> dict[str, Any]:
         index = _require_index(state)
         entry = index.get(canonical_id)
         if entry is None:
             raise KeyError(
-                f"unknown canonical API ID: {canonical_id}. peaks_get_api "
-                "accepts ONLY the canonical id returned by peaks_search_api "
+                f"unknown canonical API ID: {canonical_id}. get accepts ONLY "
+                "the canonical id returned by search "
                 "(module:peaksMCP.overrides:<name> or a peaks module:name) - "
-                "run peaks_search_api first, then get the id from its results."
+                "run search first, then get the id from its results."
             )
         _record_verified_api(state, entry)
         detail = describe_api(entry)
@@ -395,58 +445,54 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
             )
         return detail
 
-    def askuserquestion(prompt: str, hint: str | None = None, options: list[str] | None = None) -> dict[str, Any]:
-        return {"status": "needs_input", "prompt": prompt, "hint": hint, "options": options or []}
-
-    def read_active_cell() -> dict[str, Any]:
-        return _read_active_cell_normalized(notebook)
-
     def inspect_notebook(
         target: str = "variables",
         variable_name: str | None = None,
         detail: str = "summary",
         limit: int = 10,
+        cell: str | int | None = None,
+        offset: int = 0,
     ) -> dict[str, Any]:
         """Inspect the live notebook through the generic object-summary protocol.
 
-        ``target`` discriminates the request: ``variables`` (listing rows for
-        the namespace), ``variable`` (one named variable, requires
-        ``variable_name``) or ``active_cell`` (the current frontend cell).
-        ``detail`` selects ``summary`` (one bounded line per item) or
+        ``target`` discriminates the request: ``variables`` (namespace rows),
+        ``variable`` (one named variable, requires ``variable_name``),
+        ``active_cell`` (current frontend cell identity/source metadata),
+        ``cells`` (bounded trailing notebook history, tail + pagination via
+        ``limit``/``offset``) or ``cell`` (one cell by id or index, requires
+        ``cell``).  ``detail`` selects ``summary`` (one bounded line/item) or
         ``preview`` (structural detail: xarray dims/sizes/units/lazy state,
-        index representation counts and conversion state, bounded reprs).
-        ``limit`` caps how many variables rows are returned (1..50).
-        Bounds are enforced here; nothing unbounded reaches the model.
+        index representation counts, bounded sources).  Nothing unbounded
+        reaches the model and NO target ever returns raw cell outputs (they
+        travel once, settled inside the run reply).
         """
         return notebook.inspect(
             target,
             variable_name=variable_name,
             detail=detail,
             limit=limit,
+            cell=cell,
+            offset=offset,
         )
 
     functions = {
-        "peaks_search_api": peaks_search_api,
-        "peaks_get_api": peaks_get_api,
-        "askuserquestion": askuserquestion,
+        "search": search,
+        "get": get,
         "inspect_notebook": inspect_notebook,
-        "notebook_list_variables": notebook.list_variables,
-        "notebook_read_variable": notebook.read_variable,
-        "notebook_read_active_cell": read_active_cell,
-        "notebook_server_status": notebook.server_status,
     }
     for name, function in functions.items():
         _register(mcp, name, function, audit)
 
 
 def register_unsafe_tools(mcp: FastMCP, notebook: UnsafeNotebookBackend, audit: AuditLogger) -> None:
-    """Register the two mutation tools.
+    """Register the two mutation tools (run_cell / save_with_consent).
 
-    The notebook is a STRICTLY APPEND-ONLY log: ``notebook_write_with_api_check``
-    and ``notebook_add_cell`` always add a new cell at the END and never edit,
-    delete or reorder an existing cell.  This preserves the agent's full work
-    history top-to-bottom.  Code execution is scanned and audit-logged;
-    write-to-disk intents (SAVE001/SAVE002, network egress) always require
+    The notebook is a STRICTLY APPEND-ONLY log: ``run_cell`` always appends a
+    new cell at the END and never edits, deletes or reorders an existing
+    cell, preserving the agent's full work history top-to-bottom.  Code
+    execution is scanned and audit-logged; file-write intents
+    (SAVE001/SAVE002/FILE002) are hard-blocked (run_cell is never a
+    persistence path) while network egress (NET001) always requires
     explicit user approval in the notebook, while plain execution is governed
     by the ``require_consent`` master switch (profile ``mcp.require_consent``).
 
@@ -461,12 +507,13 @@ def register_unsafe_tools(mcp: FastMCP, notebook: UnsafeNotebookBackend, audit: 
     --------
     >>> register_unsafe_tools(mcp, unsafe_notebook)
     """
-    def notebook_write_with_api_check(
+    def run_cell(
         code: str,
         timeout: float = 120.0,
         api_ids: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Run the API-checked write and return the normalised output summary.
+        """Run code in one new notebook cell (API-checked) and return the
+        normalised output summary.
 
         ``api_ids`` optionally declares the canonical Peaks API ids this cell
         relies on; every declared id must already be proven by a successful
@@ -517,10 +564,9 @@ def register_unsafe_tools(mcp: FastMCP, notebook: UnsafeNotebookBackend, audit: 
         )
 
     functions = {
-        # Model-generated code is written through the API-checked entry point.
-        "notebook_write_with_api_check": notebook_write_with_api_check,
-        "notebook_add_cell": notebook.add_cell,
-        # The one persistence verb (staged bytes + approval card).
+        # The single agent execution entry point (never a persistence path).
+        "run_cell": run_cell,
+        # The single persistence verb (staged bytes + approval card).
         "save_with_consent": save_with_consent,
     }
     for name, function in functions.items():

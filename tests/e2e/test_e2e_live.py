@@ -4,9 +4,10 @@ Brings up a real isolated JupyterLab + managed kernel + in-kernel MCP server on
 test-only ports, then verifies:
 
 - bring-up reaches the ``restart`` readiness chain (kernel → extension → MCP →
-  tools/list → notebook_server_status);
-- the MCP tool surface is live and a real search call ranks results;
-- kernel variables are readable through the notebook tools;
+  tools/list → private /healthz);
+- the MCP tool surface is live (exactly search/get/inspect_notebook/
+  run_cell/save_with_consent) and a real search call ranks results;
+- kernel variables are readable through inspect_notebook;
 - ``restart mcp`` preserves the kernel namespace;
 - ``restart kernel`` rebuilds MCP and clears the namespace;
 - with a real browser frontend, the Comm bridge connects and ``restart all``
@@ -113,8 +114,8 @@ def supervisor(tmp_path_factory):
 
 def test_plot_cell_image_flows_through_comm_to_mcp(supervisor):
     """Real image pipeline: execute a Matplotlib cell -> Jupyter produces a PNG
-    output -> the write tool returns the normalised summary (figure marker,
-    never raw pixels).  Guards the execute -> Comm -> normalise path.
+    output -> run_cell returns the settled normalised summary (figure marker,
+    never raw pixels).  Guards the execute -> settle -> normalise path.
     """
     import concurrent.futures
 
@@ -129,7 +130,6 @@ def test_plot_cell_image_flows_through_comm_to_mcp(supervisor):
     # Wait until the extension has loaded and the in-kernel MCP is serving.
     ready = supervisor.wait_ready(timeout=120, require_comm=False)
     assert ready["ready"], ready
-    # Save-intent cells (savefig) always ask the user; the e2e approves.
     notebook_url = supervisor.status()["notebook_url"] + f"?token={supervisor.token}"
     with sync_playwright() as playwright:
         try:
@@ -149,45 +149,24 @@ def test_plot_cell_image_flows_through_comm_to_mcp(supervisor):
                 if (status.get("components") or {}).get("comm", {}).get("state") == "ready":
                     break
                 time.sleep(1)
-            # Explore the API first (good practice, no longer a hard gate).
-            search = _tool_call_thread(
-                "peaks_search_api", {"query": "k_convert", "limit": 3}
+            # Inline figure cell: the settled run_cell reply carries the
+            # figure marker; raw pixels and print text never return.
+            result = _tool_call_thread(
+                "run_cell",
+                {
+                    "code": (
+                        "import matplotlib.pyplot as plt\n"
+                        "plt.figure(); plt.plot([1, 2, 3])\n"
+                        "print('plot rendered')"
+                    ),
+                },
             )
-            candidate = next(
-                item for item in search["matches"] if item["name"] == "k_convert"
-            )
-            _tool_call_thread("peaks_get_api", {"canonical_id": candidate["id"]})
-            # Save through the recognised pyplot receiver, then display the PNG
-            # as an IPython Image. This exercises the exact pipeline: cell
-            # produces image/png -> frontend Comm push -> normalised write reply.
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(
-                    _tool_call,
-                    supervisor,
-                    "notebook_write_with_api_check",
-                    {
-                        "code": (
-                            "import matplotlib.pyplot as plt\n"
-                            "from IPython.display import Image, display\n"
-                            "plt.figure(); plt.plot([1, 2, 3])\n"
-                            "plt.savefig('e2e_plot.png')\n"
-                            "display(Image(filename='e2e_plot.png'))\n"
-                            "print('plot rendered')"
-                        ),
-                    },
-                )
-                page.get_by_role("button", name="允许", exact=True).click(
-                    timeout=30000
-                )
-                result = future.result(timeout=90)
             assert result is not None
-            # The reply is the normalised summary: cell identity + output list
-            # with the figure marker; raw pixels and print text never return.
             assert result.get("id")
             assert result.get("execution_success") is True
-            assert result.get("saved") is True
             assert isinstance(result.get("output"), list)
             assert "outputs" not in result
+            assert any("Inline figure rendered" in item for item in result.get("output") or [])
         finally:
             browser.close()
 
@@ -198,7 +177,7 @@ def test_bringup_reaches_ready(supervisor):
     assert result["stages"]["kernel"]
     assert result["stages"]["mcp_initialize"]
     assert result["stages"]["tools_list"]
-    assert result["stages"]["status_tool"]
+    assert result["stages"]["health"]
     assert result["stages"]["extension"]
 
 
@@ -207,29 +186,23 @@ def test_mcp_tool_surface_and_search(supervisor):
 
     health = asyncio.run(check_http_mcp_server(supervisor.profile.mcp.host, supervisor.profile.mcp.port))
     assert health["ok"]
+    assert health["status"] is not None  # private /healthz payload (no status tool)
     from peaksMCP.config.metadata import tool_names
 
     assert health["tool_count"] == len(tool_names())
-    safe_tools = {
-        "peaks_search_api", "peaks_get_api", "askuserquestion",
-        "notebook_list_variables", "notebook_read_variable", "notebook_read_active_cell",
-        "notebook_server_status",
+    assert set(health["tools"]) == {
+        "search", "get", "inspect_notebook", "run_cell", "save_with_consent",
     }
-    mutation_tools = {
-        "notebook_write_with_api_check",
-        "notebook_add_cell",
-    }
-    assert set(health["tools"]) == safe_tools | mutation_tools
     assert health["missing_tools"] == []
     assert health["unexpected_tools"] == []
     assert health["duplicate_tools"] == []
 
-    data = _tool_call(supervisor, "peaks_search_api", {"query": "动量转换", "limit": 3})
+    data = _tool_call(supervisor, "search", {"query": "动量转换", "limit": 3})
     assert data["count"] >= 1
     names = [item["name"] for item in data["matches"]]
     assert "k_convert" in names, names
 
-    detail = _tool_call(supervisor, "peaks_get_api", {"canonical_id": "dataarray:peaks.core.process.k_conversion:k_convert"})
+    detail = _tool_call(supervisor, "get", {"canonical_id": "dataarray:peaks.core.process.k_conversion:k_convert"})
     assert "k_convert(" in detail["signature"]
     assert detail["docstring"]
 
@@ -291,7 +264,7 @@ def test_comm_bridge_connects_and_restart_all(supervisor):
             assert result["stages"]["comm"], result
             assert result["stages"]["kernel_restarted"], result
             assert result["kernel_instance_id"] != previous_generation
-            listing = _dashboard_tool(supervisor, "notebook_list_variables", {})
+            listing = _dashboard_tool(supervisor, "inspect_notebook", {"target": "variables"})
             names = [item["name"] for item in listing["variables"]]
             assert "peaksmcp_restart_all_marker" not in names
         finally:
@@ -300,10 +273,10 @@ def test_comm_bridge_connects_and_restart_all(supervisor):
 
 def test_kernel_variables_are_listed_and_readable(supervisor):
     supervisor.execute_kernel("peaksmcp_e2e_marker = {'band': 1.0}", timeout=30)
-    listing = _tool_call(supervisor, "notebook_list_variables", {})
+    listing = _tool_call(supervisor, "inspect_notebook", {"target": "variables"})
     names = [item["name"] for item in listing["variables"]]
     assert "peaksmcp_e2e_marker" in names
-    read = _tool_call(supervisor, "notebook_read_variable", {"name": "peaksmcp_e2e_marker"})
+    read = _tool_call(supervisor, "inspect_notebook", {"target": "variable", "variable_name": "peaksmcp_e2e_marker", "detail": "preview"})
     assert "band" in read.get("repr", "")
 
 
@@ -311,7 +284,7 @@ def test_restart_mcp_preserves_kernel_state(supervisor):
     supervisor.execute_kernel("peaksmcp_e2e_marker = 42", timeout=30)
     result = supervisor.restart_mcp(timeout=120)
     assert result["ready"], result
-    listing = _tool_call(supervisor, "notebook_list_variables", {})
+    listing = _tool_call(supervisor, "inspect_notebook", {"target": "variables"})
     names = [item["name"] for item in listing["variables"]]
     assert "peaksmcp_e2e_marker" in names, "MCP restart must keep the kernel namespace"
 
@@ -320,6 +293,6 @@ def test_restart_kernel_rebuilds_and_clears_state(supervisor):
     supervisor.execute_kernel("peaksmcp_e2e_marker = 42", timeout=30)
     result = supervisor.restart_kernel(timeout=150)
     assert result["ready"], result
-    listing = _tool_call(supervisor, "notebook_list_variables", {})
+    listing = _tool_call(supervisor, "inspect_notebook", {"target": "variables"})
     names = [item["name"] for item in listing["variables"]]
     assert "peaksmcp_e2e_marker" not in names, "kernel restart must clear the namespace"

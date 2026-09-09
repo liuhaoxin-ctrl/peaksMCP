@@ -274,6 +274,23 @@ function cellJSON(panel) {
             : []
     };
 }
+// Bounded notebook-history rows for inspect_notebook: identity, cell type,
+// execution count and source ONLY.  Raw outputs never cross this channel -
+// executed outputs travel exactly once, settled inside the execute reply.
+const HISTORY_SOURCE_MAX = 4000;
+function historyCellRow(notebook, cell) {
+    const row = {
+        id: cell.model.id,
+        index: notebook.widgets.findIndex((w) => w.model.id === cell.model.id),
+        cell_type: cell.model.type,
+        source: (cell.model.sharedModel.getSource() ?? '').slice(0, HISTORY_SOURCE_MAX),
+    };
+    const codeModel = cell.model;
+    if (codeModel.type === 'code' && typeof codeModel.executionCount === 'number') {
+        row.execution_count = codeModel.executionCount;
+    }
+    return row;
+}
 async function handle(panel, comm, data) {
     if (data.type !== 'request') {
         return;
@@ -340,6 +357,33 @@ async function handle(panel, comm, data) {
                 // kind, size, sha256, structure/stats) - approval publishes exactly
                 // those bytes through the kernel-side gateway.
                 result = { approved: await showSaveCard(data.details ?? {}) };
+                break;
+            }
+            case 'read_cells': {
+                // Trailing notebook history with pagination (bounded, output-free).
+                const offset = Math.max(0, Number(data.offset) || 0);
+                const limit = Math.max(1, Math.min(Number(data.limit) || 10, 50));
+                const widgets = notebook.widgets;
+                const end = Math.max(0, widgets.length - offset);
+                const start = Math.max(0, end - limit);
+                const slice = widgets.slice(start, end);
+                result = {
+                    cells: slice.map((cell) => historyCellRow(notebook, cell)),
+                    truncated: start > 0,
+                };
+                break;
+            }
+            case 'read_cell': {
+                const wanted = data.cell;
+                let found = null;
+                for (let index = 0; index < notebook.widgets.length; index++) {
+                    const cell = notebook.widgets[index];
+                    if (wanted === cell.model.id || Number(wanted) === index) {
+                        found = cell;
+                        break;
+                    }
+                }
+                result = { cell: found ? historyCellRow(notebook, found) : null };
                 break;
             }
             case 'execute_code': {

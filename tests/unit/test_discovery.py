@@ -38,7 +38,7 @@ def test_at_least_sixty_natural_language_aliases_rank_top_three():
 
 
 def test_get_api_detail_is_a_clean_whitelist():
-    """peaks_get_api detail must be the whitelist: signature and bounded
+    """get detail must be the whitelist: signature and bounded
     docstring only - never source paths, aliases or legacy ids."""
     index = build_index()
     entry = next(item for item in index.entries if item["name"] == "k_convert")
@@ -261,8 +261,8 @@ def test_stale_index_is_hot_rebuilt_by_search_and_get(monkeypatch, tmp_path):
     mcp = FakeMCP()
     from peaksMCP.server.jupyter_peaks.security import AuditLogger
     register_safe_tools(mcp, state, _StubNotebook(), AuditLogger(tmp_path / "test-audit.log"))  # type: ignore[arg-type]
-    search = mcp.registered["peaks_search_api"]
-    get = mcp.registered["peaks_get_api"]
+    search = mcp.registered["search"]
+    get = mcp.registered["get"]
     # A stale index is hot-rebuilt in-kernel instead of erroring: search/get
     # succeed and the index is fresh again.
     result = search("k_convert")

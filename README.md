@@ -74,7 +74,7 @@ plain HTTP on `127.0.0.1`.
 ```bash
 peaksMCP dash            # single entry: start the dashboard host if needed and open the operator console (alias: open)
 peaksMCP status          # expect host RUNNING + kernel_id once Jupyter is up
-peaksMCP mcp-ping        # expect ok: true, 9 tools (7 read-only/guidance + 2 append-only mutation)
+peaksMCP mcp-ping        # expect ok: true, 5 tools (search/get/inspect_notebook/run_cell/save_with_consent)
 ```
 
 The dashboard host must be running before Claude Desktop uses the tools (the STDIO
@@ -145,7 +145,7 @@ terminal `Ctrl+C` does **not** stop it — use `peaksMCP stop`.
 > conversion, translation and saving run as **notebook cells** through the MCP
 > tools, composing the adapter surface of `peaksMCP.overrides` (`load_data` /
 > `inspect_experiment` / `convert_experiment` plus plotting conventions) with
-> native peaks steps obtained via `peaks_search_api` / `peaks_get_api`, so the
+> native peaks steps obtained via `search` / `get`, so the
 > code scanner, the API check and the consent gate always apply; every
 > persisted file goes through the staged-consent card (the `save_with_consent`
 > MCP tool for results, the conversion consent card for converted NetCDF). The

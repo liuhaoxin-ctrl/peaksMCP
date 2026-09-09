@@ -63,7 +63,7 @@ TIER_NATIVE = "native"
 #: Canonical module for every project (override-tier) API.  Search/get expose
 #: project functions ONLY under ``module:peaksMCP.overrides:<name>``, matching
 #: the manifest ``export`` value.  Every public adapter is importable from the
-#: canonical module, and peaks_get_api verifies that import at runtime; the
+#: canonical module, and get verifies that import at runtime; the
 #: implementation module is projection detail and never surfaces.
 CANONICAL_MODULE = "peaksMCP.overrides"
 
@@ -193,7 +193,7 @@ def _scan_accessor_class(
     methods such as ``set_EF_correction`` / ``get_EF_correction`` that the main
     xarray-descriptor scan never sees.  Each becomes an entry with scope
     ``<accessor_name>`` (e.g. ``metadata:peaks.core.metadata.metadata_methods:set_EF_correction``)
-    so ``peaks_search_api`` / ``peaks_get_api`` can resolve them.
+    so ``search`` / ``get`` can resolve them.
     """
     for member in sorted(dir(accessor_cls)):
         if member.startswith("_"):
@@ -289,7 +289,7 @@ def scan_runtime() -> list[dict[str, Any]]:
             # Peaks custom accessor classes (e.g. ``da.metadata``) expose their
             # own methods (``set_EF_correction``, ``get_EF_correction``, ...) that
             # are otherwise invisible to the index.  Recursively scan those too,
-            # so ``peaks_search_api``/``peaks_get_api`` can find them.
+            # so ``search``/``get`` can find them.
             if is_cached and isinstance(accessor, type) and accessor_module.startswith("peaks."):
                 _scan_accessor_class(entries, accessor, accessor_module, scope, name)
 
@@ -562,7 +562,7 @@ def build_index() -> ApiIndex:
     # Project tier: the curated manifest (v4) is the single source.  Every
     # public adapter is constructed statically - no AST scan of peaksMCP, no
     # canonical projection, no legacy ids.  The full structured contract
-    # rides on the entry so peaks_get_api can render it without source access.
+    # rides on the entry so get can render it without source access.
     project_entries: list[dict[str, Any]] = []
     for name, config in load_api_overrides().items():
         # Only v4 manifest rows (carrying ``export``) become project entries;
@@ -748,7 +748,7 @@ def _compact_entry(item: dict[str, Any], score: int | None = None) -> dict[str, 
 
     Deliberately NOT the full index entry: no docstring body, aliases, legacy
     ids, signature or source paths.  Model-facing search output stays small
-    and black-box; the detail belongs to peaks_get_api (canonical id only).
+    and black-box; the detail belongs to get (canonical id only).
     """
     summary = str(item.get("summary") or "")
     if not summary:

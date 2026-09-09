@@ -70,7 +70,7 @@ def test_server_instructions_are_delivered_from_prompts_yaml():
 
     template = prompts()["server_instructions"]
     assert _SERVER_INSTRUCTIONS == template
-    assert template.startswith("Work through peaksMCP tools only.")
+    assert template.startswith("Work through the five peaksMCP tools only")
     assert "preserve units in every figure" in template
 
 

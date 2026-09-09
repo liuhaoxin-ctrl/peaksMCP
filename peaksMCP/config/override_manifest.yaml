@@ -6,7 +6,7 @@ version: 4
 # implementation and is NOT in this manifest.  Entries are constructed
 # statically into the API index (no AST scan of peaksMCP); native peaks APIs
 # are the only dynamically scanned tier.  Signatures are verified at runtime
-# by importing `export`; peaks_get_api returns this structured contract.
+# by importing `export`; get returns this structured contract.
 apis:
   load_data:
     export: peaksMCP.overrides.load_data
@@ -51,6 +51,8 @@ apis:
     preconditions: path(s) exist; folder contains supported files
     errors: missing path; unsupported suffix; empty folder/sequence
     example: scans = load_data("data/"); summary = inspect_experiment(scans); cut = scans["BP_0015"]
+    side_effects: 'creates a DataArray (one file) or LoadedScans variable; prints
+      one line; never writes files; raw inputs untouched'
   convert_experiment:
     export: peaksMCP.overrides.convert_experiment
     exposure: facade
@@ -100,7 +102,8 @@ apis:
       index (datasheet/embedded/explicit) or a readable standalone document'
     errors: unreadable metadata
     example: 'scans = load_data("data_netcdf/"); summary = inspect_experiment(scans);
-      summary.gold' 
+      summary.gold'
+    side_effects: read-only classification; writes nothing; never loads data blocks
   plot_batch:
     export: peaksMCP.overrides.plot_batch
     exposure: facade
@@ -126,6 +129,8 @@ apis:
     errors: shared_colorbar=True with incompatible units or ranges; titles length
       mismatch
     example: figures = plot_batch([scan_20K, scan_40K], max_cols=2)
+    side_effects: 'renders inline matplotlib figures in the notebook; never writes
+      image files (persist figures with save_with_consent)'
   plot_validation_pair:
     export: peaksMCP.overrides.plot_validation_pair
     exposure: facade
@@ -147,6 +152,8 @@ apis:
     preconditions: both arrays are 2D with an eV dimension
     errors: not 2D or missing eV; explicit shared_scale=True on incompatible inputs
     example: fig = plot_validation_pair(raw_cut, kspace_cut)
+    side_effects: 'renders one inline matplotlib figure in the notebook; never
+      writes image files (persist with save_with_consent)'
   show_mapping_slice:
     export: peaksMCP.overrides.show_mapping_slice
     exposure: facade
@@ -169,3 +176,5 @@ apis:
     preconditions: data has >=2 dims and no empty dims; slicing leaves at most 2 dims
     errors: ndim<2; empty dimensions; unknown dim; slicing leaves >2 dims
     example: show_mapping_slice(mapping, dim='eV', index=0)
+    side_effects: 'prints a one-line report and renders one inline figure; never
+      writes files'

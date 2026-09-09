@@ -286,6 +286,8 @@ class NotebookBackend:
         variable_name: str | None = None,
         detail: str = "summary",
         limit: int = 10,
+        cell: str | int | None = None,
+        offset: int = 0,
     ) -> dict[str, Any]:
         """Generic inspect_notebook protocol (target x detail, bounded).
 
@@ -303,8 +305,17 @@ class NotebookBackend:
             return self._inspect_variable(variable_name, detail=detail)
         if target == "active_cell":
             return self._inspect_active_cell(detail=detail)
+        if target == "cells":
+            return self._inspect_cells(detail=detail, limit=limit, offset=offset)
+        if target == "cell":
+            if cell is None:
+                raise ValueError(
+                    "inspect_notebook: target='cell' requires cell (id or index)"
+                )
+            return self._inspect_cell(cell, detail=detail)
         raise ValueError(
-            f"inspect_notebook: unknown target {target!r}; expected variables | variable | active_cell"
+            f"inspect_notebook: unknown target {target!r}; expected "
+            "variables | variable | active_cell | cells | cell"
         )
 
     def _inspect_variables(self, *, detail: str, limit: int) -> dict[str, Any]:
@@ -400,6 +411,90 @@ class NotebookBackend:
         else:
             base["source_preview"] = source[:_SUMMARY_LINE_MAX]
         return base
+
+    def _read_cells_from_frontend(self, limit: int, offset: int) -> dict[str, Any] | None:
+        """Read bounded cell history rows from the frontend document model.
+
+        Returns None when no frontend bridge is available (headless kernel).
+        The frontend never includes outputs in these rows.
+        """
+        if not (self.state.bridge and self.state.bridge.connected):
+            return None
+        try:
+            result = self.state.bridge.request(
+                "read_cells", {"limit": limit, "offset": offset}, timeout=5
+            )
+            return result if isinstance(result, dict) else None
+        except Exception:
+            return None
+
+    def _inspect_cells(self, *, detail: str, limit: int, offset: int) -> dict[str, Any]:
+        """Bounded notebook-history read: trailing cell summaries (paged).
+
+        ``limit`` caps how many trailing cells are returned (1..50),
+        ``offset`` skips the newest N cells for paging older history.  Rows
+        carry identity, cell type, execution count and source only - never
+        raw outputs.
+        """
+        limit = max(1, min(int(limit), 50))
+        offset = max(0, int(offset))
+        rows = self._read_cells_from_frontend(limit, offset)
+        if rows is None:
+            return {
+                "target": "cells",
+                "detail": detail,
+                "available": False,
+                "note": "no frontend notebook attached; cell history is unavailable",
+                "cells": [],
+            }
+        cells = [cell for cell in rows.get("cells") or [] if isinstance(cell, dict)]
+        for cell in cells:
+            cell.pop("outputs", None)
+            source = str(cell.get("source") or "")
+            if detail == "summary":
+                cell["source_preview"] = source[:_SUMMARY_LINE_MAX]
+                cell.pop("source", None)
+            else:
+                cell["source"] = source[:_ACTIVE_CELL_SOURCE_MAX]
+            cell["outputs_omitted"] = True
+        return {
+            "target": "cells",
+            "detail": detail,
+            "available": True,
+            "count": len(cells),
+            "offset": offset,
+            "truncated": bool(rows.get("truncated")),
+            "cells": cells,
+        }
+
+    def _inspect_cell(self, cell: str | int, *, detail: str) -> dict[str, Any]:
+        """One cell by id or positional index: source + light metadata only.
+
+        Raw outputs are never returned (single output channel rule).
+        """
+        if not (self.state.bridge and self.state.bridge.connected):
+            raise KeyError(f"cell {cell!r}: no frontend notebook attached")
+        result = self.state.bridge.request("read_cell", {"cell": cell}, timeout=5)
+        if not isinstance(result, dict) or result.get("cell") is None:
+            raise KeyError(f"cell {cell!r} does not exist in the notebook")
+        row: dict[str, Any] = dict(result["cell"])
+        row.pop("outputs", None)
+        source = str(row.get("source") or "")
+        row["outputs_omitted"] = True
+        if detail == "summary":
+            row["source_preview"] = source[:_SUMMARY_LINE_MAX]
+            row.pop("source", None)
+        else:
+            row["source"] = source[:_ACTIVE_CELL_SOURCE_MAX]
+        return {
+            "target": "cell",
+            "detail": detail,
+            "id": row.get("id"),
+            "index": row.get("index"),
+            "cell_type": row.get("cell_type"),
+            "execution_count": row.get("execution_count"),
+            **row,
+        }
 
     def server_status(self) -> dict[str, Any]:
         return {

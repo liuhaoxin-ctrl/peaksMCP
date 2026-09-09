@@ -57,7 +57,7 @@ def tool_metadata(name: str) -> dict[str, str]:
 
     Examples
     --------
-    >>> tool_metadata("peaks_search_api")["title"]
+    >>> tool_metadata("search")["title"]
     'Search Peaks API'
     """
     item = (_document().get("tools") or {}).get(name, {})
@@ -79,7 +79,7 @@ def tool_names() -> frozenset[str]:
 
     Examples
     --------
-    >>> "peaks_search_api" in tool_names()
+    >>> "search" in tool_names()
     True
     """
     return frozenset((_document().get("tools") or {}).keys())
