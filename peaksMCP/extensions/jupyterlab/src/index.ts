@@ -8,6 +8,11 @@ const TARGET = 'peaksMCP:frontend';
 const MAX_COMM_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_COMM_IMAGE_TOTAL_BYTES = 16 * 1024 * 1024;
 const OMITTED_IMAGE_MIME = 'application/vnd.peaksmcp.image-omitted+json';
+// Settled-output window: after kernel idle the executed cell's output model
+// is watched until it stays quiet for SETTLE_QUIET_MS, bounded by
+// SETTLE_MAX_MS in total; then ONE settled snapshot is returned.
+const SETTLE_QUIET_MS = 200;
+const SETTLE_MAX_MS = 2000;
 
 function outputString(value: any): string {
   return Array.isArray(value) ? value.join('') : String(value ?? '');
@@ -283,25 +288,30 @@ async function handle(panel: NotebookPanel, comm: Kernel.IComm, data: any): Prom
   if (data.type !== 'request') { return; }
   const request_id = data.request_id;
   const notebook = panel.content;
-  // Execution output is identity-scoped. It must not masquerade as a cursor
-  // change when a delayed Matplotlib image arrives after the user moved away.
-  const publishExecution = (cellData: any) => {
-    try {
-      comm.send({
-        type: 'cell_output', cell_id: cellData.id,
-        cell: cellData, outputs: cellData.outputs,
-      });
-    } catch { /* noop */ }
-  };
-  const watchExecutionOutputs = (cell: any, snapshot: () => any) => {
-    publishExecution(snapshot());
+  // Settled-output protocol: after runCells resolves (kernel idle) the
+  // frontend watches THIS cell's output model and waits until it stays quiet
+  // for SETTLE_QUIET_MS (bounded by SETTLE_MAX_MS in total), then returns ONE
+  // settled snapshot inside the execute reply. There is no repeated push, no
+  // long-lived watcher and no server-side polling or cache: the model reads
+  // the executed outputs exactly once, from the write-tool response.
+  const settleCellOutputs = async (cell: any, snapshot: () => any): Promise<any> => {
     const outputs = cell?.model?.type === 'code' ? cell.model.outputs : null;
-    if (!outputs?.changed?.connect || !outputs?.changed?.disconnect) { return; }
-    const onChanged = () => { publishExecution(snapshot()); };
+    if (!outputs?.changed?.connect || !outputs?.changed?.disconnect) { return snapshot(); }
+    const started = Date.now();
+    let lastChange = started;
+    const onChanged = () => { lastChange = Date.now(); };
     outputs.changed.connect(onChanged);
-    window.setTimeout(() => {
+    try {
+      for (;;) {
+        const now = Date.now();
+        if (now - started >= SETTLE_MAX_MS) { break; }
+        if (now - lastChange >= SETTLE_QUIET_MS) { break; }
+        await new Promise(resolve => window.setTimeout(resolve, 50));
+      }
+    } finally {
       try { outputs.changed.disconnect(onChanged); } catch { /* noop */ }
-    }, 30000);
+    }
+    return snapshot();
   };
   try {
     let result: any = {};
@@ -344,10 +354,10 @@ async function handle(panel: NotebookPanel, comm: Kernel.IComm, data: any): Prom
             ? boundedOutputs((executed.model as any).outputs?.toJSON() ?? [])
             : [],
         });
-        result = executedJSON();
-        // Matplotlib images may arrive after text output and after the user has
-        // moved the cursor. Watch this exact cell, preserving its identity.
-        watchExecutionOutputs(executed, executedJSON);
+        // Matplotlib images may arrive after text output and after the user
+        // has moved the cursor: settle this exact cell (200ms quiet after
+        // kernel idle, 2s cap) and reply once with the settled snapshot.
+        result = await settleCellOutputs(executed, executedJSON);
         break;
       }
       case 'add_cell':

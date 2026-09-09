@@ -28,7 +28,6 @@ def _fake_bridge(state):
                  "data": {"image/png": base64.b64encode(b"png").decode(), "text/plain": "figure"}},
                 {"output_type": "stream", "text": "later text"},
             ]
-            state.cell_outputs["cell-9"] = outputs
             return {
                 "id": "cell-9", "index": 4, "cell_type": "code",
                 "source": payload["code"], "execution_success": True,

@@ -72,8 +72,8 @@ def test_namespace_listing_and_missing_variable():
 
 def test_read_active_cell_keeps_cursor_metadata_output_free():
     """active_cell returns the frontend snapshot verbatim for the read tool to
-    normalise; the kernel-side cursor state never stores raw outputs (they live
-    in the bounded cell_outputs settle buffer instead)."""
+    normalise; the kernel-side cursor state never stores raw outputs
+    (executed-cell outputs travel once, settled inside the execute response)."""
     class Bridge:
         connected = True
 

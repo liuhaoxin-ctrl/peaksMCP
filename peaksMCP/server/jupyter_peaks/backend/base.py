@@ -48,10 +48,10 @@ class SharedState:
     kernel_state: str = "idle"
     busy_since: float | None = None
     active_cell: dict[str, Any] = field(default_factory=dict)
-    #: Per-cell-id output history (updated by frontend Comm pushes). Single
-    #: source of truth for cell outputs: the model receives outputs inside the
-    #: write-tool response (settled against this cache), never by a second read.
-    cell_outputs: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    #: No per-cell output cache: the frontend settles one output snapshot per
+    #: executed cell (quiet window after kernel idle, 2s cap) and returns it
+    #: inside the execute response, so the model receives outputs exactly once,
+    #: through the write-tool reply - never by a second read or a Comm cache.
     lock: threading.RLock = field(default_factory=threading.RLock)
     started_at: float = field(default_factory=time.time)
     kernel_instance_id: str = field(default_factory=lambda: uuid.uuid4().hex)

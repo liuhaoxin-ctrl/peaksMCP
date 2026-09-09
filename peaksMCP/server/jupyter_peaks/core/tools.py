@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-import time
 from functools import wraps
 from typing import Any
 
@@ -32,6 +31,13 @@ _INTERACTIVE_MIMES = (
     "application/vnd.bokehjs_exec.v0+json",
 )
 _IMAGE_MIMES = ("image/png", "image/jpeg", "image/svg+xml")
+#: MIME families that are part of the notebook text archive and are silently
+#: not echoed to the model (reprs, markdown, html); every OTHER payload MIME
+#: is normalized to one generic "omitted" marker per distinct type.
+_TEXT_ARCHIVE_MIMES = frozenset(
+    {"text/plain", "text/markdown", "text/html", "text/latex"}
+)
+_MAX_OMITTED_MIMES = 4
 
 
 def _search_match_mode(query: Any, searched: str, matches: list[dict[str, Any]]) -> str:
@@ -79,6 +85,7 @@ def _normalize_outputs(outputs: list[dict[str, Any]]) -> list[TextContent]:
     saw_output = False
     first_media_order: int | None = None
     text_events: list[tuple[int, str]] = []
+    omitted_mimes: list[str] = []
     for order, output in enumerate(outputs):
         if not isinstance(output, dict):
             continue
@@ -111,7 +118,8 @@ def _normalize_outputs(outputs: list[dict[str, Any]]) -> list[TextContent]:
         data = output.get("data", {})
         if not isinstance(data, dict):
             data = {}
-        has_image = any(data.get(mime) for mime in _IMAGE_MIMES) or bool(
+        data_mimes = {str(mime) for mime in data if data.get(mime)}
+        has_image = bool(data_mimes & set(_IMAGE_MIMES)) or bool(
             data.get(_OMITTED_IMAGE_MIME)
         )
         interactive_mime = next(
@@ -127,12 +135,44 @@ def _normalize_outputs(outputs: list[dict[str, Any]]) -> list[TextContent]:
             if first_media_order is None:
                 first_media_order = order
             rendered_images += 1
+        # Generic MIME normalization: any payload MIME outside the text
+        # archive, the image family and the interactive markers collapses to
+        # one bounded "omitted" marker per distinct MIME type - the notebook
+        # keeps the real payload, the model gets a uniform note.
+        for mime in sorted(
+            data_mimes
+            - _TEXT_ARCHIVE_MIMES
+            - set(_INTERACTIVE_MIMES)
+            - set(_IMAGE_MIMES)
+            - {_OMITTED_IMAGE_MIME}
+        ):
+            if mime not in omitted_mimes and len(omitted_mimes) < _MAX_OMITTED_MIMES:
+                omitted_mimes.append(mime)
     summary = _stdout_summary(text_events, first_media_order)
-    if summary is not None:
-        blocks.append(TextContent(type="text", text=summary))
     # An error always wins: the model needs to see it regardless of figures.
     if has_error:
         return blocks
+    if summary is not None:
+        blocks.append(TextContent(type="text", text=summary))
+    # Generic MIME normalization: any payload MIME outside the text archive,
+    # the image family and the interactive markers collapses to one bounded
+    # "omitted" marker per distinct MIME type - the notebook keeps the real
+    # payload, the model gets a uniform note.
+    for mime in sorted(omitted_mimes):
+        blocks.append(
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "output_type": "omitted_mime",
+                        "mime_type": mime,
+                        "note": _PROMPTS.get("mime_omitted_note")
+                        or "Additional output of this MIME type is rendered in the notebook only.",
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        )
     if rendered_images:
         blocks.append(
             TextContent(
@@ -148,7 +188,7 @@ def _normalize_outputs(outputs: list[dict[str, Any]]) -> list[TextContent]:
         return blocks
     if not saw_output:
         return [TextContent(type="text", text="No active-cell output.")]
-    if summary is not None:
+    if summary is not None or omitted_mimes:
         return blocks
     # Text-only output that is long or figure-interleaved: it stays in the
     # notebook (shared context) but is not re-stated to the model.
@@ -191,52 +231,6 @@ def _stdout_summary(
 def _text_blocks(outputs: list[dict[str, Any]]) -> list[str]:
     """JSON-safe rendering of the normalised output blocks (plain text strings)."""
     return [block.text for block in _normalize_outputs(outputs)]
-
-
-def _settle_executed_outputs(
-    state: SharedState, result: dict[str, Any]
-) -> list[dict[str, Any]]:
-    """Return the executed cell's outputs after the frontend push settles.
-
-    ``execute_code`` returns its snapshot at shell-reply time; a trailing
-    inline image can land in the frontend output model a moment later and be
-    pushed back through the Comm.  Wait a short bounded window for the cache
-    copy of the executed cell to stabilise, then return the last copy.
-    Falls back to the response snapshot when no push ever arrives.
-    """
-    snapshot = result.get("outputs")
-    if not isinstance(snapshot, list):
-        return []
-    cell_id = result.get("id")
-    if not (
-        isinstance(cell_id, str)
-        and cell_id
-        and state.bridge
-        and state.bridge.connected
-    ):
-        return snapshot
-    latest = snapshot
-    cache_seen = False
-    changed_at = time.monotonic()
-    deadline = changed_at + 2.0
-    while time.monotonic() < deadline:
-        cached = state.cell_outputs.get(cell_id)
-        if cached is None:
-            if cache_seen or time.monotonic() - changed_at >= 0.6:
-                # No push pipeline for this cell: trust the response snapshot.
-                return latest
-        elif cached == latest:
-            if not cache_seen:
-                # Push already matches the response: nothing more to wait for.
-                return latest
-            if time.monotonic() - changed_at >= 0.2:
-                return latest
-        else:
-            cache_seen = True
-            latest = cached
-            changed_at = time.monotonic()
-        time.sleep(0.05)
-    return latest
 
 
 def _require_index(state: SharedState):
@@ -479,7 +473,10 @@ def register_unsafe_tools(mcp: FastMCP, notebook: UnsafeNotebookBackend, audit: 
             }
             return {
                 **cell,
-                "output": _text_blocks(_settle_executed_outputs(notebook.state, result)),
+                # The response carries the frontend's ONE settled output
+                # snapshot (quiet window after kernel idle, 2s cap); nothing
+                # is polled or cached server-side any more.
+                "output": _text_blocks(result.get("outputs") or []),
                 "api_check": result.get("api_check"),
             }
         return result

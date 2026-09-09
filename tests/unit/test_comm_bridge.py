@@ -73,14 +73,16 @@ def test_stale_messages_cannot_update_state_or_heartbeat(bridge, message_type):
     bridge.last_seen = 0
     old.emit({"type": message_type, "cell": {"id": "stale"}, "outputs": []})
     assert bridge.state.active_cell == {"id": "new"}
-    assert bridge.state.cell_outputs["new"][0]["text"] == "new"
     assert bridge.last_seen == 0
     assert not bridge.connected
     current.emit({"type": "heartbeat"})
     assert bridge.connected
 
 
-def test_delayed_execution_output_does_not_replace_the_active_cell(bridge):
+def test_cell_output_pushes_do_not_change_state_or_output_caches(bridge):
+    """Executed-cell outputs travel once, settled inside the execute response;
+    Comm pushes of outputs change nothing and nothing is cached (no settle
+    buffer, no per-cell output history)."""
     comm = _Comm()
     _open(bridge, comm, "active")
     comm.emit({
@@ -88,7 +90,6 @@ def test_delayed_execution_output_does_not_replace_the_active_cell(bridge):
         "cell": {"id": "active", "source": "current = 1"},
         "outputs": [{"output_type": "stream", "text": "current"}],
     })
-
     comm.emit({
         "type": "cell_output",
         "cell_id": "executed",
@@ -96,9 +97,8 @@ def test_delayed_execution_output_does_not_replace_the_active_cell(bridge):
         "outputs": [{"output_type": "display_data", "data": {"image/png": "AA=="}}],
     })
 
-    assert bridge.state.active_cell["id"] == "active"
-    assert bridge.state.cell_outputs["active"][0]["text"] == "current"
-    assert bridge.state.cell_outputs["executed"][0]["output_type"] == "display_data"
+    assert bridge.state.active_cell == {"id": "active", "source": "current = 1"}
+    assert not hasattr(bridge.state, "cell_outputs")
 
 
 def test_stale_reply_cannot_complete_new_request(bridge):

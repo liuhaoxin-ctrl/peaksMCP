@@ -96,6 +96,35 @@ def test_normalize_outputs_reports_interactive_widget_as_text():
     )
 
 
+def test_normalize_outputs_generic_mime_marker_is_bounded_and_uniform():
+    """Any payload MIME outside the text archive / images / widgets collapses
+    to one 'omitted_mime' marker per distinct type (bounded), never raw data."""
+    import json
+
+    from mcp.types import TextContent
+
+    from peaksMCP.server.jupyter_peaks.core.tools import _normalize_outputs
+
+    outputs = [
+        {"data": {"application/pdf": "JVBERi0x", "text/plain": "<Figure>"}},
+        {"data": {"application/json": {"a": 1}, "text/plain": "json result"}},
+        {"data": {"application/pdf": "second"}},  # duplicate MIME -> still 1 marker
+    ]
+    blocks = _normalize_outputs(outputs)
+    markers = [
+        json.loads(block.text)
+        for block in blocks
+        if isinstance(block, TextContent) and "omitted_mime" in block.text
+    ]
+    assert [marker["mime_type"] for marker in markers] == ["application/json", "application/pdf"]
+    for marker in markers:
+        assert marker["output_type"] == "omitted_mime"
+        assert marker["note"] and "JVBERi0x" not in marker["note"]
+    # The figure-less text reprs stay suppressed; nothing else is echoed.
+    text = "\n".join(getattr(block, "text", "") for block in blocks)
+    assert "<Figure>" not in text and "json result" not in text
+
+
 def test_normalize_outputs_preserves_structured_cell_errors():
     import json
 

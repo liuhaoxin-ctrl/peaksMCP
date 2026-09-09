@@ -23,6 +23,7 @@ prompts:
 
   # ------------------------------------------------------------------ tools
   interactive_omitted_note: "Interactive panel/widget rendered in the notebook for the user; it cannot be embedded here. Consider it done and describe the figure to the user."
+  mime_omitted_note: "Additional output of this MIME type is rendered in the notebook for the user; the text channel cannot show it. The notebook is the shared record."
 
   # ------------------------------------------------------- notebook_unsafe
   notebook_unsafe:

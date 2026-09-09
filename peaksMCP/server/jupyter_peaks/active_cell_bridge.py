@@ -12,7 +12,6 @@ class CommBridge:
     """Track a Jupyter Comm and provide request/reply operations."""
 
     target_name = "peaksMCP:frontend"
-    MAX_CACHED_CELLS = 128
 
     #: A frontend is considered disconnected only after this long without a
     #: heartbeat. The frontend heartbeats every 2s, but browsers throttle
@@ -101,40 +100,13 @@ class CommBridge:
         if message_type in {"active_cell", "notebook_state"}:
             cell = data.get("cell") or data.get("active_cell") or {}
             if isinstance(cell, dict):
-                # Keep cursor metadata only; outputs live in cell_outputs and
-                # are served to the model through the write-tool response, not
-                # through the cursor cell.
+                # Keep cursor metadata only: raw outputs never reach the
+                # kernel-side cursor state.  Executed-cell outputs travel
+                # exactly once, settled inside the execute response.
                 self.state.active_cell = {
                     key: value for key, value in cell.items() if key != "outputs"
                 }
-            outputs = data.get("outputs")
-            if isinstance(outputs, list) and isinstance(cell, dict):
-                self._cache_cell_outputs(cell.get("id"), outputs)
             return
-        if message_type == "cell_output":
-            # Execution results may arrive after the user has moved to another
-            # cell. Cache them by identity without changing active_cell.
-            cell = data.get("cell") or {}
-            cell_id = data.get("cell_id") or (
-                cell.get("id") if isinstance(cell, dict) else None
-            )
-            outputs = data.get("outputs")
-            if isinstance(cell_id, str) and isinstance(outputs, list):
-                self._cache_cell_outputs(cell_id, outputs)
-
-    def _cache_cell_outputs(
-        self,
-        cell_id: Any,
-        outputs: list[dict[str, Any]],
-    ) -> None:
-        """Store bounded per-cell output history for execution-result settle."""
-        if not isinstance(cell_id, str) or not cell_id:
-            return
-        self.state.cell_outputs.pop(cell_id, None)
-        self.state.cell_outputs[cell_id] = list(outputs)
-        while len(self.state.cell_outputs) > self.MAX_CACHED_CELLS:
-            oldest = next(iter(self.state.cell_outputs))
-            self.state.cell_outputs.pop(oldest, None)
 
     def request(self, operation: str, payload: dict[str, Any] | None = None, timeout: float = 30) -> dict[str, Any]:
         """Send a request on the current Comm and wait for its correlated reply.
