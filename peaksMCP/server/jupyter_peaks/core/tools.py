@@ -452,18 +452,19 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
         limit: int = 10,
         cell: str | int | None = None,
         offset: int = 0,
+        with_text_outputs: bool = False,
     ) -> dict[str, Any]:
         """Inspect the live notebook through the generic object-summary protocol.
 
         ``target`` discriminates the request: ``variables`` (namespace rows),
         ``variable`` (one named variable, requires ``variable_name``),
-        ``active_cell`` (current frontend cell identity/source metadata),
-        ``cells`` (bounded trailing notebook history, tail + pagination via
-        ``limit``/``offset``) or ``cell`` (one cell by id or index, requires
-        ``cell``).  ``detail`` selects ``summary`` (one bounded line/item) or
-        ``preview`` (structural detail: xarray dims/sizes/units/lazy state,
-        index representation counts, bounded sources).  Nothing unbounded
-        reaches the model and NO target ever returns raw cell outputs (they
+        ``active_cell`` / ``cells`` / ``cell`` (cell identity/source; ``cells``
+        pages tail history via ``limit``/``offset``, ``cell`` takes an id or
+        index).  ``detail`` selects ``summary`` (one bounded line/item) or
+        ``preview`` (structural detail).  ``with_text_outputs=True`` adds each
+        cell's bounded TEXT outputs (streams + text/plain only, ~8KB/cell) so
+        the model can re-read what a cell printed - the notebook is the shared
+        context center.  Image payloads are NEVER returned by any target (they
         travel once, settled inside the run reply).
         """
         return notebook.inspect(
@@ -473,6 +474,7 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
             limit=limit,
             cell=cell,
             offset=offset,
+            with_text_outputs=with_text_outputs,
         )
 
     functions = {

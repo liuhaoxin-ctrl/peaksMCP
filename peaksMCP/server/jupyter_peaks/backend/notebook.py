@@ -26,6 +26,38 @@ _STEMS_MAX = 200
 _REPR_MAX = 4000
 _LIST_VARIABLES_LIMIT = 50
 _ACTIVE_CELL_SOURCE_MAX = 4000
+#: 单 cell 纯文本输出回读上限（text 历史只读，图片永不回传）。
+_TEXT_OUTPUT_MAX = 8000
+
+
+def extract_text_outputs(outputs: Any, limit: int = _TEXT_OUTPUT_MAX) -> tuple[str, bool]:
+    """把一个 cell 的 text 类输出拼成有界字符串（回读用）。
+
+    只取 stream（stdout/stderr）与 display/execute 的 ``text/plain``；
+    图片/交互组件等 payload 永不进入文本回读。返回 ``(text, truncated)``。
+    """
+    chunks: list[str] = []
+    if not isinstance(outputs, list):
+        return "", False
+    for output in outputs:
+        if not isinstance(output, dict):
+            continue
+        if output.get("output_type") == "stream":
+            text = output.get("text") or []
+            if isinstance(text, str):
+                chunks.append(text)
+            elif isinstance(text, list):
+                chunks.extend(str(part) for part in text)
+            continue
+        data = output.get("data") or {}
+        if not isinstance(data, dict):
+            continue
+        plain = data.get("text/plain")
+        if plain:
+            chunks.append("".join(plain) if isinstance(plain, list) else str(plain))
+    text = "".join(chunks)
+    truncated = len(text) > limit
+    return text[:limit], truncated
 
 
 def _json_value(value: Any, limit: int = 80) -> Any:
@@ -288,14 +320,18 @@ class NotebookBackend:
         limit: int = 10,
         cell: str | int | None = None,
         offset: int = 0,
+        with_text_outputs: bool = False,
     ) -> dict[str, Any]:
         """Generic inspect_notebook protocol (target x detail, bounded).
 
         Targets: ``variables`` (listing rows), ``variable`` (one named
-        variable), ``active_cell`` (current frontend cell identity/source).
-        Detail: ``summary`` (one bounded line per item) or ``preview``
-        (structural detail: dims/sizes for xarray, representation counts for
-        index objects, bounded repr otherwise).  ``limit`` caps variable rows.
+        variable), ``active_cell`` / ``cells`` / ``cell`` (cell identity,
+        source and - when ``with_text_outputs=True`` - the cell's bounded
+        TEXT outputs: stream stdout/stderr + text/plain only, capped at
+        ~8KB/cell; images and other payloads are never returned, so the
+        single output channel rule keeps constraining image payloads only).
+        ``detail``: ``summary`` / ``preview``; ``limit``/``offset`` page the
+        ``cells`` history.
         """
         if target == "variables":
             return self._inspect_variables(detail=detail, limit=limit)
@@ -304,15 +340,17 @@ class NotebookBackend:
                 raise ValueError("inspect_notebook: target='variable' requires variable_name")
             return self._inspect_variable(variable_name, detail=detail)
         if target == "active_cell":
-            return self._inspect_active_cell(detail=detail)
+            return self._inspect_active_cell(detail=detail, with_text_outputs=with_text_outputs)
         if target == "cells":
-            return self._inspect_cells(detail=detail, limit=limit, offset=offset)
+            return self._inspect_cells(detail=detail, limit=limit, offset=offset,
+                                       with_text_outputs=with_text_outputs)
         if target == "cell":
             if cell is None:
                 raise ValueError(
                     "inspect_notebook: target='cell' requires cell (id or index)"
                 )
-            return self._inspect_cell(cell, detail=detail)
+            return self._inspect_cell(cell, detail=detail,
+                                      with_text_outputs=with_text_outputs)
         raise ValueError(
             f"inspect_notebook: unknown target {target!r}; expected "
             "variables | variable | active_cell | cells | cell"
@@ -385,13 +423,14 @@ class NotebookBackend:
             "summary": _one_line_summary(value),
         }
 
-    def _inspect_active_cell(self, *, detail: str) -> dict[str, Any]:
-        """Active-cell inspection NEVER returns raw outputs.
+    def _inspect_active_cell(self, *, detail: str, with_text_outputs: bool) -> dict[str, Any]:
+        """Active-cell inspection NEVER returns raw outputs or image payloads.
 
         Executed outputs travel exactly once, settled inside the run_cell
-        reply; anything else would reopen a second output channel (including
-        multi-MB image payloads).  Both details return identity, source and
-        light execution metadata only - outputs are reported as omitted.
+        reply.  When ``with_text_outputs`` is set the cell's bounded TEXT
+        outputs are returned (streams + text/plain only, ~8KB cap) so the
+        model can re-read what a cell printed; images are still only ever
+        reported as rendered markers.
         """
         cell = self.active_cell()
         source = str(cell.get("source") or "")
@@ -406,39 +445,48 @@ class NotebookBackend:
             "n_outputs": len(outputs) if isinstance(outputs, list) else None,
             "outputs_omitted": True,
         }
+        if with_text_outputs:
+            text, text_truncated = extract_text_outputs(outputs)
+            base["text_outputs"] = text
+            base["text_truncated"] = text_truncated or None
         if detail == "preview":
             base["source"] = source[:_ACTIVE_CELL_SOURCE_MAX]
         else:
             base["source_preview"] = source[:_SUMMARY_LINE_MAX]
         return base
 
-    def _read_cells_from_frontend(self, limit: int, offset: int) -> dict[str, Any] | None:
+    def _read_cells_from_frontend(self, limit: int, offset: int,
+                                   with_text_outputs: bool) -> dict[str, Any] | None:
         """Read bounded cell history rows from the frontend document model.
 
         Returns None when no frontend bridge is available (headless kernel).
-        The frontend never includes outputs in these rows.
+        Rows never carry image payloads; with ``with_text_outputs`` the
+        frontend attaches each cell's bounded text outputs.
         """
         if not (self.state.bridge and self.state.bridge.connected):
             return None
         try:
             result = self.state.bridge.request(
-                "read_cells", {"limit": limit, "offset": offset}, timeout=5
+                "read_cells",
+                {"limit": limit, "offset": offset, "with_text_outputs": with_text_outputs},
+                timeout=5,
             )
             return result if isinstance(result, dict) else None
         except Exception:
             return None
 
-    def _inspect_cells(self, *, detail: str, limit: int, offset: int) -> dict[str, Any]:
+    def _inspect_cells(self, *, detail: str, limit: int, offset: int,
+                       with_text_outputs: bool) -> dict[str, Any]:
         """Bounded notebook-history read: trailing cell summaries (paged).
 
         ``limit`` caps how many trailing cells are returned (1..50),
-        ``offset`` skips the newest N cells for paging older history.  Rows
-        carry identity, cell type, execution count and source only - never
-        raw outputs.
+        ``offset`` skips the newest N cells for paging older history.  With
+        ``with_text_outputs`` each row carries bounded text outputs (never
+        image payloads).
         """
         limit = max(1, min(int(limit), 50))
         offset = max(0, int(offset))
-        rows = self._read_cells_from_frontend(limit, offset)
+        rows = self._read_cells_from_frontend(limit, offset, with_text_outputs)
         if rows is None:
             return {
                 "target": "cells",
@@ -450,6 +498,7 @@ class NotebookBackend:
         cells = [cell for cell in rows.get("cells") or [] if isinstance(cell, dict)]
         for cell in cells:
             cell.pop("outputs", None)
+            text, text_truncated = self._bounded_text(cell)
             source = str(cell.get("source") or "")
             if detail == "summary":
                 cell["source_preview"] = source[:_SUMMARY_LINE_MAX]
@@ -457,6 +506,12 @@ class NotebookBackend:
             else:
                 cell["source"] = source[:_ACTIVE_CELL_SOURCE_MAX]
             cell["outputs_omitted"] = True
+            if with_text_outputs:
+                cell["text_outputs"] = text
+                cell["text_truncated"] = text_truncated or None
+            else:
+                cell.pop("text_outputs", None)
+                cell.pop("text_truncated", None)
         return {
             "target": "cells",
             "detail": detail,
@@ -467,18 +522,33 @@ class NotebookBackend:
             "cells": cells,
         }
 
-    def _inspect_cell(self, cell: str | int, *, detail: str) -> dict[str, Any]:
-        """One cell by id or positional index: source + light metadata only.
+    @staticmethod
+    def _bounded_text(cell: dict[str, Any]) -> tuple[str, bool]:
+        """取一行里的 text 输出并截断（兼容前端已截断或后端直出两种来源）。"""
+        raw = cell.get("text_outputs")
+        if isinstance(raw, str):
+            truncated = cell.get("text_truncated") or len(raw) > _TEXT_OUTPUT_MAX
+            return raw[:_TEXT_OUTPUT_MAX], bool(truncated)
+        outputs = cell.get("outputs")
+        if isinstance(outputs, list):
+            return extract_text_outputs(outputs)
+        return "", False
 
-        Raw outputs are never returned (single output channel rule).
+    def _inspect_cell(self, cell: str | int, *, detail: str,
+                      with_text_outputs: bool) -> dict[str, Any]:
+        """One cell by id or positional index: source + light metadata, with
+        bounded text outputs when requested.  Image payloads never return.
         """
         if not (self.state.bridge and self.state.bridge.connected):
             raise KeyError(f"cell {cell!r}: no frontend notebook attached")
-        result = self.state.bridge.request("read_cell", {"cell": cell}, timeout=5)
+        result = self.state.bridge.request(
+            "read_cell", {"cell": cell, "with_text_outputs": with_text_outputs}, timeout=5
+        )
         if not isinstance(result, dict) or result.get("cell") is None:
             raise KeyError(f"cell {cell!r} does not exist in the notebook")
         row: dict[str, Any] = dict(result["cell"])
         row.pop("outputs", None)
+        text, text_truncated = self._bounded_text(row)
         source = str(row.get("source") or "")
         row["outputs_omitted"] = True
         if detail == "summary":
@@ -486,6 +556,12 @@ class NotebookBackend:
             row.pop("source", None)
         else:
             row["source"] = source[:_ACTIVE_CELL_SOURCE_MAX]
+        if with_text_outputs:
+            row["text_outputs"] = text
+            row["text_truncated"] = text_truncated or None
+        else:
+            row.pop("text_outputs", None)
+            row.pop("text_truncated", None)
         return {
             "target": "cell",
             "detail": detail,

@@ -38,7 +38,9 @@ tools:
       (structural detail: xarray dims/sizes/dtype/units/lazy state,
       LoadedScans-like indices report representation counts and conversion
       state - never classification, which belongs to inspect_experiment;
-      bounded sources for history rows).
+      bounded sources for history rows). with_text_outputs=True returns each
+      cell's bounded TEXT outputs (streams + text/plain only, ~8KB cap) -
+      images are never returned by any target.
   run_cell:
     title: Run Cell
     description: >

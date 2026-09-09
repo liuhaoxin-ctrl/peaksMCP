@@ -285,11 +285,33 @@ function cellJSON(panel: NotebookPanel): any {
 }
 
 // Bounded notebook-history rows for inspect_notebook: identity, cell type,
-// execution count and source ONLY.  Raw outputs never cross this channel -
-// executed outputs travel exactly once, settled inside the execute reply.
+// execution count, source, and - only when requested - the cell's bounded
+// TEXT outputs (streams + text/plain).  Image payloads never cross this
+// channel: executed image outputs travel exactly once, settled inside the
+// execute reply, and history readback is text-only.
 const HISTORY_SOURCE_MAX = 4000;
+const HISTORY_TEXT_MAX = 8000;
 
-function historyCellRow(notebook: any, cell: any): any {
+function collectTextOutputs(outputs: any[]): string {
+  const chunks: string[] = [];
+  for (const output of Array.isArray(outputs) ? outputs : []) {
+    if (!output || typeof output !== 'object') { continue; }
+    if (output.output_type === 'stream') {
+      const text = output.text;
+      if (typeof text === 'string') { chunks.push(text); }
+      else if (Array.isArray(text)) { chunks.push(...text.map(String)); }
+      continue;
+    }
+    const data = output.data;
+    if (data && typeof data === 'object' && data['text/plain']) {
+      const plain = data['text/plain'];
+      chunks.push(Array.isArray(plain) ? plain.join('') : String(plain));
+    }
+  }
+  return chunks.join('');
+}
+
+function historyCellRow(notebook: any, cell: any, withText: boolean = false): any {
   const row: any = {
     id: cell.model.id,
     index: notebook.widgets.findIndex((w: any) => w.model.id === cell.model.id),
@@ -299,6 +321,11 @@ function historyCellRow(notebook: any, cell: any): any {
   const codeModel = cell.model as any;
   if (codeModel.type === 'code' && typeof codeModel.executionCount === 'number') {
     row.execution_count = codeModel.executionCount;
+  }
+  if (withText && codeModel.type === 'code') {
+    const text = collectTextOutputs(codeModel.outputs?.toJSON() ?? []);
+    row.text_outputs = text.slice(0, HISTORY_TEXT_MAX);
+    if (text.length > HISTORY_TEXT_MAX) { row.text_truncated = true; }
   }
   return row;
 }
@@ -354,21 +381,24 @@ async function handle(panel: NotebookPanel, comm: Kernel.IComm, data: any): Prom
         result = { approved: await showSaveCard(data.details ?? {}) }; break;
       }
       case 'read_cells': {
-        // Trailing notebook history with pagination (bounded, output-free).
+        // Trailing notebook history with pagination (bounded; text outputs
+        // only when requested - image payloads never cross this channel).
         const offset = Math.max(0, Number(data.offset) || 0);
         const limit = Math.max(1, Math.min(Number(data.limit) || 10, 50));
+        const withText = Boolean(data.with_text_outputs);
         const widgets = notebook.widgets;
         const end = Math.max(0, widgets.length - offset);
         const start = Math.max(0, end - limit);
         const slice = widgets.slice(start, end);
         result = {
-          cells: slice.map((cell: any) => historyCellRow(notebook, cell)),
+          cells: slice.map((cell: any) => historyCellRow(notebook, cell, withText)),
           truncated: start > 0,
         };
         break;
       }
       case 'read_cell': {
         const wanted = data.cell;
+        const withText = Boolean(data.with_text_outputs);
         let found: any = null;
         for (let index = 0; index < notebook.widgets.length; index++) {
           const cell = notebook.widgets[index];
@@ -377,7 +407,7 @@ async function handle(panel: NotebookPanel, comm: Kernel.IComm, data: any): Prom
             break;
           }
         }
-        result = { cell: found ? historyCellRow(notebook, found) : null };
+        result = { cell: found ? historyCellRow(notebook, found, withText) : null };
         break;
       }
       case 'execute_code': {

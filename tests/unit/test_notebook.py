@@ -6,7 +6,10 @@ import pytest
 import xarray as xr
 
 from peaksMCP.server.jupyter_peaks.backend import NotebookBackend, SharedState
-from peaksMCP.server.jupyter_peaks.backend.notebook import summarize_xarray
+from peaksMCP.server.jupyter_peaks.backend.notebook import (
+    _TEXT_OUTPUT_MAX,
+    summarize_xarray,
+)
 
 
 class FakeIPython:
@@ -305,3 +308,83 @@ def test_inspect_notebook_cell_history_targets_are_bounded_and_output_free():
         backend.inspect("cell")
     with pytest.raises(ValueError, match="unknown target"):
         backend.inspect("nonsense")
+
+
+
+
+def test_inspect_with_text_outputs_reads_bounded_text_only():
+    """with_text_outputs=True 回读 cell 的 text 输出（stream+text/plain，≤8KB），
+    图片/base64 永不回传；默认 False 时完全不带文本回读字段。"""
+    long_text = "row " * 3000  # > 8KB cap
+    class Bridge:
+        connected = True
+
+        def request(self, operation, payload=None, timeout=5):
+            if operation == "read_cells":
+                return {"cells": [{
+                    "id": "c1", "index": 0, "cell_type": "code", "execution_count": 2,
+                    "source": "print('hi')",
+                    "text_outputs": long_text, "text_truncated": True,
+                }], "truncated": False}
+            if operation == "read_cell":
+                return {"cell": {
+                    "id": "c2", "index": 1, "cell_type": "code", "execution_count": 2,
+                    "source": "print('secret')",
+                    "text_outputs": "secret line\n", "text_truncated": False,
+                }}
+            if operation == "read_active_cell":
+                return {
+                    "id": "c9", "index": 5, "cell_type": "code", "execution_count": 3,
+                    "source": "print('active')",
+                    "outputs": [
+                        {"output_type": "stream", "name": "stdout", "text": ["active out\n"]},
+                        {"output_type": "display_data",
+                         "data": {"image/png": "QUJDREVGRw=="}},
+                    ],
+                }
+            raise AssertionError(f"unexpected op {operation}")
+
+    state = SharedState(FakeIPython({}))
+    state.bridge = Bridge()
+    backend = NotebookBackend(state)
+
+    # 默认：不带文本回读字段。
+    plain = backend.inspect("cells", detail="preview")
+    assert "text_outputs" not in plain["cells"][0]
+    assert "text_truncated" not in plain["cells"][0]
+
+    # cells：文本回读 + 截断上限（服务端再截一道）。
+    rows = backend.inspect("cells", detail="preview", with_text_outputs=True)
+    row = rows["cells"][0]
+    assert row["text_outputs"] == long_text[:_TEXT_OUTPUT_MAX]
+    assert row["text_truncated"] is True
+    assert len(row["text_outputs"]) <= _TEXT_OUTPUT_MAX
+    assert "outputs" not in row
+
+    # cell：单条文本回读。
+    one = backend.inspect("cell", cell="c2", detail="preview", with_text_outputs=True)
+    assert one["text_outputs"] == "secret line\n"
+    assert "outputs" not in one
+
+    # active_cell：文本从本地 outputs 提取，图片/base64 永不出现在结果里。
+    active = backend.inspect("active_cell", detail="preview", with_text_outputs=True)
+    assert "active out" in active["text_outputs"]
+    assert "QUJDREVGRw==" not in active["text_outputs"]
+    assert "outputs" not in active and "image/png" not in active
+    assert active["outputs_omitted"] is True
+
+    # 无文本输出时不伪造空串歧义：给空列表也不报错。
+    class EmptyBridge:
+        connected = True
+
+        def request(self, operation, payload=None, timeout=5):
+            if operation == "read_active_cell":
+                return {"id": "e1", "index": 0, "cell_type": "code", "source": "1+1", "outputs": []}
+            raise AssertionError(operation)
+
+    empty_state = SharedState(FakeIPython({}))
+    empty_state.bridge = EmptyBridge()
+    empty = NotebookBackend(empty_state).inspect(
+        "active_cell", detail="summary", with_text_outputs=True
+    )
+    assert empty["text_outputs"] == "" and empty["text_truncated"] is None
