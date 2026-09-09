@@ -180,6 +180,8 @@ def test_kernelspec_state_matches_profile_including_require_consent(monkeypatch,
 def test_kernelspec_reinstalled_when_remote_permission_changes(monkeypatch, tmp_path):
     """A stale remote-binding opt-in must force kernelspec replacement."""
 
+    import json
+
     from peaksMCP.app.kernel import kernel_profile_state
 
     supervisor = RuntimeSupervisor(Profile(mcp={}))
@@ -230,6 +232,22 @@ def test_kernelspec_reinstalled_when_remote_permission_changes(monkeypatch, tmp_
     assert environment["PEAKSMCP_PORT"] == "8123"
     assert environment["PEAKSMCP_AUTOSTART"] == "true"
     assert environment["PEAKSMCP_ALLOW_REMOTE"] == "false"
+    # The managed JupyterLab must pin comms to the main shell: JupyterLab 4.6+
+    # routes Comm traffic over kernel subshells by default (ipykernel 7),
+    # which races around kernel restarts and stalls the Comm bridge.
+    kernels_settings = (
+        tmp_path
+        / "runtime"
+        / "jupyter"
+        / "lab"
+        / "user-settings"
+        / "@jupyterlab"
+        / "apputils-extension"
+        / "kernels-settings.jupyterlab-settings"
+    )
+    assert json.loads(kernels_settings.read_text(encoding="utf-8")) == {
+        "commsOverSubshells": "disabled"
+    }
 
 
 def test_initial_jupyter_failure_keeps_dashboard_host_alive(monkeypatch):

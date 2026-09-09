@@ -275,6 +275,21 @@ class RuntimeSupervisor:
             encoding="utf-8",
         )
         environment["JUPYTER_CONFIG_DIR"] = str(config_dir)
+        # JupyterLab 4.6+ defaults comms to kernel subshells when the kernel
+        # advertises them (ipykernel 7). Around kernel restarts that transport
+        # races: the shell channel drops Comm traffic tagged with stale
+        # subshell ids, flooding the kernel log with tracebacks and stalling
+        # the managed Comm bridge past the readiness window. The bridge is a
+        # plain Jupyter Comm and gains nothing from subshells, so pin comms to
+        # the main shell for the managed server (same layout as page_config).
+        kernels_settings = (
+            config_dir / "lab" / "user-settings" / "@jupyterlab" / "apputils-extension"
+        )
+        kernels_settings.mkdir(parents=True, exist_ok=True)
+        kernels_settings.joinpath("kernels-settings.jupyterlab-settings").write_text(
+            json.dumps({"commsOverSubshells": "disabled"}, indent=2) + "\n",
+            encoding="utf-8",
+        )
         # Kernels write their connection files under the runtime dir; pin it to
         # the same PEAKSMCP_HOME so ``_kernel_client`` can find this session's
         # kernel instead of a stale one from the default runtime dir.

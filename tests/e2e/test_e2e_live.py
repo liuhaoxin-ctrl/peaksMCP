@@ -62,17 +62,6 @@ def _dashboard(supervisor, path: str):
     ).json()
 
 
-def _dashboard_tool(supervisor, name: str, arguments: dict):
-    response = httpx.post(
-        f"{supervisor.dashboard_url}/api/mcp/tool",
-        headers={"Authorization": f"Bearer {supervisor.dashboard_token}"},
-        json={"name": name, "arguments": arguments},
-        timeout=30,
-    )
-    response.raise_for_status()
-    return response.json()["result"]
-
-
 @pytest.fixture(scope="module")
 def supervisor(tmp_path_factory):
     from peaksMCP.app.kernel import uninstall_kernel
@@ -220,6 +209,8 @@ def test_comm_bridge_connects_and_restart_all(supervisor):
 
     Runs before any kernel-restart test so the frontend session is pristine.
     """
+    import concurrent.futures
+
     from playwright.sync_api import sync_playwright
 
     notebook_url = supervisor.status()["notebook_url"] + f"?token={supervisor.token}"
@@ -264,7 +255,14 @@ def test_comm_bridge_connects_and_restart_all(supervisor):
             assert result["stages"]["comm"], result
             assert result["stages"]["kernel_restarted"], result
             assert result["kernel_instance_id"] != previous_generation
-            listing = _dashboard_tool(supervisor, "inspect_notebook", {"target": "variables"})
+            # The dashboard console has no data endpoints (the Inspector was
+            # removed), so read the restarted kernel through the MCP surface.
+            # asyncio.run cannot run inside sync_playwright's event loop, so
+            # call the MCP tool on a worker thread (same as the plot test).
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                listing = executor.submit(
+                    _tool_call, supervisor, "inspect_notebook", {"target": "variables"}
+                ).result(timeout=90)
             names = [item["name"] for item in listing["variables"]]
             assert "peaksmcp_restart_all_marker" not in names
         finally:
