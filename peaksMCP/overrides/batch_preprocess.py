@@ -14,6 +14,7 @@ atomically.
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 from typing import Any, Literal
 
@@ -222,8 +223,10 @@ def preprocess_batch(
         missing = [item.source for item in resolved if not Path(item.source).expanduser().exists()]
         raise ValueError(f"preprocess_batch: source not found: {missing[0]}.")
 
-    def worker(item: BatchPreprocessItem) -> dict[str, Any]:
-        return _run_item(item, calibration, force=force)
+    # The worker must be pickleable for the process pool: a local closure
+    # would fail with "Can't get local object" under spawn. functools.partial
+    # over the module-level _run_item pickles cleanly.
+    worker = partial(_run_item, calibration=calibration, force=force)
 
     budget = ResourceBudget(
         cpu_limit_percent=cpu_limit_percent,

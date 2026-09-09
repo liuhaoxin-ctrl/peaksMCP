@@ -619,3 +619,19 @@ def test_inspect_experiment_accepts_datasheet_csv(tmp_path):
     assert by_index[20].kind == ScanKind.GOLD
     assert summary.gold == [20]
     assert summary.notes and any("theta_offset=1.5" in note for note in summary.notes)
+
+
+def test_preprocess_batch_worker_is_pickleable_for_the_process_pool():
+    """Regression: the pool worker used to be a local closure ("Can't get
+    local object ... worker" under spawn).  The module-level _run_item behind
+    a functools.partial must survive a pickle round trip exactly as the
+    process pool serialises it."""
+    import functools
+    import pickle
+
+    from peaksMCP.overrides.batch_preprocess import _run_item
+
+    worker = functools.partial(_run_item, calibration=2.6591, force=False)
+    restored = pickle.loads(pickle.dumps(worker))
+    assert restored.func is _run_item
+    assert restored.keywords == {"calibration": 2.6591, "force": False}
