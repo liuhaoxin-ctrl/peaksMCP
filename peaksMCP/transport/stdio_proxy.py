@@ -47,6 +47,10 @@ def create_stdio_proxy(host: str = "127.0.0.1", port: int = 8123) -> FastMCP:
 async def check_http_mcp_server(host: str = "127.0.0.1", port: int = 8123) -> dict[str, Any]:
     """Initialize the live HTTP server and verify its tool inventory.
 
+    Observability reads the PRIVATE loopback ``/healthz`` endpoint for
+    readiness (kernel/comm/index payload) - the model tool surface never
+    exposes status, so this check must not depend on any tool.
+
     Parameters
     ----------
     host : str, default "127.0.0.1"
@@ -57,15 +61,19 @@ async def check_http_mcp_server(host: str = "127.0.0.1", port: int = 8123) -> di
     Returns
     -------
     dict
-        Endpoint health, tool inventory and notebook status result.
-
-    Examples
-    --------
-    >>> result = await check_http_mcp_server(port=8123)
-    >>> "ok" in result
-    True
+        Endpoint health, tool inventory and the private health payload.
     """
     try:
+        status: Any = None
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=4) as http:
+                response = await http.get(f"http://{host}:{int(port)}/healthz")
+                response.raise_for_status()
+                status = response.json()
+        except Exception:
+            status = None
         async with Client(endpoint(host, port), timeout=8) as client:
             tools = await client.list_tools()
             names = sorted(tool.name for tool in tools)
@@ -76,10 +84,6 @@ async def check_http_mcp_server(host: str = "127.0.0.1", port: int = 8123) -> di
             duplicate_tools = sorted(
                 name for name, count in counts.items() if count > 1
             )
-            status: Any = None
-            if "notebook_server_status" in names:
-                result = await client.call_tool("notebook_server_status", {})
-                status = getattr(result, "data", None) or str(result)
             return {
                 "ok": not missing_tools and not unexpected_tools and not duplicate_tools,
                 "endpoint": endpoint(host, port),

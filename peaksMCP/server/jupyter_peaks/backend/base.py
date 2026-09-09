@@ -56,11 +56,14 @@ class SharedState:
     started_at: float = field(default_factory=time.time)
     kernel_instance_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     mcp_instance_id: str | None = None
-    #: API names proven real by a successful ``peaks_get_api`` this session
-    #: (canonical name plus search aliases).  Unknown write references that hit
-    #: this set are unlocked instead of blocked.
-    verified_peaks_names: set[str] = field(default_factory=set)
-    #: Per-name count of unverifiable write attempts, driving the advisory ->
+    #: Canonical-API proof ledger: ``canonical id -> entry snapshot``
+    #: (id/name/scope/module/tier/exposure) recorded by a successful
+    #: ``peaks_get_api`` this session.  run_cell unlocks an exact-name Peaks
+    #: call ONLY through this ledger (id + scope must match the call) - names
+    #: alone never unlock Python symbols and same-name/different-scope APIs
+    #: cannot be confused.
+    verified_apis: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: Per-name count of unproven write attempts, driving the advisory ->
     #: hard-refusal escalation until the name is proven with peaks_get_api.
     unknown_api_attempts: dict[str, int] = field(default_factory=dict)
 

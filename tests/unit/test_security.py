@@ -12,6 +12,8 @@ from peaksMCP.server.jupyter_peaks.security import AuditLogger, ConsentManager, 
     "import os as x\nx.system('ls')", "from subprocess import run as r\nr(['ls'])",
     "open('x', 'w')", "import os\nos.environ['A']='B'", "import shutil\nshutil.rmtree('x')",
 ])
+
+
 def test_dangerous_patterns_are_blocked(code):
     assert scan_code(code).blocked
 
@@ -382,11 +384,15 @@ def test_audit_is_jsonl_and_private(tmp_path):
     assert path.stat().st_mode & 0o777 == 0o600
 
 
-def test_write_without_exploration_runs_but_invented_apis_still_block(tmp_path):
-    """The select-then-run gate was removed: write_with_api_check no longer
-    requires prior peaks_search_api/peaks_get_api calls.  The API check itself
-    still hard-blocks invented/typo'd Peaks APIs."""
+def test_write_without_proof_blocks_exact_peaks_calls_until_get(tmp_path):
+    """Canonical proof is a HARD gate: an exact-name Peaks call without a
+    successful peaks_get_api this session is blocked (advisory).  After the
+    canonical id lands in the ledger the call runs; invented/typo'd APIs
+    always block."""
     from unittest.mock import Mock
+
+    import numpy as np
+    import xarray as xr
 
     from peaksMCP.discovery.index import build_index
     from peaksMCP.server.jupyter_peaks.backend import (
@@ -395,18 +401,26 @@ def test_write_without_exploration_runs_but_invented_apis_still_block(tmp_path):
     )
     from peaksMCP.server.jupyter_peaks.security import AuditLogger, ConsentManager
 
-    state = SharedState(Mock(user_ns={}))
+    state = SharedState(Mock(user_ns={"da": xr.DataArray(np.zeros((2, 2)), dims=("eV", "theta_par"))}))
     state.require_consent = False
     state.api_index = build_index()
     state.bridge = Mock()
     state.bridge.request.return_value = {"ok": True}
     nb = UnsafeNotebookBackend(state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl"))
 
-    # No exploration at all: a verified call runs, an invented API blocks.
-    assert not nb.write_with_api_check("da.k_convert(quiet=True)", timeout=5).get("blocked")
+    # No exploration at all: an exact Peaks call is blocked until proven.
+    first = nb.write_with_api_check("da.k_convert(quiet=True)", timeout=5)
+    assert first["blocked"] is True and first.get("requires_search") is True
+    assert "k_convert" in str(first.get("unknown_refs"))
+    assert state.bridge.request.call_count == 0
+    # Invented API stays blocked even after proof of an unrelated name.
+    _prove(state, state.api_index, "k_convert", "dataarray")
     blocked = nb.write_with_api_check("da.correct_EF()", timeout=5)
     assert blocked["blocked"] is True
     assert "correct_EF" in str(blocked.get("unknown_refs"))
+    # The proven canonical call now runs.
+    second = nb.write_with_api_check("da.k_convert(quiet=True)", timeout=5)
+    assert not second.get("blocked")
 
 
 def test_unknown_api_first_advisory_then_same_name_hard(tmp_path):
@@ -439,6 +453,30 @@ def test_unknown_api_first_advisory_then_same_name_hard(tmp_path):
     assert second.get("hard_refusal") is True
     assert state.unknown_api_attempts["correct_EF"] == 2
     assert state.bridge.request.call_count == 0
+
+
+def _prove(state, index, name, scope=None):
+    """Simulate a successful peaks_get_api: record canonical proof ids."""
+    from peaksMCP.server.jupyter_peaks.core.tools import _record_verified_api
+
+    found = False
+    for entry in index.entries:
+        if entry["name"] != name:
+            continue
+        if scope is not None and entry["scope"] != scope:
+            continue
+        _record_verified_api(state, entry)
+        found = True
+        if scope is not None:
+            break
+    if not found:
+        raise AssertionError(f"no index entry {name!r} scope={scope!r}")
+
+
+def _prove_all(state, index, index_by_name):
+    """Record every canonical proof a test relies on (get-first simulation)."""
+    for name in index_by_name:
+        _prove(state, index, name, index_by_name[name])
 
 
 def test_get_api_proof_unlocks_only_canonical_name(tmp_path):
@@ -486,9 +524,11 @@ def test_get_api_proof_unlocks_only_canonical_name(tmp_path):
     assert any(item["name"] == "show_mapping_slice" for item in verified)
 
 
-def test_savefig_requires_user_approval(tmp_path):
-    """A savefig cell pauses for explicit user approval (SAVE001 consent); it is
-    never executed without it, and executes once the user approves."""
+def test_savefig_is_hard_blocked_in_run_cell(tmp_path):
+    """SAVE001 savefig is hard-blocked: run_cell is NEVER a persistence path
+    (save_with_consent is the single persistence verb), so the cell is refused
+    before any consent dialog and before any kernel execution - even with
+    require_consent=False, and even when the user would have approved."""
     from unittest.mock import Mock
 
     from peaksMCP.discovery.index import build_index
@@ -500,7 +540,7 @@ def test_savefig_requires_user_approval(tmp_path):
 
     code = "import matplotlib.pyplot as plt\nplt.savefig('x.png')"
     state = SharedState(Mock(user_ns={}))
-    state.require_consent = False  # the save gate must hold regardless of the switch
+    state.require_consent = False  # persistence policy holds regardless
     state.api_index = build_index()
     state.bridge = Mock()
     state.bridge.request.return_value = {"ok": True, "outputs": [], "id": "c1"}
@@ -508,17 +548,10 @@ def test_savefig_requires_user_approval(tmp_path):
         state, ConsentManager(callback=lambda _op, _details: False), AuditLogger(tmp_path / "t.jsonl")
     )
 
-    # Denied: the user rejects the save cell -> it never reaches the kernel.
-    with pytest.raises(PermissionError, match="did not approve"):
+    with pytest.raises(PermissionError, match="save_with_consent"):
         nb.write_with_api_check(code, timeout=5)
+    # Never executed, and no consent dialog was raised for the write either.
     state.bridge.request.assert_not_called()
-
-    # Approved: the cell executes and the output is returned for normalisation.
-    consent = ConsentManager(callback=lambda _op, _details: True)
-    nb = UnsafeNotebookBackend(state, consent, AuditLogger(tmp_path / "t2.jsonl"))
-    result = nb.write_with_api_check(code, timeout=5)
-    assert not result.get("blocked")
-    assert any(op[0][0] == "execute_code" for op in state.bridge.request.call_args_list)
 
 
 def test_write_with_api_check_classifies_generic_and_verified_calls(tmp_path):
@@ -553,7 +586,15 @@ def test_write_with_api_check_classifies_generic_and_verified_calls(tmp_path):
         result = nb.write_with_api_check(code, timeout=5)
         assert not result.get("blocked"), (code, result)
 
-    # Peaks APIs are reported as verified regardless of calling convention.
+    # Exact-name Peaks calls need a canonical proof (get) before they run.
+    pre = nb.write_with_api_check("da.k_convert(quiet=True)", timeout=5)
+    assert pre.get("blocked"), "unproven exact API must not run"
+    _prove_all(nb.state, nb.state.api_index, {"fit_gold": "module", "k_convert": "module"})
+    # k_convert's module proof unlocks the unknown-receiver call; prove the
+    # dataarray-scoped id as well so a DataArray receiver also resolves.
+    _prove(nb.state, nb.state.api_index, "k_convert", "dataarray")
+
+    # Proven APIs are reported as verified regardless of calling convention.
     verified = nb.write_with_api_check("fit_gold(data)", timeout=5)
     assert not verified.get("blocked")
     assert "fit_gold" in [v["name"] for v in verified["api_check"]["verified_peaks_apis"]]
@@ -583,6 +624,9 @@ def test_write_with_api_check_receiver_aware_and_scope_aware(monkeypatch, tmp_pa
         state.api_index = build_index()
         state.bridge = Mock()
         state.bridge.request.return_value = {"ok": True}
+        # Seed the canonical proof ledger the flows rely on (get-first).
+        _prove_all(state, state.api_index, {"load": "module", "k_convert": "module"})
+        _prove(state, state.api_index, "k_convert", "dataarray")
         return UnsafeNotebookBackend(state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl"))
 
     nb = make_backend()
@@ -648,6 +692,8 @@ def test_project_import_gate_accepts_all_legal_import_forms(tmp_path):
     state.bridge = Mock()
     state.bridge.request.return_value = {"ok": True}
     nb = UnsafeNotebookBackend(state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl"))
+    _prove_all(state, state.api_index, {"load_data": "module", "load": "module", "k_convert": "module"})
+    _prove(state, state.api_index, "k_convert", "dataarray")
 
     for code in (
         "from peaksMCP.overrides import load_data\nload_data('scan.pxt')",

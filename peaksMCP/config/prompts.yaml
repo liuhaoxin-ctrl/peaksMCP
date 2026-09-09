@@ -26,6 +26,9 @@ prompts:
   mime_omitted_note: "Additional output of this MIME type is rendered in the notebook for the user; the text channel cannot show it. The notebook is the shared record."
 
   # ------------------------------------------------------- notebook_unsafe
+  run_cell_persist_blocked: "Execution blocked: this cell writes a file (savefig / file writers / unclear file mode), and run_cell is never a persistence path. Results persist ONLY through the save_with_consent tool (variables/figures) or convert_experiment (PXT to NetCDF) - both stage the exact bytes and ask for your approval on the save card. Do not retry the write inside a cell."
+
+  # ------------------------------------------------------- notebook_unsafe
   notebook_unsafe:
     index_build_failed: "The Peaks API index could not be built; restart the kernel."
     unknown_api_first: "Execution blocked: unverifiable API reference(s) {names}. None of these resolve to a Peaks API by exact name. Use peaks_search_api to find the correct API (candidates: {suggestions}) or fix the typo. If the receiver is complex (e.g. a function return value), assign it to an intermediate variable first. This name must be fetched with peaks_get_api before it can be used."

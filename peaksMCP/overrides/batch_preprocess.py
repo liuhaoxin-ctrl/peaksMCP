@@ -305,23 +305,27 @@ def preprocess_batch(
     approved = save_module._request_consent(ticket)
     status: str
     if approved is None:
-        status = "pending_consent"
+        # Fail closed without a channel: drop everything, no pending state.
+        status = "blocked"
+        save_module._discard_ticket(ticket.ticket_id)
         for pending, _request in staged_requests:
-            _mark(results, pending.path, "pending_consent", None)
+            _mark(results, pending.path, "failed", None)
     elif approved:
         ticket.authorized = True
         outcome = save_module._publish_batch(ticket.ticket_id)
-        status = "saved"
-        published = {p["path"] for p in outcome["published"]}
-        skipped_now = {s["path"] for s in outcome["skipped"]}
+        status = outcome["status"]
+        results_by_path = {
+            str(result.get("path")): result for result in outcome.get("items") or []
+        }
         for pending, _request in staged_requests:
             key = str(pending.path)
-            if key in published:
+            result = results_by_path.get(key)
+            if result is None or result["status"] == "published":
                 _mark(results, pending.path, "completed", True)
-            elif key in skipped_now:
+            elif result["status"] == "exists":
                 _mark(results, pending.path, "skipped", True)
-            else:
-                _mark(results, pending.path, "completed", True)
+            else:  # failed
+                _mark(results, pending.path, "failed", None)
     else:
         status = "denied"
         save_module._discard_ticket(ticket.ticket_id)

@@ -13,6 +13,12 @@ from .base import SharedState, ensure_fresh_index
 
 #: Curated hard-block reply text (config/prompts.yaml), read once at import.
 _PROMPTS = _load_prompts().get("notebook_unsafe") or {}
+#: Persistence-policy block text (top-level prompt key, single source).
+_RUN_CELL_PERSIST_BLOCKED = (
+    _load_prompts().get("run_cell_persist_blocked")
+    or "Execution blocked: this cell writes a file; results persist only "
+    "through save_with_consent / convert_experiment."
+)
 
 
 def _refused(message: str, *, requires_search: bool = False) -> dict[str, Any]:
@@ -50,19 +56,36 @@ class UnsafeNotebookBackend:
         # calls can hide behavior from static name matching.  Every operation
         # that actually executes Python is therefore gated by informed consent.
         #
+        # Persistence policy: run_cell is the analysis execution entry point,
+        # NEVER a persistence path.  File-write intents (SAVE001 savefig,
+        # SAVE002 file writers, FILE002 unclear file mode) are hard-blocked:
+        # results persist exclusively through save_with_consent (results) and
+        # convert_experiment (PXT -> NetCDF), both of which stage + consent.
+        # Notebook autosave (frontend save_notebook) is Run provenance, not
+        # analysis-result persistence, and is not affected.
+        if operation in {"notebook_write_with_api_check", "notebook_add_cell"} and scan:
+            persist_issues = [
+                issue
+                for issue in scan.requires_explicit_consent
+                if issue.rule_id in {"SAVE001", "SAVE002", "FILE002"}
+            ]
+            if persist_issues:
+                self.audit.write(
+                    operation, "blocked",
+                    {"reason": "single_persistence_owner",
+                     "issues": [issue.to_dict() for issue in persist_issues]},
+                )
+                raise PermissionError(_RUN_CELL_PERSIST_BLOCKED)
         # Two independent consent triggers:
         # 1. ``state.require_consent`` (profile ``mcp.require_consent``) is the
         #    master switch for plain execution: when False (default) no consent
         #    is asked for ordinary analysis cells (the scanner still hard-blocks
         #    dangerous code and every call is audit-logged).
-        # 2. Write-to-disk / network intents reported by the scanner
-        #    (``requires_explicit_consent``: SAVE001 savefig, SAVE002 file
-        #    writers, FILE002 unclear file mode, NET001 egress) ALWAYS require
-        #    explicit user approval in the notebook, regardless of the switch:
-        #    no result is persisted unless the user sees the exact cell and
-        #    approves it.  This is the requirement-first save gate.
+        # 2. Network egress (NET001) reported by the scanner ALWAYS requires
+        #    explicit user approval in the notebook, regardless of the switch.
         requires_consent = self.state.require_consent or bool(
-            scan and scan.requires_explicit_consent
+            scan
+            and any(issue.id == "NET001" for issue in scan.requires_explicit_consent)
         )
         if requires_consent:
             details: dict[str, Any] = {"code": code[:4000], "scan": scan.to_dict() if scan else None}
@@ -178,31 +201,57 @@ class UnsafeNotebookBackend:
             return "accessor" if tag in {"dataarray", "dataset", "datatree"} else "unknown"
         return tag
 
-    def write_with_api_check(self, code: str, timeout: float = 120.0) -> dict[str, Any]:
+    def write_with_api_check(
+        self,
+        code: str,
+        timeout: float = 120.0,
+        api_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
         """Write and execute ``code`` after checking Peaks API references.
 
         This is the model-generated-code entry point: it appends a new notebook
         cell, executes it, and verifies every Peaks API reference against the
-        live index (agents are expected to ``peaks_search_api`` /
-        ``peaks_get_api`` first, but that exploration is not a hard gate).
-        Every call site is classified by receiver origin and leaf name:
+        live API index.  Canonical-API proof is a HARD gate: an exact-name
+        Peaks call is executed only when a successful ``get`` already recorded
+        its canonical id in the proof ledger AND the ledger entry's scope
+        matches the call site (same-name APIs in different modules/scopes
+        cannot be confused).  Optional ``api_ids`` declares the canonical ids
+        this cell relies on; every declared id must already be in the ledger
+        (an unfetched or never-`get`-ed id is refused, never silently
+        ignored).
 
-        - ``verified_peaks_apis``: exact Peaks index hits whose scope matches the
-          receiver (DataArray/Dataset/DataTree or accessor like ``metadata``);
-        - ``generic_refs``: calls on generic modules (numpy, xarray, matplotlib,
-          stdlib, ...), Python builtins, and names defined/imported by ``code``;
-        - ``unknown_refs``: leaves that are neither.  Their presence HARD-BLOCKS
-          execution (fail-closed): an unverifiable name is usually an invented or
-          typo'd Peaks API (e.g. ``correct_EF``).  Receivers whose origin cannot
-          be proven do not grant a free pass — the leaf must still verify.
+        - ``verified_peaks_apis``: exact Peaks index hits whose canonical id
+          was proven via ``get`` (scope-compatible);
+        - ``generic_refs``: calls on generic modules (numpy, xarray,
+          matplotlib, stdlib, ...), Python builtins, names defined by the
+          cell, and live-namespace helpers that are NOT exact index names;
+        - ``unknown_refs``: leaves that are neither - usually invented or
+          typo'd Peaks APIs, or exact names whose proof is still missing
+          (``get`` first).  Their presence HARD-BLOCKS execution.
 
-        The live API index is hot-rebuilt in the kernel when the source changed, so
-        no kernel restart is needed.
+        The live API index is hot-rebuilt in the kernel when the source
+        changed, so no kernel restart is needed.
         """
         try:
             index = ensure_fresh_index(self.state)
         except Exception:
             return _refused(_PROMPTS["index_build_failed"])
+
+        # Declared canonical ids must be proven already (get happened).
+        if api_ids:
+            declared = [api_id for api_id in api_ids if api_id not in self.state.verified_apis]
+            if declared:
+                return {
+                    "success": False,
+                    "executed": False,
+                    "blocked": True,
+                    "unproven_api_ids": declared,
+                    "message": (
+                        "run_cell: api_ids not proven this session - call get "
+                        "with each canonical id first: "
+                        + ", ".join(str(api_id) for api_id in declared)
+                    ),
+                }
 
         targets = extract_call_targets(code)
         provenance = analyze_provenance(code, set(GENERIC_MODULES))
@@ -218,6 +267,8 @@ class UnsafeNotebookBackend:
         verified: list[dict[str, Any]] = []
         generic: list[str] = []
         unknown: list[dict[str, Any]] = []
+        # Exact-name Peaks candidates that still need a canonical proof.
+        needs_proof: list[dict[str, Any]] = []
         for target in targets:
             receiver = self._receiver_type(target, tags, generic_roots)
             matches = index.search(target.leaf, "all", 5) if index else []
@@ -236,10 +287,17 @@ class UnsafeNotebookBackend:
                 scope = None
 
             if scope is not None:
-                # Receiver type is known: only scope-compatible Peaks APIs verify.
+                # Receiver type known: only scope-compatible Peaks APIs apply,
+                # and they must be proven via the ledger.
                 scoped = [m for m in exact if m.get("scope") == scope]
                 if scoped:
-                    verified.append({"name": target.leaf, "matches": [str(m["id"]) for m in scoped]})
+                    needs_proof.append(
+                        {
+                            "name": target.leaf,
+                            "scope": scope,
+                            "candidates": [str(m["id"]) for m in scoped],
+                        }
+                    )
                 elif target.leaf in GENERIC_METHODS or target.leaf in BUILTIN_NAMES:
                     generic.append(target.leaf)
                 else:
@@ -247,57 +305,60 @@ class UnsafeNotebookBackend:
                 continue
 
             if target.root_id == target.leaf:
-                # Bare call: builtins, code-defined helpers, imported functions
-                # and helpers already defined in the live namespace are generic;
-                # exact Peaks APIs verify; anything else is unknown.
-                in_namespace = callable(self.state.namespace.get(target.leaf))
-                if (
-                    target.leaf in BUILTIN_NAMES
-                    or target.leaf in defined
-                    or target.leaf in imported
-                    or in_namespace
-                ):
+                # Bare call: builtins and code-defined helpers are generic.
+                # A peaks/peaksMCP import or an exact index name is NOT
+                # automatically generic - it must be proven with get.
+                if target.leaf in BUILTIN_NAMES or target.leaf in defined:
                     generic.append(target.leaf)
-                elif exact:
-                    verified.append({"name": target.leaf, "matches": [str(m["id"]) for m in exact]})
-                else:
-                    unknown.append({"name": target.leaf, "suggested": [str(m.get("id")) for m in matches]})
+                    continue
+                imported_from = provenance.from_sources.get(target.leaf)
+                import_root = str(imported_from or "").split(".")[0]
+                if exact and not (target.leaf in imported and import_root not in {"peaks", "peaksMCP"}):
+                    needs_proof.append(
+                        {
+                            "name": target.leaf,
+                            "scope": "bare",
+                            "candidates": [str(m["id"]) for m in exact],
+                        }
+                    )
+                    continue
+                if target.leaf in imported or callable(self.state.namespace.get(target.leaf)):
+                    generic.append(target.leaf)
+                    continue
+                unknown.append({"name": target.leaf, "suggested": [str(m.get("id")) for m in matches]})
                 continue
 
             # Unknown receiver: fail closed.  The leaf must still resolve to a
-            # verified Peaks API or a known generic method/builtin; an
+            # proven Peaks API or a known generic method/builtin; an
             # unverifiable leaf (``make().correct_EF()``, ``da[i].correct_EF()``)
             # is blocked.  Suggest splitting the chain into an intermediate
-            # variable when the receiver is complex.
-            if exact:
-                verified.append({"name": target.leaf, "matches": [str(m["id"]) for m in exact]})
-            elif target.leaf in GENERIC_METHODS or target.leaf in BUILTIN_NAMES:
+            # variable when the receiver is complex.  Generic xarray methods
+            # take precedence over same-named index entries (``da[i].mean()``
+            # is xarray's mean, not a peaks module function).
+            if target.leaf in GENERIC_METHODS or target.leaf in BUILTIN_NAMES:
                 generic.append(target.leaf)
+            elif exact:
+                needs_proof.append(
+                    {
+                        "name": target.leaf,
+                        "scope": "unknown_receiver",
+                        "candidates": [str(m["id"]) for m in exact],
+                    }
+                )
             else:
                 unknown.append({"name": target.leaf, "suggested": [str(m.get("id")) for m in matches]})
 
-        # A name the model already proved with a successful peaks_get_api this
-        # session counts as verified-by-probe: drop it from the unknown set so
-        # it no longer blocks.  Only canonical executable names are recorded —
-        # aliases never unlock Python symbols (see _record_verified_api).
-        verified_names = self.state.verified_peaks_names
-        unlocked = [u for u in unknown if u["name"] in verified_names]
-        if unlocked:
-            verified.extend(
-                {"name": u["name"], "matches": list(u.get("suggested") or [])}
-                for u in unlocked
-            )
-        unknown = [u for u in unknown if u["name"] not in verified_names]
+        # Canonical proof resolution: unlock ONLY through ledger ids whose
+        # name matches AND whose scope is compatible with the call site.
+        for candidate in needs_proof:
+            leaf = candidate["name"]
+            call_scope = candidate["scope"]
+            proven_ids = self._proven_ids(leaf, call_scope)
+            if proven_ids:
+                verified.append({"name": leaf, "matches": proven_ids})
+            else:
+                unknown.append({"name": leaf, "suggested": candidate["candidates"]})
 
-        api_check: dict[str, Any] = {
-            "verified_peaks_apis": verified,
-            "generic_refs": generic,
-            "unknown_refs": [u["name"] for u in unknown],
-            "suggestions": {
-                u["name"]: u["suggested"] for u in unknown if u["suggested"]
-            },
-            "rule": _PROMPTS["api_check_rule"],
-        }
         if unknown:
             # Escalation: an unverifiable name must be proven with a successful
             # peaks_get_api.  First occurrence is advisory (with candidates); a
@@ -321,7 +382,15 @@ class UnsafeNotebookBackend:
                     "hard_refusal": True,
                     "unknown_refs": hard_names,
                     "message": _PROMPTS["unknown_api_retry"].format(names=hard_names),
-                    "api_check": api_check,
+                    "api_check": {
+                        "verified_peaks_apis": verified,
+                        "generic_refs": generic,
+                        "unknown_refs": [u["name"] for u in unknown],
+                        "suggestions": {
+                            u["name"]: u["suggested"] for u in unknown if u["suggested"]
+                        },
+                        "rule": _PROMPTS["api_check_rule"],
+                    },
                 }
             self.audit.write(
                 "notebook_write_with_api_check",
@@ -339,13 +408,49 @@ class UnsafeNotebookBackend:
                 "unknown_refs": [u["name"] for u in unknown],
                 "message": _PROMPTS["unknown_api_first"].format(
                     names=[u["name"] for u in unknown],
-                    suggestions=api_check["suggestions"],
+                    suggestions={
+                        u["name"]: u["suggested"] for u in unknown if u["suggested"]
+                    },
                 ),
-                "api_check": api_check,
+                "api_check": {
+                    "verified_peaks_apis": verified,
+                    "generic_refs": generic,
+                    "unknown_refs": [u["name"] for u in unknown],
+                    "suggestions": {
+                        u["name"]: u["suggested"] for u in unknown if u["suggested"]
+                    },
+                    "rule": _PROMPTS["api_check_rule"],
+                },
             }
         result = self.execute_code(code, timeout)
-        result["api_check"] = api_check
+        result["api_check"] = {
+            "verified_peaks_apis": verified,
+            "generic_refs": generic,
+            "unknown_refs": [],
+            "suggestions": {},
+            "rule": _PROMPTS["api_check_rule"],
+        }
         return result
+
+    def _proven_ids(self, leaf: str, call_scope: str | None) -> list[str]:
+        """Canonical ids in the proof ledger matching a leaf + call scope."""
+        proven: list[str] = []
+        for snapshot in self.state.verified_apis.values():
+            if snapshot.get("name") != leaf:
+                continue
+            entry_scope = snapshot.get("scope")
+            if call_scope in {"dataarray", "dataset", "datatree"}:
+                if entry_scope != call_scope:
+                    continue
+            elif call_scope in {None, "bare", "unknown_receiver"}:
+                if entry_scope not in {None, "module", "top_level", "top", "top-level"}:
+                    continue
+            else:
+                # Accessor-class scope (e.g. ``metadata`` / ``quick_fit``).
+                if entry_scope != call_scope:
+                    continue
+            proven.append(str(snapshot["id"]))
+        return sorted(set(proven))
 
     def add_cell(self, source: str = "", cell_type: str = "code") -> dict[str, Any]:
         """Append one cell at the END of the notebook (append-only log).
@@ -359,6 +464,21 @@ class UnsafeNotebookBackend:
         self._authorize("notebook_add_cell", source if cell_type == "code" else "")
         return self.state.bridge.request("add_cell", {"source": source, "cell_type": cell_type})
 
+    def append_record_cell(self, source: str, cell_type: str = "markdown") -> dict[str, Any]:
+        """Append an INTERNAL record cell at the END of the notebook.
+
+        Internal plumbing (save intents/outcomes, archival notes) appends
+        directly through the frontend bridge - deliberately NOT through the
+        model-facing ``notebook_add_cell`` consent gate, so an operation that
+        already has its own consent (e.g. the save card) never triggers a
+        second confirmation when ``require_consent`` is on.  The append-only
+        log contract is unchanged; the cell is just not a model-requested
+        mutation.
+        """
+        if cell_type not in {"code", "markdown", "raw"}:
+            raise ValueError("cell_type must be code, markdown, or raw")
+        return self.state.bridge.request("add_cell", {"source": source, "cell_type": cell_type})
+
     def save_with_consent(
         self,
         variable_name: str,
@@ -367,19 +487,37 @@ class UnsafeNotebookBackend:
     ) -> dict[str, Any]:
         """Persist ONE notebook variable through the staged approval flow.
 
-        The flow mirrors the save primitive exactly: the variable's
-        normalized preview (kind, shape, dtype, units, target) is appended to
-        the notebook as a record cell FIRST, so the user sees precisely what
-        would be written; then the result is serialised into the unified
-        staging area and the save consent card asks for approval; only an
-        affirmative decision publishes the exact staged bytes atomically.
+        Order of operations (the save contract):
+
+        1. precheck: the variable exists and is serialisable; the target path
+           policy is decided up front (existing target without overwrite =
+           blocked, nothing staged);
+        2. an INTENT record cell (normalized preview: kind/shape/dtype/units/
+           target) is appended through the internal record path - the human
+           sees exactly what would be written BEFORE any staging happens, and
+           no second consent dialog is triggered (require_consent applies to
+           model mutations, not to internal record cells);
+        3. stage: the variable is serialised into the unified staging area
+           (strict TTL, server-owned gateway, lock + try/finally cleanup);
+        4. consent: the save card asks the human; without an approval channel
+           the operation fails closed (blocked: no_consent_channel) and the
+           staging area is cleaned up - there is no unrecoverable pending
+           state;
+        5. publish: only an affirmative decision atomically writes the exact
+           staged bytes;
+        6. an OUTCOME record cell is appended and the SaveReceipt returned.
 
         One variable, one file, per call - there is no batch-save and no
         code-level approve anywhere in the flow.
         """
         from pathlib import Path
 
-        from peaksMCP.overrides.save import _save_result, _variable_preview
+        from peaksMCP.overrides.save import (
+            SaveReceipt,
+            _save_result,
+            _serialisation_kind,
+            _variable_preview,
+        )
 
         value = self.state.namespace.get(variable_name)
         if value is None:
@@ -388,35 +526,79 @@ class UnsafeNotebookBackend:
                 "in the kernel namespace"
             )
         target = Path(path).expanduser()
+        # Precheck: reject a (value, target) pair the serializer would refuse
+        # BEFORE any record cell or staging happens.
         try:
-            _preview, line = _variable_preview(value, target, variable_name)
+            _kind = _serialisation_kind(value, target)
         except TypeError as exc:
-            raise ValueError(
-                f"save_with_consent: cannot serialise {type(value).__name__}: {exc}"
-            ) from None
-        receipt = _save_result(
-            value, target, overwrite=overwrite, variable_name=variable_name
-        )
-        if receipt.status == "blocked":
-            # Target exists without overwrite: nothing was staged; record the
-            # refusal in the notebook so the user can review the existing file.
-            record = (
-                f"**save_with_consent** - blocked: {receipt.path} already exists "
-                f"({receipt.note}); nothing was written."
+            raise ValueError(f"save_with_consent: {exc}") from None
+        _preview, line = _variable_preview(value, target, variable_name)
+
+        def _fill_preview(receipt: SaveReceipt) -> None:
+            """Populate preview metadata (kind/dims/dtype/units) on receipts
+            that never staged (blocked before serialisation)."""
+            if receipt.kind:
+                return
+            structure = _preview["structure"]
+            receipt.kind = _preview["kind"]
+            receipt.dims = dict(structure.get("sizes") or {})
+            receipt.dtype = structure.get("dtype")
+            receipt.units = structure.get("units")
+
+        # 1) precheck: nothing is staged for a refused overwrite.
+        if target.exists() and not overwrite:
+            receipt = SaveReceipt(
+                status="blocked",
+                variable_name=variable_name,
+                path=str(target),
+                overwrite=False,
+                note=f"{target} exists; pass overwrite=True after review.",
             )
-        else:
-            record = (
+            _fill_preview(receipt)
+            self.append_record_cell(
+                f"**save_with_consent** - blocked: {target} already exists; "
+                f"nothing was written. (pass overwrite=True after review)"
+            )
+            return receipt.model_dump(mode="json")
+
+        # 2) intent record cell BEFORE staging/consent (human sees the preview
+        #    of exactly what would be serialised).
+        try:
+            self.append_record_cell(
                 f"**save_with_consent** - request recorded before approval.\n\n"
                 f"{line}\n\n"
                 f"The file is written ONLY after your approval on the save card."
             )
-        try:
-            self.add_cell(record, cell_type="markdown")
         except Exception:
-            # The record cell is archival, not functional: a failure to append
-            # it must never block the consent decision itself.
             self.audit.write(
                 "save_with_consent", "error",
-                {"error_type": "record_cell_failed", "error": "could not append the record cell"},
+                {"error_type": "record_cell_failed",
+                 "error": "could not append the intent record cell"},
+            )
+
+        # 3-5) stage -> consent -> publish (fail-closed when no channel).
+        receipt = _save_result(
+            value, target, overwrite=overwrite, variable_name=variable_name
+        )
+
+        if receipt.status in {"blocked", "failed"} and not receipt.kind:
+            _fill_preview(receipt)
+
+        # 6) outcome record cell (archival; never blocks the receipt).
+        try:
+            if receipt.status == "saved":
+                note = f"approved and written: {receipt.path} ({receipt.size_bytes} bytes, sha256 {str(receipt.sha256)[:10]}...)"
+            elif receipt.status == "denied":
+                note = f"the user did not approve; nothing was written ({receipt.path})."
+            elif receipt.status == "blocked":
+                note = f"blocked: {receipt.note or receipt.path}"
+            else:
+                note = f"failed: {receipt.note or receipt.path}"
+            self.append_record_cell(f"**save_with_consent** - outcome: {note}")
+        except Exception:
+            self.audit.write(
+                "save_with_consent", "error",
+                {"error_type": "record_cell_failed",
+                 "error": "could not append the outcome record cell"},
             )
         return receipt.model_dump(mode="json")

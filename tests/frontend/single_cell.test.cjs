@@ -72,7 +72,7 @@ function harness({ moveCursorDuringRun = false, executionSuccess = true } = {}) 
   };
   const context = {
     exports: {}, console,
-    window: { setTimeout: () => 0 },
+    window: { setTimeout: (fn, ms) => setTimeout(fn, ms) },
     require(name) {
       if (!(name in modules)) { throw new Error(`unexpected import ${name}`); }
       return modules[name];
@@ -107,30 +107,33 @@ test('execute_code runs only the newly inserted cell', async () => {
   assert.equal(h.saves, 1);
 });
 
-test('execution output is published without changing active-cell identity', async () => {
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+test('execution output is settled inside ONE reply, without Comm pushes', async () => {
   const h = harness({ moveCursorDuringRun: true });
-  await h.request('execute_code', { code: 'print(1)' });
+  const reply = await h.request('execute_code', { code: 'print(1)' });
   const pushes = h.messages.filter(message => !message.request_id);
-  assert.ok(pushes.length >= 1);
-  assert.ok(pushes.every(message => message.type === 'cell_output'));
-  assert.ok(pushes.every(message => message.cell_id === 'inserted'));
+  assert.equal(pushes.length, 0);  // no repeated cell_output pushes any more
+  assert.equal(reply.ok, true);
+  assert.equal(reply.result.outputs[0].text, 'done');  // settled snapshot
   assert.equal(h.notebook.activeCell.model.id, 'inserted');
 });
 
-test('a delayed image remains attached to the executed cell after cursor movement', async () => {
+test('an image landing inside the quiet window is part of the settled reply', async () => {
   const h = harness({ moveCursorDuringRun: true });
-  await h.request('execute_code', { code: 'print(1)' });
+  const pending = h.request('execute_code', { code: 'print(1)' });
+  await sleep(80);  // inside the 200ms quiet window after kernel idle
   const executed = h.notebook.widgets.find(cell => cell.model.id === 'inserted');
   executed.model.outputs.setJSON([
     {output_type: 'display_data', data: {'image/png': 'QUJD'}},
   ]);
   executed.model.outputs.changed.emit();
-
-  const pushes = h.messages.filter(message => message.type === 'cell_output');
-  const latest = pushes[pushes.length - 1];
+  const reply = await pending;
+  assert.equal(reply.ok, true);
   assert.equal(h.notebook.activeCell.model.id, 'inserted');
-  assert.equal(latest.cell_id, 'inserted');
-  assert.equal(latest.outputs[0].data['image/png'], 'QUJD');
+  assert.equal(reply.result.outputs[0].data['image/png'], 'QUJD');
+  const pushes = h.messages.filter(message => !message.request_id);
+  assert.equal(pushes.length, 0);
 });
 
 test('oversized images are removed before crossing the Comm', () => {

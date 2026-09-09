@@ -121,8 +121,11 @@ def convert_experiment(
     peaksMCP.pxt_utils.models.ConversionReport
         Per-item outcomes.  ``status`` is ``converted`` only after the human
         approved and the gateway published the staged bytes; ``skipped`` for
-        idempotent skips; ``awaiting_consent``/``denied`` when no approval
-        happened.  JSON-safe via ``model_dump(mode="json")``.
+        idempotent skips (including existing targets at publish); ``failed``
+        when publish failed or consent was impossible (no approval channel);
+        ``denied`` when the user rejected the card.  Approval is never
+        conflated with save success.  JSON-safe via
+        ``model_dump(mode="json")``.
 
     Raises
     ------
@@ -206,26 +209,39 @@ def convert_experiment(
     summary = f"convert_experiment: publish {len(requests)} file(s) to {destination}"
     outcome = save_module._run_staged("convert_experiment", requests, summary)
     status = outcome["status"]
-    if status == "saved":
-        published = {p["path"] for p in outcome.get("published", [])}
-        skipped_now = {s["path"] for s in outcome.get("skipped", [])}
+    results_by_path = {
+        str(result.get("path")): result for result in outcome.get("items") or []
+    }
+    if status in {"saved", "exists"}:
+        # Per-item propagation: approval alone never counts as save success.
         for item, target in staged:
             key = str(target)
-            if key in skipped_now:
+            result = results_by_path.get(key)
+            if result is None:
+                item.status = "failed"
+                item.error_type = "PublishError"
+                item.error = "no publish result for this item"
+                item.output_exists = False
+            elif result["status"] == "published":
+                item.status = "converted"
+                item.output_exists = True
+            elif result["status"] == "exists":
                 item.status = "skipped"
                 item.output_exists = True
                 item.warnings = item.warnings + ["output exists at publish"]
-            elif key in published:
-                item.status = "converted"
-                item.output_exists = True
-            else:
-                item.status = "converted"
-                item.output_exists = True
-    elif status == "pending_consent":
+            else:  # failed
+                item.status = "failed"
+                item.error_type = "OSError"
+                item.error = result.get("error") or "publish failed"
+                item.output_exists = False
+    elif status == "blocked":
+        reason = outcome.get("reason") or "blocked"
         for item, _target in staged:
-            item.status = "awaiting_consent"
+            item.status = "failed"
+            item.error_type = "ConsentBlocked"
+            item.error = f"conversion blocked: {reason}"
             item.output_exists = False
-    else:
+    else:  # denied
         for item, _target in staged:
             item.status = "denied"
             item.output_exists = False

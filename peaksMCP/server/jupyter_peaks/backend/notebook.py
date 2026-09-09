@@ -375,23 +375,31 @@ class NotebookBackend:
         }
 
     def _inspect_active_cell(self, *, detail: str) -> dict[str, Any]:
+        """Active-cell inspection NEVER returns raw outputs.
+
+        Executed outputs travel exactly once, settled inside the run_cell
+        reply; anything else would reopen a second output channel (including
+        multi-MB image payloads).  Both details return identity, source and
+        light execution metadata only - outputs are reported as omitted.
+        """
         cell = self.active_cell()
-        if detail == "preview":
-            source = str(cell.get("source") or "")
-            cell = dict(cell)
-            cell["source"] = source[:_ACTIVE_CELL_SOURCE_MAX]
-            return {"target": "active_cell", "detail": detail, **cell}
         source = str(cell.get("source") or "")
         outputs = cell.get("outputs")
-        return {
+        base: dict[str, Any] = {
             "target": "active_cell",
             "detail": detail,
             "id": cell.get("id"),
+            "index": cell.get("index"),
             "cell_type": cell.get("cell_type"),
             "execution_count": cell.get("execution_count"),
-            "source_preview": source[:_SUMMARY_LINE_MAX],
             "n_outputs": len(outputs) if isinstance(outputs, list) else None,
+            "outputs_omitted": True,
         }
+        if detail == "preview":
+            base["source"] = source[:_ACTIVE_CELL_SOURCE_MAX]
+        else:
+            base["source_preview"] = source[:_SUMMARY_LINE_MAX]
+        return base
 
     def server_status(self) -> dict[str, Any]:
         return {

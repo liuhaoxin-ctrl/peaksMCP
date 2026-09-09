@@ -111,8 +111,9 @@ def _save_fake_bridge(state, cells=None):
 @pytest.mark.asyncio
 async def test_save_with_consent_is_the_only_persistence_verb(tmp_path):
     """save_with_consent: preview record cell first, staged ticket, receipt.
-    With no approval channel the ticket waits (pending_consent) and nothing
-    is written; the model Python surface has no save_result export."""
+    With no approval channel the save fails closed (blocked,
+    no_consent_channel) and nothing is written; the model Python surface has
+    no save_result export."""
     import xarray as xr
 
     from peaksMCP.overrides import __all__ as overrides_all
@@ -132,12 +133,13 @@ async def test_save_with_consent_is_the_only_persistence_verb(tmp_path):
         )
     data = result.data
     assert data["operation"] == "save_with_consent"
-    assert data["status"] == "pending_consent"
+    assert data["status"] == "blocked"
+    assert data["note"] and "no approval channel" in data["note"]
     assert data["kind"] == "netcdf"
     assert data["dims"] == {"eV": 1, "kx": 2}
-    assert data["sha256"] and data["ticket_id"]
+    assert not data["sha256"] and not data["ticket_id"]
     assert not (tmp_path / "scan.nc").exists()
-    assert cells and "save_with_consent" in cells[0]  # preview record cell
+    assert cells and "save_with_consent" in cells[0]  # intent record cell
 
 
 @pytest.mark.asyncio

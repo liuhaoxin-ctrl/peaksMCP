@@ -51,12 +51,12 @@ def isolated_test_environment():
 
 
 @pytest.fixture(autouse=True)
-def _no_save_channel_leakage():
-    """The save-consent channel is owned by a running MCP server instance.
-    Autouse cleanup guarantees one test can never leak its callback into a
-    later test (regression: a server-construction test used to install a
-    module-global channel that turned later save tests into 'denied')."""
+def _no_save_gateway_leakage():
+    """The save gateway is owned by a running MCP server instance.  Autouse
+    cleanup resets the active gateway (tickets + approval channel) after every
+    test so one test can never leak its callback or staged tickets into a
+    later test (regression: module-global channels/tickets used to leak)."""
     yield
-    from peaksMCP.overrides import save as save_module
+    from peaksMCP.overrides.save import uninstall_gateway
 
-    save_module._set_approval_channel(None)
+    uninstall_gateway()

@@ -208,3 +208,40 @@ def test_inspect_notebook_targets_and_details_are_bounded():
         backend.inspect("variable", variable_name="missing")
     # limit is clamped to 1..50 (0 clamps up to 1).
     assert len(backend.inspect("variables", detail="summary", limit=0)["variables"]) == 1
+
+
+def test_inspect_active_cell_never_returns_raw_outputs():
+    """Executed outputs travel once (settled inside the run_cell reply);
+    inspect_notebook(active_cell, preview) must never reopen that channel -
+    no raw outputs, no image payloads, just identity/source metadata."""
+    class Bridge:
+        connected = True
+
+        def request(self, operation, timeout=5):
+            assert operation == "read_active_cell"
+            return {
+                "id": "cell-7",
+                "index": 3,
+                "cell_type": "code",
+                "execution_count": 4,
+                "source": "data.plot()",
+                "outputs": [
+                    {"output_type": "stream", "text": "secret"},
+                    {"output_type": "display_data",
+                     "data": {"image/png": "QUJDREVGRw=="}},
+                ],
+            }
+
+    state = SharedState(FakeIPython({}))
+    state.bridge = Bridge()
+    backend = NotebookBackend(state)
+
+    summary = backend.inspect("active_cell", detail="summary")
+    assert summary["outputs_omitted"] is True
+    assert summary["n_outputs"] == 2
+    assert "outputs" not in summary and "secret" not in str(summary)
+
+    preview = backend.inspect("active_cell", detail="preview")
+    assert preview["id"] == "cell-7" and preview["source"].startswith("data.plot()")
+    assert "outputs" not in preview
+    assert "secret" not in str(preview) and "QUJDREVGRw" not in str(preview)

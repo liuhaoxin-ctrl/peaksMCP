@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import threading
+import time
 import uuid
+from typing import Any
 
 import uvicorn
 from fastmcp import FastMCP
@@ -37,6 +39,9 @@ class JupyterPeaksMCPServer:
         self.consent = ConsentManager(state.bridge)
         self.notebook = NotebookBackend(state)
         self.unsafe = UnsafeNotebookBackend(state, self.consent, self.audit)
+        #: Server-owned save gateway; installed in start(), released in
+        #: stop().  None while the server is not running.
+        self.save_gateway = None
         # Pre-build the Peaks API index at server startup instead of lazily on
         # the first search: the dashboard can then report api_index_ready /
         # api_count immediately (and index_stale reflects the current source).
@@ -56,31 +61,35 @@ class JupyterPeaksMCPServer:
         """Route staged-ticket approvals (save_with_consent / conversion) to the
         frontend card.
 
-        The channel receives the ticket preview (the REAL content summary of
-        the staged bytes) and asks the user through the same Comm consent
-        mechanism; every affirmative/negative decision is audit-logged.  The
-        gateway refuses tickets that never went through this channel.
+        The gateway is server-owned: an instance is created here, installed as
+        the active gateway on ``start()`` and released on ``stop()`` (tickets
+        and channel cleared), so no module-global approval state can leak into
+        a later kernel or test.  The gateway refuses tickets that never went
+        through this channel.
         """
-        from peaksMCP.overrides import save as save_module
+        from peaksMCP.overrides.save import SaveGateway, install_gateway
 
-        def approve(preview: dict) -> bool:
-            approved = self.consent.request("save_ticket", dict(preview))
-            items = preview.get("items") or []
-            first = items[0] if items else {}
-            self.audit.write(
-                "save_consent",
-                "approved" if approved else "denied",
-                {
-                    "operation": preview.get("operation"),
-                    "ticket_id": preview.get("ticket_id"),
-                    "item_count": len(items),
-                    "first_path": first.get("path"),
-                    "first_sha256": str(first.get("sha256") or "")[:16],
-                },
-            )
-            return approved
+        gateway = SaveGateway()
+        gateway.set_approval_channel(self._approve_save_card)
+        install_gateway(gateway)
+        self.save_gateway = gateway
 
-        save_module._set_approval_channel(approve)
+    def _approve_save_card(self, preview: dict) -> bool:
+        approved = self.consent.request("save_ticket", dict(preview))
+        items = preview.get("items") or []
+        first = items[0] if items else {}
+        self.audit.write(
+            "save_consent",
+            "approved" if approved else "denied",
+            {
+                "operation": preview.get("operation"),
+                "ticket_id": preview.get("ticket_id"),
+                "item_count": len(items),
+                "first_path": first.get("path"),
+                "first_sha256": str(first.get("sha256") or "")[:16],
+            },
+        )
+        return approved
 
     def _build_mcp(self) -> FastMCP:
         mcp = FastMCP(
@@ -111,20 +120,49 @@ class JupyterPeaksMCPServer:
                 "network. Set `mcp.allow_remote: true` only with auth/TLS in front."
             )
         app = self.mcp.http_app(path="/mcp", stateless_http=False)
+        # Private loopback health endpoint: observability (supervisor / stdio
+        # proxy / dashboard) reads readiness here; the model NEVER sees it -
+        # there is no status tool in the MCP surface.
+        app.add_route("/healthz", self._healthz, methods=["GET"], name="healthz")
         config = uvicorn.Config(app, host=self.host, port=self.port, log_level="warning", lifespan="on")
         self._uvicorn = uvicorn.Server(config)
         self._install_save_approval_channel()
         self._thread = threading.Thread(target=self._uvicorn.run, name="peaksMCP-http", daemon=True)
         self._thread.start()
 
-    def stop(self, timeout: float = 10) -> None:
-        """Request a graceful HTTP shutdown, release the save-consent channel
-        and join the server thread.  The approval channel is owned by the
-        running server instance: it must never leak into later kernels or
-        tests after the server stops."""
-        from peaksMCP.overrides import save as save_module
+    def _healthz(self, request: Any) -> Any:
+        """Loopback-only health payload (same fields the old status tool had).
 
-        save_module._set_approval_channel(None)
+        Returns the readiness JSON without ever exposing it through the model
+        tool surface: observability consumes this endpoint, agents cannot see
+        it.  The response is intentionally small and kernel-local.
+        """
+        from starlette.responses import JSONResponse
+
+        state = self.state
+        index = state.api_index
+        payload = {
+            "status": "ready",
+            "uptime_s": round(time.time() - state.started_at, 3),
+            "kernel_instance_id": state.kernel_instance_id,
+            "mcp_instance_id": state.mcp_instance_id,
+            "extension_loaded": True,
+            "comm_connected": bool(state.bridge and state.bridge.connected),
+            "api_index_ready": index is not None,
+            "api_count": len(index.entries) if index else 0,
+            "index_stale": bool(index and index.is_stale()),
+        }
+        return JSONResponse(payload)
+
+    def stop(self, timeout: float = 10) -> None:
+        """Request a graceful HTTP shutdown, release the server-owned save
+        gateway (staged tickets + approval channel cleared) and join the
+        server thread.  Nothing save-related may leak into later kernels or
+        tests after the server stops."""
+        from peaksMCP.overrides.save import uninstall_gateway
+
+        uninstall_gateway()
+        self.save_gateway = None
         if self._uvicorn is not None:
             self._uvicorn.should_exit = True
         if self._thread and self._thread.is_alive():

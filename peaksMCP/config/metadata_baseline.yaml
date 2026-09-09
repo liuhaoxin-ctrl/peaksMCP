@@ -89,7 +89,7 @@ tools:
       staging area (strict TTL) and the save consent card asks for approval;
       only an affirmative decision atomically publishes the exact staged
       bytes. Returns a SaveReceipt: operation / status (saved | denied |
-      pending_consent | blocked) / path / kind / size_bytes / sha256 / dims /
+      blocked | failed) / path / kind / size_bytes / sha256 / dims /
       dtype / units / overwrite / ticket_id. One variable, one file, per
       call - never batch. overwrite=True only permits replacing an existing
       target AFTER approval; without it an existing target is refused

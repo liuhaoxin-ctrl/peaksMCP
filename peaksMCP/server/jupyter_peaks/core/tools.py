@@ -239,17 +239,27 @@ def _require_index(state: SharedState):
 
 
 def _record_verified_api(state: SharedState, entry: dict[str, Any]) -> None:
-    """Remember that a canonical API was fetched via peaks_get_api this session.
+    """Record a canonical API proof after a successful peaks_get_api.
 
-    Only the canonical executable name is unlocked.  Natural-language aliases
-    never unlock Python symbols: they are search vocabulary, not callable
-    identifiers, so a later cell that writes an alias (e.g. ``mapping slice``)
-    stays blocked until the model fetches and uses the real function name.
+    The ledger is keyed by the CANONICAL ID (with its scope/module snapshot),
+    never by a bare name: run_cell unlocks an exact-name call only when an
+    id exists whose name AND scope match the call site, so same-name APIs in
+    different modules/scopes cannot be confused, and natural-language aliases
+    never unlock Python symbols (they are search vocabulary, not callable
+    identifiers).
     """
+    canonical_id = str(entry.get("id") or "")
     name = str(entry.get("name") or "")
-    if not name:
+    if not canonical_id or not name:
         return
-    state.verified_peaks_names.add(name)
+    state.verified_apis[canonical_id] = {
+        "id": canonical_id,
+        "name": name,
+        "scope": entry.get("scope"),
+        "module": entry.get("module"),
+        "tier": entry.get("tier"),
+        "exposure": entry.get("exposure"),
+    }
     state.unknown_api_attempts.pop(name, None)
 
 
@@ -451,17 +461,22 @@ def register_unsafe_tools(mcp: FastMCP, notebook: UnsafeNotebookBackend, audit: 
     --------
     >>> register_unsafe_tools(mcp, unsafe_notebook)
     """
-    def notebook_write_with_api_check(code: str, timeout: float = 120.0) -> dict[str, Any]:
+    def notebook_write_with_api_check(
+        code: str,
+        timeout: float = 120.0,
+        api_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
         """Run the API-checked write and return the normalised output summary.
 
-        Raw Jupyter outputs are never echoed to the model: the response replaces
-        them with an ``output`` list containing only errors, the "Inline figure
-        rendered ..." line and interactive markers; a text-only cell returns
-        ``[]`` by design (its content is displayed in the notebook for the
-        user).  Cell identity and execution flags stay on the response so the
-        agent knows what was appended and whether it ran.
+        ``api_ids`` optionally declares the canonical Peaks API ids this cell
+        relies on; every declared id must already be proven by a successful
+        ``get`` this session (unproven ids are refused).  Raw Jupyter outputs
+        are never echoed to the model: the response replaces them with an
+        ``output`` list containing only errors, the "Inline figure rendered
+        ..." line and interactive markers; a text-only cell returns ``[]`` by
+        design.  Cell identity and execution flags stay on the response.
         """
-        result = notebook.write_with_api_check(code=code, timeout=timeout)
+        result = notebook.write_with_api_check(code=code, timeout=timeout, api_ids=api_ids)
         if isinstance(result, dict) and isinstance(result.get("outputs"), list):
             cell = {
                 key: result[key]
@@ -489,7 +504,7 @@ def register_unsafe_tools(mcp: FastMCP, notebook: UnsafeNotebookBackend, audit: 
         """Persist one notebook variable through staged, human-approved saving.
 
         The result type is ``SaveReceipt`` (operation / status saved|denied|
-        pending_consent|blocked / path / kind / size_bytes / sha256 / dims /
+        blocked|failed / path / kind / size_bytes / sha256 / dims /
         dtype / units / overwrite / ticket_id).  One variable, one file, per
         call - there is no batch save.  Nothing is written unless the user
         approves the save card in the notebook; overwrite=True only permits

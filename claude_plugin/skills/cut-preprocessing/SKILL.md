@@ -11,14 +11,25 @@ description: Use `peaksMCP` to call the `peaks` package and perform preprocessin
 * The input file (`BP_XXXX`) and type for each experiment (Index).
 * Select the cut (`sweep`/`cut`) file to be processed based on the datasheet; use the gold data (labeled `Au`) for Fermi energy fitting.
 
+In a notebook cell compose the loading/inspection verbs and keep the printed
+line short (run_cell echoes at most a 3-line stdout summary):
+
+```python
+scans = load_data("data/")            # identity index (no classification)
+summary = inspect_experiment(scans)   # kinds, decision lists, conflicts
+print("gold:", summary.gold, "| conflicts:", len(summary.conflicts))
+```
+
 ## Workflow
 
 1. Use the fitted gold curve to level the Fermi edge of the $E_k\text{--}k$ data and set the Fermi energy to zero $\rightarrow$ set the high-symmetry point in angle space to zero $\rightarrow$ convert to k-space.
 2. Compose the adapter surface (`peaksMCP.overrides`: `load_data`,
    `inspect_experiment`, `convert_experiment`) with native
-   `peaks` steps obtained via `peaks_search_api` / `peaks_get_api`
+   `peaks` steps obtained via `search` / `get`
    (`da.fit_gold`, `da.metadata.set_EF_correction`, coordinate shifts,
-   `da.k_convert`). Never reimplement an existing function.
+   `da.k_convert`). Never reimplement an existing function, and never call an
+   API by name before its canonical id was fetched with `get` — run_cell
+   verifies the proof ledger.
 3. When performing 4th-order polynomial fitting (`poly4`) on gold data, outliers must be excluded prior to fitting (`outlier_exclusion=True`).
 4. **One gold fit, then per-scan conversion**: run the native
    `da.fit_gold` once on the Au reference, apply its `EF_correction` with
@@ -33,28 +44,38 @@ description: Use `peaksMCP` to call the `peaks` package and perform preprocessin
 
 ## Required Parameters
 
-* `theta_par_offset_deg` (High-symmetry point position): Provided either in the agent note inside `experiment_metadata.json` or explicitly specified by the user via the `askuserquestion` tool. This parameter cannot be deduced from the data.
-* **Fermi Energy**: Priority sequence is Gold data fitting (`fit_gold_reference`, files labeled `Au` in the datasheet) $>$ Ask the user via the `askuserquestion` tool. Inspect the metadata document first with `inspect_experiment` — it reports classification conflicts (e.g. 3-D cubes labelled `sweep`) before any preprocessing starts.
+* `theta_par_offset_deg` (High-symmetry point position): Provided either in the agent note inside `experiment_metadata.json` or explicitly by asking the user in the conversation. This parameter cannot be deduced from the data.
+* **Fermi Energy**: Priority sequence is Gold data fitting (`da.fit_gold`, files labeled `Au` in the datasheet) $>$ Ask the user in the conversation. Inspect the experiment first with `inspect_experiment` — it reports classification conflicts (e.g. 3-D cubes labelled `sweep`) before any preprocessing starts.
 * Other metadata (such as polarization, photon energy, etc.) is used strictly for judgment/verification and does not participate in calculations.
 
 ## Deliverables & Output Protocol
 
-Use `plot` to convey **key** information to the user.
-Save processed cuts with `da.save(path)` (peaks' own writer sanitises metadata
-attrs; raw `da.to_netcdf` can fail on unsanitized attrs). For results the user
-explicitly asks to keep, call the `save_with_consent` MCP tool: it appends a
-preview record cell, stages the variable's exact bytes in a unified temp area,
-shows the user a consent card with the real content summary (path, size,
-sha256, structure) and writes the file only when the user approves on that
-card. There is no code-level approval flag and no save function in the model
-Python surface.
+Use the peaksMCP plotting façades (`plot_batch`, `plot_validation_pair`,
+`show_mapping_slice`) for figures; when raw matplotlib is unavoidable, follow
+the figure conventions in the server instructions (constrained_layout, DejaVu
+Sans with mathtext symbols, English labels, 150/300 dpi).
 
-**Use the peaksMCP plotting façades (`plot_batch`, `plot_validation_pair`, `show_mapping_slice`) for figures; when raw matplotlib is unavoidable, follow the figure conventions in the server instructions (constrained_layout, DejaVu Sans with mathtext symbols, English labels, 150/300 dpi).**
+**Cells never persist anything.** `run_cell` hard-blocks file writes
+(`savefig` / writers / unclear file modes): results persist exclusively
+through the `save_with_consent` tool, which appends a preview record cell,
+stages the variable's exact bytes in a unified temp area (server-owned
+gateway, strict TTL), shows the user a consent card with the real content
+summary (path, size, sha256, structure) and writes the file only when the
+user approves on that card — one variable/file per call, `overwrite=True`
+only permits replacing an existing target after approval. PXT-to-NetCDF
+conversion persists through `convert_experiment` (same staged gateway).
+Notebook autosave is notebook provenance, not analysis persistence. There is
+no code-level approval flag and no save function in the model Python surface.
+
+Figures to keep must be assigned to a variable first
+(`fig = plot_validation_pair(...)`) and then saved with `save_with_consent`
+(target `.png`/`.svg`/`.pdf`), never with `fig.savefig` inside a cell.
 
 ## Figure debugging protocol
 
 When a figure output is questioned, diagnose **whether an image rendered** before changing any code:
 
-1. Call `notebook_read_active_cell_output` and look for the `inline_image_rendered` marker (or `image/png` in the mime list).
-2. **Marker present** → the figure WAS rendered. The problem is its *content*: inspect the data/values used.
+1. Read the `run_cell` reply: a rendered cell returns the
+   "Inline figure rendered in the notebook ..." line.
+2. **Marker present** → the figure WAS rendered. The problem is its *content*: inspect the data/values used (`inspect_notebook` on the relevant variables).
 3. **Bare `<Figure ...>` repr with no image marker** → the figure was NOT displayed. Fix the display, not the fit.

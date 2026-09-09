@@ -593,7 +593,7 @@ class RuntimeSupervisor:
             name: False
             for name in (
                 "kernel_restarted", "kernel", "extension", "comm",
-                "mcp_restarted", "mcp_initialize", "tools_list", "status_tool",
+                "mcp_restarted", "mcp_initialize", "tools_list", "health",
             )
         }
         stages["kernel_restarted"] = previous_generation is None
@@ -625,9 +625,9 @@ class RuntimeSupervisor:
                         "duplicate_tools",
                     )
                 )
-                stages["status_tool"] = result.get("status") is not None
-                # Structured read of the notebook server status instead of fragile
-                # string matching on the serialized status payload.
+                stages["health"] = result.get("status") is not None
+                # Structured read of the private loopback /healthz payload
+                # instead of fragile string matching on a serialized status.
                 status_data = result.get("status")
                 stages["extension"] = bool(
                     isinstance(status_data, dict) and status_data.get("extension_loaded")

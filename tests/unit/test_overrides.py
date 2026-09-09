@@ -93,20 +93,21 @@ def test_load_data_embeds_metadata(monkeypatch, tmp_path, metadata_kind):
 # ---------- ⑤ save gateway (_save_result, the save_with_consent internals) ----------
 
 def _approval(approved: bool):
-    """Install a fake approval channel for one test."""
-    import pytest
+    """Install a fake approval channel on the active gateway for one test.
 
+    The channel lives on the SaveGateway instance; the autouse conftest
+    fixture resets the gateway (channel + tickets) after every test.
+    """
     from peaksMCP.overrides import save as save_module
 
-    monkeypatch = pytest.MonkeyPatch()
     seen: dict = {}
 
     def channel(payload):
         seen["payload"] = payload
         return approved
 
-    monkeypatch.setattr(save_module, "_APPROVAL_CHANNEL", channel)
-    return monkeypatch, seen
+    save_module._set_approval_channel(channel)
+    return seen
 
 
 def _single_item(payload):
@@ -115,31 +116,28 @@ def _single_item(payload):
     return payload["items"][0]
 
 
-def test_save_without_channel_stages_in_unified_area_and_waits(tmp_path, monkeypatch):
-    """No frontend channel: the ticket waits in the unified staging area and
-    nothing ever appears next to the target (no early .part, no target dir)."""
+def test_save_without_channel_fails_closed_and_stages_nothing(tmp_path):
+    """No frontend channel: the save fails closed (blocked, no_consent_channel)
+    BEFORE staging - nothing is staged, nothing is written, no pending ticket
+    is left behind."""
     from peaksMCP.overrides import save as save_module
 
-    monkeypatch.setattr(save_module, "_APPROVAL_CHANNEL", None)  # no frontend
+    save_module._set_approval_channel(None)  # no frontend
     target = tmp_path / "out.nc"
     receipt = _save_result(_array(), str(target))
     assert isinstance(receipt, SaveReceipt)
-    assert receipt.status == "pending_consent"
-    assert receipt.kind == "netcdf"
-    assert receipt.ticket_id and receipt.sha256
-    assert receipt.dims == {"eV": 3, "kx": 4}
-    assert not target.exists()  # nothing written
-    assert not list(tmp_path.iterdir())  # staging stays in the unified area
-    save_module._discard_ticket(receipt.ticket_id)
+    assert receipt.status == "blocked"
+    assert receipt.note and "no approval channel" in receipt.note
+    assert receipt.ticket_id is None and receipt.sha256 is None
+    assert not target.exists()
+    assert not list(tmp_path.iterdir())
+    assert save_module._active_gateway()._staged == {}
 
 
-def test_save_approval_channel_writes_exact_staged_bytes(tmp_path, monkeypatch):
+def test_save_approval_channel_writes_exact_staged_bytes(tmp_path):
     target = tmp_path / "out.nc"
-    monkeypatch, seen = _approval(True)
-    try:
-        receipt = _save_result(_array(), str(target))
-    finally:
-        monkeypatch.undo()
+    seen = _approval(True)
+    receipt = _save_result(_array(), str(target))
     assert receipt.status == "saved" and target.exists()
     item = _single_item(seen["payload"])
     # The card shows the real content identity: path, sha256 of the staged
@@ -153,75 +151,63 @@ def test_save_approval_channel_writes_exact_staged_bytes(tmp_path, monkeypatch):
     assert not list(tmp_path.glob(".*part*"))  # publish leaves no .part behind
 
 
-def test_save_denied_writes_nothing_and_cleans_up(tmp_path, monkeypatch):
+def test_save_denied_writes_nothing_and_cleans_up(tmp_path):
     target = tmp_path / "out.nc"
-    monkeypatch, _ = _approval(False)
-    try:
-        receipt = _save_result(_array(), str(target))
-    finally:
-        monkeypatch.undo()
+    _approval(False)
+    receipt = _save_result(_array(), str(target))
     assert receipt.status == "denied"
     assert not target.exists()
     assert not list(tmp_path.iterdir())
 
 
-def test_save_refuses_overwrite_without_flag(tmp_path, monkeypatch):
+def test_save_refuses_overwrite_without_flag(tmp_path):
     target = tmp_path / "out.nc"
-    monkeypatch, _ = _approval(True)
-    try:
-        first = _save_result(_array(), str(target))
-        assert first.status == "saved"
-        blocked = _save_result(_array(), str(target))
-        assert blocked.status == "blocked"
-        assert not blocked.sha256  # nothing staged for a refused overwrite
-        assert blocked.note and "exists" in blocked.note
-        saved = _save_result(_array(), str(target), overwrite=True)
-        assert saved.status == "saved"
-    finally:
-        monkeypatch.undo()
+    _approval(True)
+    first = _save_result(_array(), str(target))
+    assert first.status == "saved"
+    blocked = _save_result(_array(), str(target))
+    assert blocked.status == "blocked"
+    assert not blocked.sha256  # nothing staged for a refused overwrite
+    assert blocked.note and "exists" in blocked.note
+    saved = _save_result(_array(), str(target), overwrite=True)
+    assert saved.status == "saved"
 
 
-def test_save_json(tmp_path, monkeypatch):
+def test_save_json(tmp_path):
     target = tmp_path / "summary.json"
-    monkeypatch, seen = _approval(True)
-    try:
-        receipt = _save_result({"idx": [1, 2]}, str(target))
-    finally:
-        monkeypatch.undo()
+    seen = _approval(True)
+    receipt = _save_result({"idx": [1, 2]}, str(target))
     assert receipt.status == "saved" and receipt.kind == "json"
     assert json.loads(target.read_text(encoding="utf-8")) == {"idx": [1, 2]}
     assert "json_preview" in _single_item(seen["payload"])["structure"]
 
 
-def test_ticket_is_one_time_and_gateway_requires_human_authorization(tmp_path, monkeypatch):
+def test_ticket_is_one_time_and_gateway_requires_human_authorization(tmp_path):
     """The gateway cannot write an unapproved ticket: notebook code cannot
     self-authorise (no approve flag exists anywhere in the flow)."""
     from peaksMCP.overrides import save as save_module
 
-    monkeypatch.setattr(save_module, "_APPROVAL_CHANNEL", None)
+    save_module._set_approval_channel(None)
     target = tmp_path / "out.nc"
-    receipt = _save_result(_array(), str(target))  # no channel -> pending
-    ticket = receipt.ticket_id
+    item = save_module._stage_item(_array(), target, False)
+    ticket = save_module._create_ticket("save_with_consent", [item], "t")
     assert not target.exists()
     # Direct gateway call on an unapproved ticket is refused.
     with pytest.raises(PermissionError, match="not authorized"):
-        save_module._publish_batch(ticket)
+        save_module._publish_batch(ticket.ticket_id)
     assert not target.exists()
     # Discard cleans the staging area without writing (safe without auth).
-    save_module._discard_ticket(ticket)
+    save_module._discard_ticket(ticket.ticket_id)
     assert not list(tmp_path.iterdir())
 
 
-def test_ticket_is_one_time_after_approval(tmp_path, monkeypatch):
+def test_ticket_is_one_time_after_approval(tmp_path):
     """Once the approval channel published the bytes, the ticket is spent."""
     from peaksMCP.overrides import save as save_module
 
     target = tmp_path / "out.nc"
-    monkeypatch, _ = _approval(True)
-    try:
-        receipt = _save_result(_array(), str(target))
-    finally:
-        monkeypatch.undo()
+    _approval(True)
+    receipt = _save_result(_array(), str(target))
     assert receipt.status == "saved" and receipt.ticket_id
     with pytest.raises(KeyError, match="already-used"):
         save_module._publish_batch(receipt.ticket_id)
@@ -628,22 +614,18 @@ def test_netcdf_safe_strips_unsafe_attrs_and_stringifies_units():
     assert buffer.getvalue()
 
 
-def test_batch_ticket_stages_many_and_publishes_on_approval(tmp_path, capsys):
+def test_batch_ticket_stages_many_and_publishes_on_approval(tmp_path):
     """A batch verb (convert/preprocess) stages N files under ONE ticket; the
     card lists every item and approval publishes all of them."""
     from peaksMCP.overrides import save as save_module
 
     targets = [tmp_path / f"BP_000{i}.nc" for i in (5, 6, 9)]
     requests = [(_array(), target, False) for target in targets]
-    monkeypatch, seen = _approval(True)
-    try:
-        outcome = save_module._run_staged("convert_experiment", requests, "convert 3 files")
-    finally:
-        monkeypatch.undo()
+    seen = _approval(True)
+    outcome = save_module._run_staged("convert_experiment", requests, "convert 3 files")
     assert outcome["status"] == "saved"
-    assert sorted(p["path"] for p in outcome["published"]) == sorted(
-        str(t) for t in targets
-    )
+    assert sorted(p["path"] for p in outcome["items"]) == sorted(str(t) for t in targets)
+    assert all(p["status"] == "published" for p in outcome["items"])
     payload = seen["payload"]
     assert payload["operation"] == "convert_experiment"
     assert len(payload["items"]) == 3
@@ -652,52 +634,50 @@ def test_batch_ticket_stages_many_and_publishes_on_approval(tmp_path, capsys):
     assert not list(tmp_path.glob(".*.part-*"))
 
 
-def test_batch_ticket_denied_cleans_everything(tmp_path, capsys):
+def test_batch_ticket_denied_cleans_everything(tmp_path):
     from peaksMCP.overrides import save as save_module
 
     targets = [tmp_path / f"BP_00{i}.nc" for i in (5, 6)]
-    monkeypatch, _ = _approval(False)
-    try:
-        outcome = save_module._run_staged(
-            "preprocess_batch", [(_array(), t, False) for t in targets], "pre 2"
-        )
-    finally:
-        monkeypatch.undo()
+    _approval(False)
+    outcome = save_module._run_staged(
+        "preprocess_batch", [(_array(), t, False) for t in targets], "pre 2"
+    )
     assert outcome["status"] == "denied"
     assert not any(target.exists() for target in targets)
     assert not list(tmp_path.glob(".*.part-*"))
+    assert save_module._active_gateway()._staged == {}
 
 
-def test_batch_publish_skips_existing_targets_without_overwrite(tmp_path, capsys):
+def test_batch_publish_skips_existing_targets_without_overwrite(tmp_path):
     """Idempotent verbs: an item whose target already exists at publish time
-    is skipped (staging removed) unless overwrite=True."""
+    is reported 'exists' (existing file untouched) unless overwrite=True;
+    without a channel the batch fails closed (blocked) and writes nothing."""
     from peaksMCP.overrides import save as save_module
 
     existing = tmp_path / "BP_0005.nc"
     existing.write_bytes(b"already-converted")
     fresh = tmp_path / "BP_0006.nc"
+    save_module._set_approval_channel(None)
     outcome = save_module._run_staged(
         "convert_experiment",
         [(_array(), existing, False), (_array(), fresh, False)],
         "convert 2",
     )
-    # No channel -> pending; gateway must not publish either file.
-    assert outcome["status"] == "pending_consent"
-    assert not fresh.exists()
-    save_module._discard_ticket(outcome["ticket_id"])
+    assert outcome["status"] == "blocked"
+    assert outcome.get("reason") == "no_consent_channel"
+    assert not fresh.exists() and existing.read_bytes() == b"already-converted"
 
-    # With approval: fresh publishes, existing is skipped (kept untouched).
-    monkeypatch, _ = _approval(True)
-    try:
-        outcome = save_module._run_staged(
-            "convert_experiment",
-            [(_array(), existing, False), (_array(), fresh, False)],
-            "convert 2",
-        )
-    finally:
-        monkeypatch.undo()
+    # With approval: fresh publishes, existing is reported 'exists'.
+    _approval(True)
+    outcome = save_module._run_staged(
+        "convert_experiment",
+        [(_array(), existing, False), (_array(), fresh, False)],
+        "convert 2",
+    )
     assert outcome["status"] == "saved"
-    assert [p["path"] for p in outcome["published"]] == [str(fresh)]
+    by_path = {p["path"]: p["status"] for p in outcome["items"]}
+    assert by_path[str(fresh)] == "published"
+    assert by_path[str(existing)] == "exists"
     assert existing.read_bytes() == b"already-converted"
     assert fresh.exists()
     assert not list(tmp_path.glob(".*.part-*"))
