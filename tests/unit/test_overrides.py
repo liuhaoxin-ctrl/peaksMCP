@@ -118,6 +118,12 @@ def _approval(approved: bool):
     return monkeypatch, seen
 
 
+def _single_item(payload):
+    """The card payload of a single-file ticket: {operation, summary, items}."""
+    assert payload["items"] and len(payload["items"]) == 1
+    return payload["items"][0]
+
+
 def test_save_result_without_channel_stages_and_waits(tmp_path, capsys, monkeypatch):
     from peaksMCP.overrides import save as save_module
 
@@ -128,7 +134,7 @@ def test_save_result_without_channel_stages_and_waits(tmp_path, capsys, monkeypa
     assert report.status == "awaiting_consent"
     assert report.ticket_id and report.sha256
     assert not target.exists()  # nothing written
-    assert "finalize_save" in out
+    assert "waiting for human approval" in out
     # A hidden staging file exists; cleaned by discard/finalize.
     assert len(list(tmp_path.glob(".out.nc.part-*"))) == 1
 
@@ -141,13 +147,13 @@ def test_save_result_approval_channel_writes_exact_staged_bytes(tmp_path, capsys
     finally:
         monkeypatch.undo()
     assert report.status == "saved" and target.exists()
-    payload = seen["payload"]
+    item = _single_item(seen["payload"])
     # The card shows the real content identity: path, sha256 of the staged
     # bytes, size and the array structure.
-    assert payload["path"].endswith("out.nc")
-    assert payload["sha256"] == report.sha256
-    assert payload["size_bytes"] == target.stat().st_size
-    assert payload["structure"]["dims"] == ["eV", "kx"]
+    assert item["path"].endswith("out.nc")
+    assert item["sha256"] == report.sha256
+    assert item["size_bytes"] == target.stat().st_size
+    assert item["structure"]["dims"] == ["eV", "kx"]
     with xr.open_dataarray(target) as back:
         assert back.dims == ("eV", "kx")
     assert not list(tmp_path.glob(".out.nc.part-*"))
@@ -187,7 +193,7 @@ def test_save_result_json(tmp_path):
         monkeypatch.undo()
     assert report.status == "saved"
     assert json.loads(target.read_text(encoding="utf-8")) == {"idx": [1, 2]}
-    assert "json_preview" in seen["payload"]["structure"]
+    assert "json_preview" in _single_item(seen["payload"])["structure"]
 
 
 def test_ticket_is_one_time_and_gateway_requires_human_authorization(tmp_path, capsys, monkeypatch):
@@ -202,10 +208,10 @@ def test_ticket_is_one_time_and_gateway_requires_human_authorization(tmp_path, c
     assert not target.exists()
     # Direct gateway call on an unapproved ticket is refused.
     with pytest.raises(PermissionError, match="not authorized"):
-        save_module._finalize_save(ticket)
+        save_module._publish_batch(ticket)
     assert not target.exists()
     # Discard cleans the staging file without writing (safe without auth).
-    save_module._discard_save(ticket)
+    save_module._discard_ticket(ticket)
     assert not list(tmp_path.glob(".out.nc.part-*"))
 
 
@@ -221,7 +227,7 @@ def test_ticket_is_one_time_after_approval(tmp_path, capsys):
         monkeypatch.undo()
     assert report.status == "saved" and report.ticket_id
     with pytest.raises(KeyError, match="already-used"):
-        save_module._finalize_save(report.ticket_id)
+        save_module._publish_batch(report.ticket_id)
 
 
 def test_stage_never_accepts_a_code_level_approve():
@@ -576,3 +582,78 @@ def test_netcdf_safe_strips_unsafe_attrs_and_stringifies_units():
     buffer = io.BytesIO()
     safe.to_netcdf(buffer)
     assert buffer.getvalue()
+
+
+def test_batch_ticket_stages_many_and_publishes_on_approval(tmp_path, capsys):
+    """A batch verb (convert/preprocess) stages N files under ONE ticket; the
+    card lists every item and approval publishes all of them."""
+    from peaksMCP.overrides import save as save_module
+
+    targets = [tmp_path / f"BP_000{i}.nc" for i in (5, 6, 9)]
+    requests = [(_array(), target, False) for target in targets]
+    monkeypatch, seen = _approval(True)
+    try:
+        outcome = save_module._run_staged("convert_experiment", requests, "convert 3 files")
+    finally:
+        monkeypatch.undo()
+    assert outcome["status"] == "saved"
+    assert sorted(p["path"] for p in outcome["published"]) == sorted(
+        str(t) for t in targets
+    )
+    payload = seen["payload"]
+    assert payload["operation"] == "convert_experiment"
+    assert len(payload["items"]) == 3
+    assert all(item["path"].endswith(".nc") for item in payload["items"])
+    assert all(target.exists() for target in targets)
+    assert not list(tmp_path.glob(".*.part-*"))
+
+
+def test_batch_ticket_denied_cleans_everything(tmp_path, capsys):
+    from peaksMCP.overrides import save as save_module
+
+    targets = [tmp_path / f"BP_00{i}.nc" for i in (5, 6)]
+    monkeypatch, _ = _approval(False)
+    try:
+        outcome = save_module._run_staged(
+            "preprocess_batch", [(_array(), t, False) for t in targets], "pre 2"
+        )
+    finally:
+        monkeypatch.undo()
+    assert outcome["status"] == "denied"
+    assert not any(target.exists() for target in targets)
+    assert not list(tmp_path.glob(".*.part-*"))
+
+
+def test_batch_publish_skips_existing_targets_without_overwrite(tmp_path, capsys):
+    """Idempotent verbs: an item whose target already exists at publish time
+    is skipped (staging removed) unless overwrite=True."""
+    from peaksMCP.overrides import save as save_module
+
+    existing = tmp_path / "BP_0005.nc"
+    existing.write_bytes(b"already-converted")
+    fresh = tmp_path / "BP_0006.nc"
+    outcome = save_module._run_staged(
+        "convert_experiment",
+        [(_array(), existing, False), (_array(), fresh, False)],
+        "convert 2",
+    )
+    # No channel -> pending; gateway must not publish either file.
+    assert outcome["status"] == "pending_consent"
+    assert not fresh.exists()
+    save_module._discard_ticket(outcome["ticket_id"])
+
+    # With approval: fresh publishes, existing is skipped (kept untouched).
+    monkeypatch, _ = _approval(True)
+    try:
+        outcome = save_module._run_staged(
+            "convert_experiment",
+            [(_array(), existing, False), (_array(), fresh, False)],
+            "convert 2",
+        )
+    finally:
+        monkeypatch.undo()
+    assert outcome["status"] == "saved"
+    assert [p["path"] for p in outcome["published"]] == [str(fresh)]
+    assert existing.read_bytes() == b"already-converted"
+    assert fresh.exists()
+    assert not list(tmp_path.glob(".*.part-*"))

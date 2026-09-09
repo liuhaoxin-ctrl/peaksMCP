@@ -65,15 +65,17 @@ class JupyterPeaksMCPServer:
 
         def approve(preview: dict) -> bool:
             approved = self.consent.request("save_ticket", dict(preview))
+            items = preview.get("items") or []
+            first = items[0] if items else {}
             self.audit.write(
-                "save_result_consent",
+                "save_consent",
                 "approved" if approved else "denied",
                 {
-                    "path": preview.get("path"),
+                    "operation": preview.get("operation"),
                     "ticket_id": preview.get("ticket_id"),
-                    "sha256": str(preview.get("sha256") or "")[:16],
-                    "kind": preview.get("kind"),
-                    "size_bytes": preview.get("size_bytes"),
+                    "item_count": len(items),
+                    "first_path": first.get("path"),
+                    "first_sha256": str(first.get("sha256") or "")[:16],
                 },
             )
             return approved

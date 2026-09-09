@@ -1,22 +1,22 @@
-"""Save facade: nothing is persisted unless a human approves the staged bytes.
+"""Save gateway: nothing is persisted unless a human approves the staged bytes.
 
-Real-content consent loop (no code-level approval flag exists):
+Every model verb that would persist files (save_result, convert_experiment,
+preprocess_batch, ...) funnels through this module:
 
-    1. report = save_result(data, "out.nc")
-       The result is serialised to a hidden ``.part`` staging file and a
-       one-time ticket is created (binding path / kind / size / sha256 /
-       structure summary).  With an approval channel registered (the
-       notebook frontend), a card showing exactly this summary is presented
-       to the user; the file is only published when the user approves.
-       Without a channel the call returns ``pending_consent`` and the
-       gateway can finish the ticket later.
+    1. stage: results are serialised to hidden ``.part`` staging files; a
+       one-time ticket binds the EXACT bytes of every item (path, kind,
+       size, sha256, structure) plus an idempotency note.
+    2. consent: with an approval channel installed (the notebook frontend) a
+       card listing the REAL content of every item is presented; approval
+       publishes all staged bytes (atomic per item), rejection or expiry
+       removes them.
+    3. gateway: publication is a per-item atomic rename of the staged bytes
+       over the target - there is no code path that writes a target without
+       an affirmative human decision, and no code-level approve exists.
 
-    2. gateway: ``_finalize_save`` (approval-gated) atomically renames the
-       staged bytes over the target; ``_discard_save`` removes them.
-
-The model cannot express approval in code - ``approve`` does not exist.
-Consent is a runtime object (ticket) consumed by the gateway, so what the
-user sees on the card is exactly what gets written (same staged bytes).
+Consent is a runtime object, never a parameter: gateway functions stay
+underscore-private and refuse unapproved tickets, so notebook code cannot
+self-authorise a write at any layer.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ _TICKET_TTL_S = 10 * 60
 
 
 class SaveReport(Report):
-    """Outcome of one staged save: pending_consent / saved / blocked / denied."""
+    """Outcome of one staged save: saved / pending_consent / blocked / denied."""
 
     operation = "save_result"
     status = "awaiting_consent"
@@ -66,19 +66,31 @@ class SaveReport(Report):
 
 
 @dataclass
-class PendingSave:
-    """One staged result waiting for a human decision (one-time ticket)."""
+class PendingItem:
+    """One staged file inside a ticket: exact bytes bound to the item."""
 
-    ticket_id: str
     path: Path
     tmp_path: Path
     kind: str
     approx_bytes: int
     sha256: str
-    preview: dict[str, Any]
+    structure: dict[str, Any]
+    overwrite: bool
+    #: True when the target already existed at staging time (idempotent
+    #: verbs skip it on publish unless overwrite=True).
+    exists_at_stage: bool = False
+
+
+@dataclass
+class PendingBatch:
+    """One-time staged batch waiting for a human decision."""
+
+    ticket_id: str
+    operation: str
+    summary: str
+    items: list[PendingItem]
     created_at: float = field(default_factory=time.monotonic)
     used: bool = False
-    #: Set to True only by the approval channel's affirmative reply.
     authorized: bool = False
 
     def expired(self) -> bool:
@@ -86,28 +98,19 @@ class PendingSave:
 
 
 #: In-process registry of staged tickets (one per kernel process).
-_STAGED: dict[str, PendingSave] = {}
+_STAGED: dict[str, PendingBatch] = {}
 
 #: Optional human-approval channel installed by the notebook frontend layer.
 _APPROVAL_CHANNEL: Callable[[dict[str, Any]], bool] | None = None
 
 
 # The functions below are gateway plumbing, NOT model verbs: they stay
-# underscore-private so discovery never surfaces them and the server (the
-# code that owns the human-approval channel) imports them explicitly.  A
-# ticket only becomes writable after the approval channel returned True;
-# calling the gateway on an unapproved ticket raises PermissionError, so
-# code in the notebook cannot self-authorise a write.
+# underscore-private so discovery never surfaces them, and the server (the
+# code that owns the human-approval channel) imports them explicitly.
 
 
 def _set_approval_channel(channel: Callable[[dict[str, Any]], bool] | None) -> None:
-    """Install the human-approval channel (frontend card) or remove it.
-
-    The channel receives the ticket's preview payload (path, kind, size,
-    sha256, structure and statistics of the ACTUAL result to be written) and
-    must return True only after an affirmative human decision.  Without a
-    channel, :func:`save_result` returns ``pending_consent``.
-    """
+    """Install the human-approval channel (frontend card) or remove it."""
     global _APPROVAL_CHANNEL
     _APPROVAL_CHANNEL = channel
 
@@ -118,9 +121,9 @@ def _netcdf_safe(data: Any) -> Any:
     peaks.load restores physical units as pint Quantity objects and carries
     pydantic metadata models (``_scan`` etc.) in attrs; raw ``to_netcdf``
     rejects both.  The staged copy keeps values and coordinates intact,
-    stringifies unit-like attrs and drops non-serialisable object attrs, so
-    the bytes the user approves are always writable.
+    stringifies unit-like attrs and drops non-serialisable object attrs.
     """
+
     def scalar_ok(value: Any) -> bool:
         if isinstance(value, (str, bytes, bool, int, float)) or value is None:
             return True
@@ -168,12 +171,12 @@ def _serialise(data: Any, path: Path) -> tuple[bytes, str]:
             "json",
         )
     raise TypeError(
-        f"save_result: cannot serialise {type(data).__name__}; support: "
+        f"save: cannot serialise {type(data).__name__}; support: "
         "xarray DataArray/Dataset (.nc) or dict/list (.json)"
     )
 
 
-def _structure(data: Any, path: Path, kind: str) -> dict[str, Any]:
+def _structure(data: Any, kind: str) -> dict[str, Any]:
     """Header-level structure plus best-effort statistics for the card."""
     structure: dict[str, Any] = {"kind": kind}
     if kind == "netcdf":
@@ -189,9 +192,6 @@ def _structure(data: Any, path: Path, kind: str) -> dict[str, Any]:
                 "units": (getattr(data, "attrs", {}) or {}).get("units"),
             }
         )
-        # Statistics only when the data is already materialised in memory
-        # (staging serialisation reads it once anyway; we never force a lazy
-        # compute here just for the card).
         if getattr(getattr(data, "data", None), "chunks", None) is None:
             try:
                 values = np.asarray(data.values)
@@ -209,20 +209,10 @@ def _structure(data: Any, path: Path, kind: str) -> dict[str, Any]:
     return structure
 
 
-def _stage(data: Any, path: Path, overwrite: bool) -> tuple[SaveReport, PendingSave | None]:
-    """Serialise and stage the result; no target is ever touched here."""
+def _stage_item(data: Any, path: Path, overwrite: bool) -> PendingItem:
+    """Serialise one result into a hidden staging file next to its target."""
     payload, kind = _serialise(data, path)
     digest = hashlib.sha256(payload).hexdigest()
-    approx = len(payload)
-    report = SaveReport(
-        status="awaiting_consent",
-        path=str(path),
-        kind=kind,
-        approx_bytes=approx,
-        dims={str(k): int(v) for k, v in dict(getattr(data, "sizes", {}) or {}).items()},
-        dtype=str(getattr(data, "dtype", type(data).__name__)),
-        overwrite=overwrite,
-    )
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.part-",
@@ -233,98 +223,175 @@ def _stage(data: Any, path: Path, overwrite: bool) -> tuple[SaveReport, PendingS
         stream.write(payload)
         stream.flush()
         os.fsync(stream.fileno())
-    ticket_id = uuid.uuid4().hex
-    preview = {
-        "path": str(path),
-        "kind": kind,
-        "size_bytes": approx,
-        "sha256": digest,
-        "ticket_id": ticket_id,
-        "structure": _structure(data, path, kind),
-    }
-    pending = PendingSave(
-        ticket_id=ticket_id,
+    return PendingItem(
         path=path,
         tmp_path=Path(temporary_name),
         kind=kind,
-        approx_bytes=approx,
+        approx_bytes=len(payload),
         sha256=digest,
-        preview=preview,
+        structure=_structure(data, kind),
+        overwrite=overwrite,
+        exists_at_stage=path.exists(),
     )
-    report.ticket_id = ticket_id
-    report.sha256 = digest
-    _STAGED[ticket_id] = pending
+
+
+def _item_payload(item: PendingItem) -> dict[str, Any]:
+    return {
+        "path": str(item.path),
+        "kind": item.kind,
+        "size_bytes": item.approx_bytes,
+        "sha256": item.sha256,
+        "structure": item.structure,
+        "overwrite": item.overwrite,
+        "exists_at_stage": item.exists_at_stage,
+    }
+
+
+def _create_ticket(
+    operation: str,
+    items: list[PendingItem],
+    summary: str,
+) -> PendingBatch:
+    ticket = PendingBatch(
+        ticket_id=uuid.uuid4().hex,
+        operation=operation,
+        summary=summary,
+        items=items,
+    )
+    _STAGED[ticket.ticket_id] = ticket
     _expire_stale()
-    return report, pending
+    return ticket
+
+
+def _ticket_payload(ticket: PendingBatch) -> dict[str, Any]:
+    return {
+        "operation": ticket.operation,
+        "summary": ticket.summary,
+        "items": [_item_payload(item) for item in ticket.items],
+    }
 
 
 def _expire_stale() -> None:
     """Drop expired tickets and their staging files (best effort)."""
-    expired = [ticket for ticket, pending in _STAGED.items() if pending.expired()]
+    expired = [ticket_id for ticket_id, batch in _STAGED.items() if batch.expired()]
     for ticket_id in expired:
-        pending = _STAGED.pop(ticket_id, None)
-        if pending is not None:
-            try:
-                pending.tmp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+        batch = _STAGED.pop(ticket_id, None)
+        if batch is not None:
+            _cleanup(batch)
 
 
-def _pending(ticket_id: str) -> PendingSave:
-    if ticket_id not in _STAGED:
-        raise KeyError(f"save_result: unknown or already-used ticket {ticket_id!r}")
-    pending = _STAGED[ticket_id]
-    if pending.expired():
-        _STAGED.pop(ticket_id, None)
+def _cleanup(batch: PendingBatch) -> None:
+    for item in batch.items:
         try:
-            pending.tmp_path.unlink(missing_ok=True)
+            item.tmp_path.unlink(missing_ok=True)
         except OSError:
             pass
-        raise KeyError(f"save_result: ticket {ticket_id!r} expired")
-    if pending.used:
-        raise KeyError(f"save_result: ticket {ticket_id!r} was already used")
-    return pending
 
 
-def _finalize_save(ticket_id: str) -> SaveReport:
-    """Publish one staged ticket atomically: the staged bytes become the file.
+def _lookup(ticket_id: str) -> PendingBatch:
+    batch = _STAGED.get(ticket_id)
+    if batch is None:
+        raise KeyError(f"save: unknown or already-used ticket {ticket_id!r}")
+    if batch.expired():
+        _STAGED.pop(ticket_id, None)
+        _cleanup(batch)
+        raise KeyError(f"save: ticket {ticket_id!r} expired")
+    if batch.used:
+        raise KeyError(f"save: ticket {ticket_id!r} was already used")
+    return batch
 
-    The only gateway that writes a user-approved result, callable only after
-    the approval channel returned True for this ticket (``authorized``);
-    unapproved tickets are refused so notebook code cannot self-authorise.
-    The bytes are exactly the ones whose summary the user approved (sha256
-    bound to the ticket) — no re-serialisation drift is possible.
-    """
-    pending = _pending(ticket_id)
-    if not pending.authorized:
-        raise PermissionError(
-            "save_result: ticket not authorized by a human approval"
-        )
-    pending.tmp_path.replace(pending.path)
-    pending.used = True
+
+def _publish_batch(ticket_id: str) -> dict[str, Any]:
+    """Publish one approved ticket: every staged item is atomically renamed
+    over its target.  Idempotent items whose target appeared meanwhile and
+    lack overwrite are skipped and their staging file removed."""
+    batch = _lookup(ticket_id)
+    if not batch.authorized:
+        raise PermissionError("save: ticket not authorized by a human approval")
+    batch.used = True
     _STAGED.pop(ticket_id, None)
-    report = SaveReport(
-        status="saved",
-        path=str(pending.path),
-        kind=pending.kind,
-        approx_bytes=pending.approx_bytes,
-        sha256=pending.sha256,
-        ticket_id=ticket_id,
-        overwrite=False,
-    )
-    print(report.summary_line())
-    return report
+    published: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for item in batch.items:
+        if item.path.exists() and not item.overwrite:
+            skipped.append(
+                {
+                    "path": str(item.path),
+                    "sha256": item.sha256,
+                    "status": "exists",
+                }
+            )
+            try:
+                item.tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            continue
+        try:
+            item.tmp_path.replace(item.path)
+            published.append(
+                {
+                    "path": str(item.path),
+                    "sha256": item.sha256,
+                    "approx_bytes": item.approx_bytes,
+                }
+            )
+        except OSError as exc:
+            skipped.append(
+                {
+                    "path": str(item.path),
+                    "sha256": item.sha256,
+                    "status": f"publish failed: {exc}",
+                }
+            )
+    return {"published": published, "skipped": skipped}
 
 
-def _discard_save(ticket_id: str) -> None:
+def _discard_ticket(ticket_id: str) -> None:
     """Drop one staged ticket without writing anything."""
-    pending = _pending(ticket_id)
-    pending.used = True
+    batch = _lookup(ticket_id)
+    batch.used = True
     _STAGED.pop(ticket_id, None)
-    try:
-        pending.tmp_path.unlink(missing_ok=True)
-    except OSError:
-        pass
+    _cleanup(batch)
+
+
+def _request_consent(ticket: PendingBatch) -> bool | None:
+    """Run the human-approval step.  None = no channel installed."""
+    channel = _APPROVAL_CHANNEL
+    if channel is None:
+        return None
+    return bool(channel(_ticket_payload(ticket)))
+
+
+def _run_staged(
+    operation: str,
+    requests: list[tuple[Any, Path, bool]],
+    summary: str,
+) -> dict[str, Any]:
+    """Stage items, ask the human, publish or clean up (gateway primitive).
+
+    ``requests`` are ``(data, target_path, overwrite)`` triples.  Returns a
+    JSON-safe outcome: ``{"status": "saved" | "denied" | "pending_consent",
+    "ticket_id": ..., ...}``.  Facades with their own result models call this
+    and map the outcome onto their reports.
+    """
+    staged = [
+        _stage_item(data, Path(path), overwrite) for data, path, overwrite in requests
+    ]
+    ticket = _create_ticket(operation, staged, summary)
+    approved = _request_consent(ticket)
+    if approved is None:
+        return {"status": "pending_consent", "ticket_id": ticket.ticket_id}
+    if approved:
+        ticket.authorized = True
+        outcome = _publish_batch(ticket.ticket_id)
+        return {
+            "status": "saved",
+            "ticket_id": ticket.ticket_id,
+            "published": outcome["published"],
+            "skipped": outcome["skipped"],
+        }
+    _discard_ticket(ticket.ticket_id)
+    return {"status": "denied", "ticket_id": ticket.ticket_id}
 
 
 def save_result(
@@ -339,57 +406,54 @@ def save_result(
     ticket bound to the exact staged bytes (path, kind, sha256, structure).
     With an approval channel installed this presents a card to the user and
     writes the file only on affirmative approval; otherwise the ticket stays
-    ``pending_consent`` for the approval flow (or a later ``_finalize_save`` after an affirmative human reply).
+    ``pending_consent`` for the approval flow.
 
     There is deliberately NO ``approve`` parameter: code cannot authorise a
     write.  Consent is a runtime object consumed by the gateway.
-
-    Parameters
-    ----------
-    data : xarray DataArray/Dataset or JSON-serialisable object
-        Result to persist.
-    path : str or Path
-        Destination: ``.nc`` for xarray objects, ``.json`` for dicts/lists.
-    overwrite : bool, default False
-        Existing files are never replaced unless this is True.
-
-    Returns
-    -------
-    SaveReport
-        ``status`` = ``saved`` (after human approval through the channel),
-        ``pending_consent`` (no channel / awaiting), ``blocked`` (target
-        exists without overwrite) or ``denied`` (human rejected).
     """
     target = Path(path).expanduser()
     if target.exists() and not overwrite:
         report = SaveReport(status="blocked", path=str(target), kind="", overwrite=False)
-        print(
-            f"save_result: {target} exists; pass overwrite=True after review."
-        )
+        print(f"save_result: {target} exists; pass overwrite=True after review.")
         return report
-
-    report, pending = _stage(data, target, overwrite=overwrite)
+    staged = [_stage_item(data, target, overwrite)]
+    ticket = _create_ticket(
+        "save_result", staged, f"save_result: {target.name}"
+    )
+    report = SaveReport(
+        status="awaiting_consent",
+        path=str(target),
+        kind=staged[0].kind,
+        approx_bytes=staged[0].approx_bytes,
+        dims={
+            str(key): int(value)
+            for key, value in (staged[0].structure.get("sizes") or {}).items()
+        },
+        dtype=staged[0].structure.get("dtype"),
+        overwrite=overwrite,
+        ticket_id=ticket.ticket_id,
+        sha256=staged[0].sha256,
+    )
     print(report.summary_line())
-    channel = _APPROVAL_CHANNEL
-    if channel is None:
+    approved = _request_consent(ticket)
+    if approved is None:
         print(
             "save_result: staged and waiting for human approval "
-            f"(ticket {report.ticket_id}); no frontend approval channel is "
-            "installed - call _finalize_save via the approval flow only after the user "
-            "confirmed the summary above."
+            f"(ticket {ticket.ticket_id}); no frontend approval channel is "
+            "installed."
         )
         return report
-    approved = bool(channel(pending.preview))
     if approved:
-        pending.authorized = True
-        final = _finalize_save(pending.ticket_id)
-        final.dims = report.dims
-        final.dtype = report.dtype
-        return final
-    _discard_save(pending.ticket_id)
+        ticket.authorized = True
+        outcome = _publish_batch(ticket.ticket_id)
+        report.status = "saved" if outcome["published"] else "denied"
+        if outcome["skipped"]:
+            print(f"save_result: skipped: {outcome['skipped'][0]['path']}")
+        return report
+    _discard_ticket(ticket.ticket_id)
     report.status = "denied"
     print(
         f"save_result: the user did not approve; nothing was written "
-        f"({report.path})."
+        f"({target})."
     )
     return report

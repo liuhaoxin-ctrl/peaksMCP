@@ -161,80 +161,95 @@ async function showConsentDialog(operation: string, details: any, targetCell?: a
 }
 
 /**
- * Save consent card: shows the REAL result about to be written (path, kind,
- * size, sha256 of the exact staged bytes, and the data structure/statistics
- * or JSON preview) instead of code. Approving publishes those staged bytes;
- * there is no code-level approve anywhere.
+ * Save consent card: shows the REAL results about to be written. For batch
+ * verbs (convert / preprocess / save) the payload lists every item (path,
+ * kind, size, sha256 of the exact staged bytes, structure/stats, existing
+ * note); approving publishes all of them through the kernel-side gateway.
  */
 async function showSaveCard(payload: any): Promise<boolean> {
   const body = document.createElement('div');
-  body.style.maxWidth = '680px';
+  body.style.maxWidth = '760px';
   body.style.fontSize = '13px';
-
-  const structure: any = payload?.structure ?? {};
-  const stats: any = structure?.stats;
 
   const header = document.createElement('div');
   header.style.marginBottom = '10px';
-  header.innerHTML = '<strong>将写入此文件（内容已固定，批准即原子写入）:</strong>';
+  header.innerHTML =
+    `<strong>将写入以下 ${Array.isArray(payload?.items) ? payload.items.length : 1} 个文件` +
+    `（内容已固定，批准后逐项原子写入）:</strong>`;
   body.appendChild(header);
 
-  const rows: Array<[string, string]> = [
-    ['路径', String(payload?.path ?? '')],
-    ['类型', String(structure?.kind ?? payload?.kind ?? '')],
-    ['大小', `${(Number(payload?.size_bytes ?? 0) / 1024).toFixed(1)} KiB`],
-    ['sha256', String(payload?.sha256 ?? '').slice(0, 16) + '…'],
-  ];
-  if (structure?.name != null) { rows.push(['名称', String(structure.name)]); }
-  if (structure?.dims) { rows.push(['维度', structure.dims.join(', ')]); }
-  if (structure?.sizes) {
-    rows.push(['形状', Object.entries(structure.sizes).map(([d, s]) => `${d}×${s}`).join(', ')]);
-  }
-  if (structure?.dtype) { rows.push(['dtype', String(structure.dtype)]); }
-  if (structure?.units) { rows.push(['单位', String(structure.units)]); }
-  if (stats?.min != null && stats?.max != null) {
-    rows.push(['数值范围', `[${Number(stats.min).toExponential(4)}, ${Number(stats.max).toExponential(4)}]`]);
-  }
-  if (stats?.nan_fraction != null) {
-    rows.push(['NaN 占比', `${(Number(stats.nan_fraction) * 100).toFixed(3)}%`]);
-  }
+  const items: any[] = Array.isArray(payload?.items) && payload.items.length
+    ? payload.items : [payload];
 
   const table = document.createElement('table');
   table.style.borderCollapse = 'collapse';
   table.style.width = '100%';
-  for (const [label, value] of rows) {
+  for (const item of items) {
+    const structure: any = item?.structure ?? {};
+    const stats: any = structure?.stats;
+    const rows: Array<[string, string]> = [
+      ['路径', String(item?.path ?? '')],
+      ['类型', String(structure?.kind ?? item?.kind ?? '')],
+      ['大小', `${(Number(item?.size_bytes ?? 0) / 1024).toFixed(1)} KiB`],
+      ['sha256', String(item?.sha256 ?? '').slice(0, 16) + '…'],
+    ];
+    if (structure?.name != null) { rows.push(['名称', String(structure.name)]); }
+    if (structure?.dims) { rows.push(['维度', structure.dims.join(', ')]); }
+    if (structure?.sizes) {
+      rows.push(['形状', Object.entries(structure.sizes).map(([d, s]) => `${d}×${s}`).join(', ')]);
+    }
+    if (structure?.dtype) { rows.push(['dtype', String(structure.dtype)]); }
+    if (structure?.units) { rows.push(['单位', String(structure.units)]); }
+    if (stats?.min != null && stats?.max != null) {
+      rows.push(['数值范围', `[${Number(stats.min).toExponential(4)}, ${Number(stats.max).toExponential(4)}]`]);
+    }
+    if (stats?.nan_fraction != null) {
+      rows.push(['NaN 占比', `${(Number(stats.nan_fraction) * 100).toFixed(3)}%`]);
+    }
+    if (item?.exists_at_stage) {
+      rows.push(['状态', '目标已存在（未覆盖时将被跳过）']);
+    }
+
     const tr = document.createElement('tr');
-    const tdLabel = document.createElement('td');
-    tdLabel.textContent = label;
-    tdLabel.style.fontWeight = 'bold';
-    tdLabel.style.padding = '3px 10px 3px 0';
-    tdLabel.style.verticalAlign = 'top';
-    tdLabel.style.whiteSpace = 'nowrap';
-    const tdValue = document.createElement('td');
-    tdValue.textContent = value;
-    tdValue.style.padding = '3px 0';
-    tdValue.style.wordBreak = 'break-all';
-    tr.appendChild(tdLabel);
-    tr.appendChild(tdValue);
+    const td = document.createElement('td');
+    td.style.padding = '4px 0';
+    td.style.borderBottom = '1px solid #eee';
+    const inner = document.createElement('table');
+    inner.style.borderCollapse = 'collapse';
+    inner.style.width = '100%';
+    for (const [label, value] of rows) {
+      const rowEl = document.createElement('tr');
+      const tdLabel = document.createElement('td');
+      tdLabel.textContent = label;
+      tdLabel.style.fontWeight = 'bold';
+      tdLabel.style.padding = '1px 10px 1px 0';
+      tdLabel.style.verticalAlign = 'top';
+      tdLabel.style.whiteSpace = 'nowrap';
+      const tdValue = document.createElement('td');
+      tdValue.textContent = value;
+      tdValue.style.wordBreak = 'break-all';
+      rowEl.appendChild(tdLabel);
+      rowEl.appendChild(tdValue);
+      inner.appendChild(rowEl);
+    }
+    td.appendChild(inner);
+    tr.appendChild(td);
     table.appendChild(tr);
+
+    if (structure?.json_preview != null) {
+      const pre = document.createElement('pre');
+      pre.textContent = String(structure.json_preview);
+      pre.style.maxHeight = '140px';
+      pre.style.overflow = 'auto';
+      pre.style.background = '#f5f5f5';
+      pre.style.padding = '6px';
+      pre.style.borderRadius = '4px';
+      pre.style.border = '1px solid #ddd';
+      pre.style.margin = '2px 0 8px';
+      td.appendChild(pre);
+    }
   }
   body.appendChild(table);
-
-  if (structure?.json_preview != null) {
-    const label = document.createElement('div');
-    label.style.margin = '10px 0 6px';
-    label.innerHTML = '<strong>内容预览:</strong>';
-    body.appendChild(label);
-    const pre = document.createElement('pre');
-    pre.textContent = String(structure.json_preview);
-    pre.style.maxHeight = '240px';
-    pre.style.overflow = 'auto';
-    pre.style.background = '#f5f5f5';
-    pre.style.padding = '8px';
-    pre.style.borderRadius = '4px';
-    pre.style.border = '1px solid #ddd';
-    body.appendChild(pre);
-  }
 
   const widget = new Widget({ node: body });
   const result = await showDialog({
