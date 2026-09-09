@@ -37,7 +37,6 @@ class JupyterPeaksMCPServer:
         self.consent = ConsentManager(state.bridge)
         self.notebook = NotebookBackend(state)
         self.unsafe = UnsafeNotebookBackend(state, self.consent, self.audit)
-        self._install_save_approval_channel()
         # Pre-build the Peaks API index at server startup instead of lazily on
         # the first search: the dashboard can then report api_index_ready /
         # api_count immediately (and index_stale reflects the current source).
@@ -113,11 +112,18 @@ class JupyterPeaksMCPServer:
         app = self.mcp.http_app(path="/mcp", stateless_http=False)
         config = uvicorn.Config(app, host=self.host, port=self.port, log_level="warning", lifespan="on")
         self._uvicorn = uvicorn.Server(config)
+        self._install_save_approval_channel()
         self._thread = threading.Thread(target=self._uvicorn.run, name="peaksMCP-http", daemon=True)
         self._thread.start()
 
     def stop(self, timeout: float = 10) -> None:
-        """Request a graceful HTTP shutdown and join its thread."""
+        """Request a graceful HTTP shutdown, release the save-consent channel
+        and join the server thread.  The approval channel is owned by the
+        running server instance: it must never leak into later kernels or
+        tests after the server stops."""
+        from peaksMCP.overrides import save as save_module
+
+        save_module._set_approval_channel(None)
         if self._uvicorn is not None:
             self._uvicorn.should_exit = True
         if self._thread and self._thread.is_alive():

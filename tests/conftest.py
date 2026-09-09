@@ -48,3 +48,15 @@ def isolated_test_environment():
         else:
             os.environ[key] = value
     shutil.rmtree(_TEST_ROOT, ignore_errors=True)
+
+
+@pytest.fixture(autouse=True)
+def _no_save_channel_leakage():
+    """The save-consent channel is owned by a running MCP server instance.
+    Autouse cleanup guarantees one test can never leak its callback into a
+    later test (regression: a server-construction test used to install a
+    module-global channel that turned later save tests into 'denied')."""
+    yield
+    from peaksMCP.overrides import save as save_module
+
+    save_module._set_approval_channel(None)
