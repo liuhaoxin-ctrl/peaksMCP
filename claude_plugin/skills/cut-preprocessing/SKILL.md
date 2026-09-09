@@ -38,8 +38,10 @@ description: Use `peaksMCP` to call the `peaks` package and perform preprocessin
 Use `plot` to convey **key** information to the user.
 Save processed cuts with `da.save(path)` (peaks' own writer sanitises metadata
 attrs; raw `da.to_netcdf` can fail on unsanitized attrs). For results the user
-explicitly asks to keep, prefer the `save_result` facade: the first call shows a
-preview and writes nothing; repeat with `approve=True` after the user agrees.
+explicitly asks to keep, use the `save_result` facade: it stages the result,
+shows the user a consent card with the real content summary (path, size,
+sha256, structure) and writes the file only when the user approves on that
+card. There is no code-level approval flag.
 
 **Use the peaksMCP plotting façades (`plot_batch`, `plot_validation_pair`, `show_mapping_slice`) for figures; when raw matplotlib is unavoidable, follow the figure conventions in the server instructions (constrained_layout, DejaVu Sans with mathtext symbols, English labels, 150/300 dpi).**
 

@@ -271,29 +271,6 @@ def test_savefig_not_flagged_for_benign_text(code):
 
 
 @pytest.mark.parametrize("code", [
-    "from peaksMCP.overrides import save_result\nsave_result(data, 'out.nc', approve=True)",
-    "from peaksMCP.overrides import save_result as sr\nsr(data, 'out.nc', approve=True)",
-    "import peaksMCP.overrides as o\napprove = True\no.save_result(data, 'out.nc', approve=approve)",
-])
-def test_save_result_approve_requires_explicit_consent(code):
-    """approve=True is the only save_result call that writes: it lands in
-    requires_explicit_consent so the user approves after seeing the preview."""
-    result = scan_code(code)
-    assert not result.blocked
-    assert any(issue.rule_id == "SAVE003" for issue in result.requires_explicit_consent)
-
-
-@pytest.mark.parametrize("code", [
-    # Preview-only calls never touch disk and must not pause for consent.
-    "from peaksMCP.overrides import save_result\nsave_result(data, 'out.nc')",
-    "from peaksMCP.overrides import save_result\nsave_result(data, 'out.nc', approve=False)",
-    "from peaksMCP.overrides import save_result as sr\nsr(data, 'out.nc', approve=None)",
-])
-def test_save_result_preview_needs_no_consent(code):
-    assert scan_code(code).requires_explicit_consent == []
-
-
-@pytest.mark.parametrize("code", [
     "data = data.sel(eV=slice(-1, 0))", "data.plot()", "import numpy as np\nx=np.arange(4)",
     "result = data.S.smooth({'eV': 2})", "print(data.dims)",
 ])
@@ -540,50 +517,6 @@ def test_savefig_requires_user_approval(tmp_path):
     consent = ConsentManager(callback=lambda _op, _details: True)
     nb = UnsafeNotebookBackend(state, consent, AuditLogger(tmp_path / "t2.jsonl"))
     result = nb.write_with_api_check(code, timeout=5)
-    assert not result.get("blocked")
-    assert any(op[0][0] == "execute_code" for op in state.bridge.request.call_args_list)
-
-
-def test_save_result_approve_requires_user_approval(tmp_path):
-    """save_result(approve=True) must pause for approval (SAVE003) even when the
-    consent switch is off; the preview call (no approve) must not."""
-    from unittest.mock import Mock
-
-    from peaksMCP.discovery.index import build_index
-    from peaksMCP.server.jupyter_peaks.backend import (
-        SharedState,
-        UnsafeNotebookBackend,
-    )
-    from peaksMCP.server.jupyter_peaks.security import AuditLogger, ConsentManager
-
-    approve_code = (
-        "from peaksMCP.overrides import save_result\n"
-        "save_result(data, 'out.nc', approve=True)"
-    )
-    preview_code = "from peaksMCP.overrides import save_result\nsave_result(data, 'out.nc')"
-
-    state = SharedState(Mock(user_ns={}))
-    state.require_consent = False  # the save gate must hold regardless of the switch
-    state.api_index = build_index()
-    state.bridge = Mock()
-    state.bridge.request.return_value = {"ok": True, "outputs": [], "id": "c1"}
-
-    # The preview call never writes, so it must not pause for consent.
-    nb = UnsafeNotebookBackend(
-        state, ConsentManager(callback=lambda _op, _details: False), AuditLogger(tmp_path / "t.jsonl")
-    )
-    assert not nb.write_with_api_check(preview_code, timeout=5).get("blocked")
-
-    # Denied approval: the writing cell never reaches the kernel.
-    state.bridge.request.reset_mock()
-    with pytest.raises(PermissionError, match="did not approve"):
-        nb.write_with_api_check(approve_code, timeout=5)
-    state.bridge.request.assert_not_called()
-
-    # Approved: the cell executes and the output is returned for normalisation.
-    consent = ConsentManager(callback=lambda _op, _details: True)
-    nb = UnsafeNotebookBackend(state, consent, AuditLogger(tmp_path / "t2.jsonl"))
-    result = nb.write_with_api_check(approve_code, timeout=5)
     assert not result.get("blocked")
     assert any(op[0][0] == "execute_code" for op in state.bridge.request.call_args_list)
 

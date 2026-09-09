@@ -99,39 +99,141 @@ def test_load_data_embeds_metadata(monkeypatch, tmp_path, metadata_kind):
     assert embedded["records"]["5"]["experiment"]["data_format"] == "Au sweep"
 
 
-# ---------- ⑤ save_result (preview -> approve) ----------
+# ---------- ⑤ save_result (stage -> human approval via ticket) ----------
 
-def test_save_result_default_is_preview_only(tmp_path, capsys):
+def _approval(approved: bool):
+    """Install a fake approval channel for one test."""
+    import pytest
+
+    from peaksMCP.overrides import save as save_module
+
+    monkeypatch = pytest.MonkeyPatch()
+    seen: dict = {}
+
+    def channel(payload):
+        seen["payload"] = payload
+        return approved
+
+    monkeypatch.setattr(save_module, "_APPROVAL_CHANNEL", channel)
+    return monkeypatch, seen
+
+
+def test_save_result_without_channel_stages_and_waits(tmp_path, capsys):
     target = tmp_path / "out.nc"
     report = save_result(_array(), str(target))
     out = capsys.readouterr().out
     assert report.status == "awaiting_consent"
-    assert not target.exists()
-    assert "no write performed" in out
+    assert report.ticket_id and report.sha256
+    assert not target.exists()  # nothing written
+    assert "finalize_save" in out
+    # A hidden staging file exists; cleaned by discard/finalize.
+    assert len(list(tmp_path.glob(".out.nc.part-*"))) == 1
 
 
-def test_save_result_approve_writes_atomically(tmp_path):
+def test_save_result_approval_channel_writes_exact_staged_bytes(tmp_path, capsys):
     target = tmp_path / "out.nc"
-    report = save_result(_array(), str(target), approve=True)
+    monkeypatch, seen = _approval(True)
+    try:
+        report = save_result(_array(), str(target))
+    finally:
+        monkeypatch.undo()
     assert report.status == "saved" and target.exists()
+    payload = seen["payload"]
+    # The card shows the real content identity: path, sha256 of the staged
+    # bytes, size and the array structure.
+    assert payload["path"].endswith("out.nc")
+    assert payload["sha256"] == report.sha256
+    assert payload["size_bytes"] == target.stat().st_size
+    assert payload["structure"]["dims"] == ["eV", "kx"]
     with xr.open_dataarray(target) as back:
         assert back.dims == ("eV", "kx")
+    assert not list(tmp_path.glob(".out.nc.part-*"))
+
+
+def test_save_result_denied_writes_nothing_and_cleans_up(tmp_path, capsys):
+    target = tmp_path / "out.nc"
+    monkeypatch, _ = _approval(False)
+    try:
+        report = save_result(_array(), str(target))
+    finally:
+        monkeypatch.undo()
+    assert report.status == "denied"
+    assert not target.exists()
+    assert not list(tmp_path.glob(".out.nc.part-*"))
 
 
 def test_save_result_refuses_overwrite_without_flag(tmp_path):
     target = tmp_path / "out.nc"
-    save_result(_array(), str(target), approve=True)
-    report = save_result(_array(), str(target))
-    assert report.status == "blocked"
-    report_ok = save_result(_array(), str(target), overwrite=True, approve=True)
-    assert report_ok.status == "saved"
+    monkeypatch, _ = _approval(True)
+    try:
+        save_result(_array(), str(target))
+        report = save_result(_array(), str(target))
+        assert report.status == "blocked"
+        report_ok = save_result(_array(), str(target), overwrite=True)
+        assert report_ok.status == "saved"
+    finally:
+        monkeypatch.undo()
 
 
 def test_save_result_json(tmp_path):
     target = tmp_path / "summary.json"
-    report = save_result({"idx": [1, 2]}, str(target), approve=True)
+    monkeypatch, seen = _approval(True)
+    try:
+        report = save_result({"idx": [1, 2]}, str(target))
+    finally:
+        monkeypatch.undo()
     assert report.status == "saved"
     assert json.loads(target.read_text(encoding="utf-8")) == {"idx": [1, 2]}
+    assert "json_preview" in seen["payload"]["structure"]
+
+
+def test_ticket_is_one_time_and_gateway_requires_human_authorization(tmp_path, capsys):
+    """The gateway cannot write an unapproved ticket: notebook code cannot
+    self-authorise (no approve flag exists anywhere in the flow)."""
+    from peaksMCP.overrides import save as save_module
+
+    target = tmp_path / "out.nc"
+    report = save_result(_array(), str(target))  # no channel -> pending
+    ticket = report.ticket_id
+    assert not target.exists()
+    # Direct gateway call on an unapproved ticket is refused.
+    with pytest.raises(PermissionError, match="not authorized"):
+        save_module._finalize_save(ticket)
+    assert not target.exists()
+    # Discard cleans the staging file without writing (safe without auth).
+    save_module._discard_save(ticket)
+    assert not list(tmp_path.glob(".out.nc.part-*"))
+
+
+def test_ticket_is_one_time_after_approval(tmp_path, capsys):
+    """Once the approval channel published the bytes, the ticket is spent."""
+    from peaksMCP.overrides import save as save_module
+
+    target = tmp_path / "out.nc"
+    monkeypatch, _ = _approval(True)
+    try:
+        report = save_result(_array(), str(target))
+    finally:
+        monkeypatch.undo()
+    assert report.status == "saved" and report.ticket_id
+    with pytest.raises(KeyError, match="already-used"):
+        save_module._finalize_save(report.ticket_id)
+
+
+def test_stage_never_accepts_a_code_level_approve():
+    """The facade signature has no approve: **{'approve': True} is a TypeError,
+    not a consent bypass."""
+    target = "/tmp/save_result_approve_bypass_test.nc"
+    try:
+        with pytest.raises(TypeError):
+            save_result(_array(), target, **{"approve": True})
+    finally:
+        import os
+
+        try:
+            os.unlink(target)
+        except FileNotFoundError:
+            pass
 
 
 # ---------- ③ manifest file parses ----------

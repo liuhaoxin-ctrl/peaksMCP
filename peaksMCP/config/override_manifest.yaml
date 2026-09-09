@@ -88,12 +88,13 @@ apis:
       - 写入文件
       - 落盘
     docstring_note: |
-      Save facade with the preview -> consent flow. The first call only shows
-      what would be written (path, kind, size, shape) and writes nothing;
-      repeating it with approve=True performs the atomic write, and
-      overwrite=True is required when the target already exists. Use this for
-      every result the user asks to keep — analysis functions never persist
-      on their own.
+      Save facade with the staged-consent loop: the call serialises the
+      result to a hidden staging file, creates a one-time ticket bound to
+      the exact bytes (path, kind, size, sha256, structure summary) and asks
+      the user through a consent card showing that real content summary —
+      the file is written only on approval, and overwrite=True is required
+      when the target already exists. There is no approve flag in code.
+      Use this for every result the user asks to keep.
   convert_pxt:
     module: peaksMCP.pxt_utils.converter
     project: true
@@ -407,12 +408,12 @@ project:
     exposure: facade
     category: persistence
     kind: serializer
-    summary: Preview, then atomically save a result with user approval.
-    inputs: "data; path; overwrite: bool=False; approve: bool=False"
-    returns: "SaveReport (awaiting_consent by default; saved after approve=True)"
-    preconditions: "approve=True only after the preview was shown and the user agreed"
-    errors: "target exists without overwrite; unsupported type"
-    example: 'save_result(data, "out.nc")  # preview only'
+    summary: Stage one result and persist it only after human approval on a content card.
+    inputs: "data; path; overwrite: bool=False"
+    returns: "SaveReport (saved after card approval; pending_consent/blocked/denied)"
+    preconditions: "approval channel installed (frontend); target free or overwrite=True"
+    errors: "target exists without overwrite; unsupported type; ticket expired"
+    example: 'report = save_result(data, "out.nc")  # stages, shows the consent card'
     stability: new
   - name: convert_experiment
     export: peaksMCP.overrides.convert_experiment
