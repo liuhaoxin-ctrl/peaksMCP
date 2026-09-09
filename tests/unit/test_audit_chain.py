@@ -28,7 +28,7 @@ def test_audit_write_injects_active_operation_id(tmp_path):
     assert "operation_id" not in outside["details"]
 
 
-def test_run_cell_chain_events_share_one_operation_id(tmp_path):
+def test_run_cell_chain_events_share_one_operation_id(tmp_path, monkeypatch):
     """一次被 run_cell 硬阻止的写盘尝试：called→blocked(内部)→error 同 op id。"""
     import asyncio
 
@@ -37,6 +37,9 @@ def test_run_cell_chain_events_share_one_operation_id(tmp_path):
 
     from peaksMCP.server.jupyter_peaks.backend import SharedState
     from peaksMCP.server.jupyter_peaks.mcp_server import JupyterPeaksMCPServer
+
+    # 独立 PEAKSMCP_HOME：只读这一次调用产生的审计事件（共享文件会有其他测试的 op）。
+    monkeypatch.setenv("PEAKSMCP_HOME", str(tmp_path))
 
     class FakeIPython:
         user_ns = {}
@@ -60,10 +63,7 @@ def test_run_cell_chain_events_share_one_operation_id(tmp_path):
 
     asyncio.run(_call())
 
-    import os
-
-    home = os.environ["PEAKSMCP_HOME"]
-    candidate = Path(home) / "audit" / "tool_audit.log"  # conftest 隔离根下的默认路径
+    candidate = Path(tmp_path) / "audit" / "tool_audit.log"
     events = []
     for line in candidate.read_text(encoding="utf-8").splitlines():
         if not line.strip():

@@ -96,8 +96,26 @@ class UnsafeNotebookBackend:
         self.audit.write(operation, "approved", {})
 
     def execute_code(self, code: str, timeout: float = 120.0) -> dict[str, Any]:
+        """执行一个 cell；超时不等于停止（kernel 可能仍在跑）。
+
+        超时时返回结构化提示而不是抛错，让 agent 明确知道：这一格已被提交到
+        kernel，可能仍在执行；后续 run 会排队。正确做法是先 inspect_notebook
+        确认实际状态再决定重试/继续。
+        """
         self._authorize("run_cell", code)
-        return self.state.bridge.request("execute_code", {"code": code}, timeout=timeout)
+        try:
+            return self.state.bridge.request("execute_code", {"code": code}, timeout=timeout)
+        except TimeoutError:
+            return {
+                "execution_timed_out": True,
+                "executed": False,
+                "note": (
+                    "run_cell timed out waiting for the kernel reply. TIMEOUT IS NOT "
+                    "STOP: the cell was submitted and the kernel may still be running; "
+                    "later cells will queue behind it. Inspect the notebook "
+                    "(inspect_notebook cells/cell) before retrying."
+                ),
+            }
 
     def _check_project_imports(
         self, provenance: Any, index: Any

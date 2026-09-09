@@ -169,3 +169,24 @@ def test_figure_serialisation_via_gateway(tmp_path):
     assert receipt.kind == "figure"
     assert target.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
     assert receipt.structure["n_axes"] == 1
+
+
+def test_run_cell_timeout_returns_structured_note(tmp_path):
+    """run_cell 超时 ≠ 停止：返回结构化提示而不是让 agent 以为执行结束。"""
+    class TimeoutBridge:
+        connected = True
+
+        def request(self, operation, payload=None, timeout=30.0):
+            raise TimeoutError("no kernel reply")
+
+    from peaksMCP.server.jupyter_peaks.backend import UnsafeNotebookBackend
+    from peaksMCP.server.jupyter_peaks.security import AuditLogger, ConsentManager
+
+    state = SharedState(_FakeIPython({}))
+    state.bridge = TimeoutBridge()
+    backend = UnsafeNotebookBackend(
+        state, ConsentManager(TimeoutBridge()), AuditLogger(tmp_path / "a.log")
+    )
+    result = backend.execute_code("import time; time.sleep(999)", timeout=0.05)
+    assert result["execution_timed_out"] is True
+    assert "TIMEOUT IS NOT STOP" in result["note"]
