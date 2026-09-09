@@ -235,6 +235,27 @@ def _text_blocks(outputs: list[dict[str, Any]]) -> list[str]:
     return [block.text for block in _normalize_outputs(outputs)]
 
 
+def _stdout_metrics(outputs: list[dict[str, Any]]) -> tuple[int, str]:
+    """stdout 行数与前 80 字符（给 agent 一个"有长输出被归档"的显式信号）。
+
+    只统计 stream.stdout；正文不回传，避免把 notebook 的归档内容塞回对话。
+    """
+    chunks: list[str] = []
+    for output in outputs if isinstance(outputs, list) else []:
+        if not isinstance(output, dict) or output.get("output_type") != "stream":
+            continue
+        if output.get("name") != "stdout":
+            continue
+        text = output.get("text") or []
+        if isinstance(text, str):
+            chunks.append(text)
+        elif isinstance(text, list):
+            chunks.extend(str(part) for part in text)
+    joined = "".join(chunks)
+    lines = sum(1 for line in joined.splitlines() if line.strip())
+    return lines, joined[:80]
+
+
 def _require_index(state: SharedState):
     """Return the live index, hot-rebuilding it in the kernel when stale."""
     return ensure_fresh_index(state)
@@ -342,6 +363,9 @@ def _semantic_outcome(result: Any) -> tuple[str, dict[str, Any]]:
     if not isinstance(result, dict):
         return "ok", {}
     details: dict[str, Any] = {}
+    if result.get("execution_timed_out"):
+        details["note"] = str(result.get("note") or "kernel reply timed out")
+        return "failed", details
     cell_id = result.get("id")
     if isinstance(cell_id, str) and cell_id:
         details["cell_id"] = cell_id
@@ -539,12 +563,17 @@ def register_unsafe_tools(mcp: FastMCP, notebook: UnsafeNotebookBackend, audit: 
                 )
                 if key in result
             }
+            stdout_lines, stdout_head = _stdout_metrics(result.get("outputs") or [])
             return {
                 **cell,
                 # The response carries the frontend's ONE settled output
                 # snapshot (quiet window after kernel idle, 2s cap); nothing
                 # is polled or cached server-side any more.
                 "output": _text_blocks(result.get("outputs") or []),
+                # 显式信号：这一格 stdout 的行数与开头（正文不回传，只有被归档
+                # 的长文本需要时用 inspect_notebook with_text_outputs 回读）。
+                "stdout_lines": stdout_lines,
+                "stdout_head": stdout_head,
                 "api_check": result.get("api_check"),
             }
         return result

@@ -26,7 +26,7 @@ def _fake_bridge(state):
             outputs = [
                 {"output_type": "display_data",
                  "data": {"image/png": base64.b64encode(b"png").decode(), "text/plain": "figure"}},
-                {"output_type": "stream", "text": "later text"},
+                {"output_type": "stream", "name": "stdout", "text": "later text"},
             ]
             return {
                 "id": "cell-9", "index": 4, "cell_type": "code",
@@ -92,6 +92,9 @@ async def test_write_returns_normalised_output_without_raw_outputs():
     assert "Inline figure rendered" in text
     assert "<Figure>" not in text
     assert "later text" not in text  # text is not echoed to the model
+    # 显式信号：stdout 行数与开头（正文不进对话）。
+    assert data["stdout_lines"] == 1
+    assert data["stdout_head"] == "later text"
 
 
 @pytest.mark.asyncio
