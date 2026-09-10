@@ -102,10 +102,11 @@ credential in an HttpOnly, SameSite cookie. Opening port 8765 directly is intent
 rejected. Control APIs require the same credential and reject cross-origin requests.
 
 In the console you can start / stop **Jupyter** (service + kernel) and **MCP**
-(in-kernel) as groups, open the managed Notebook, and convert data. Stopping the
+(in-kernel) as groups and open the managed Notebook. Stopping the
 dashboard host (`peaksMCP stop`) also gracefully tears down the Jupyter/MCP tree
-it manages. PXT conversion and datasheet translation are pure file operations and
-always available.
+it manages. The console has no data-processing endpoints: loading, translation,
+conversion, analysis, plotting, and persistence all run through notebook cells and
+the consent-gated MCP surface.
 
 ### CLI reference
 
@@ -151,5 +152,9 @@ terminal `Ctrl+C` does **not** stop it — use `peaksMCP stop`.
 > MCP tool for results, the conversion consent card for converted NetCDF). The
 > CLI and the operator console only control processes (Jupyter, kernel, MCP)
 > and snapshots.
+
+`run_cell` keeps the notebook append-only: `cell_type="code"` executes one
+API-checked analysis cell, while `cell_type="markdown"` appends a non-executed
+narrative or final summary. Neither form can edit or delete earlier cells.
 
 See `docs/ARCHITECTURE.md` for the compact architecture map.

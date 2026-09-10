@@ -1,81 +1,50 @@
 ---
 name: cut-preprocessing
-description: Use `peaksMCP` to call the `peaks` package and perform preprocessing on cut (sweep/fix) data in a notebook (Fermi surface leveling & zeroing $\rightarrow$ high-symmetry point zeroing $\rightarrow$ k-space conversion). Trigger this workflow when the user requests cut data processing, preprocessing, leveling, or k-space conversion.
+description: Use peaksMCP for ARPES cut preprocessing: classify an experiment, fit one gold reference, apply Fermi and angular corrections, convert every cut to momentum space, validate, and persist approved outputs.
 ---
 
-# Cut Data Preprocessing
+# Cut Preprocessing
 
-## Data Acquisition
+The server instructions and live tool contracts own the generic five-tool protocol. This skill
+contains only the cut-specific scientific workflow and completion checks.
 
-**Read metadata to extract input information**: There is an experiment record table `experiment_metadata.json` adjacent to the data directory. Extract the following:
-* The input file (`BP_XXXX`) and type for each experiment (Index).
-* Select the cut (`sweep`/`cut`) file to be processed based on the datasheet; use the gold data (labeled `Au`) for Fermi energy fitting.
+## Entry
 
-In a notebook cell compose the loading/inspection verbs and keep the printed
-line short (run_cell echoes at most a 3-line stdout summary):
+1. Resolve and fetch the contracts for `load_data` and `inspect_experiment`, then run them in that
+   order. Use `ExperimentSummary.gold`, `.cuts`, `.mappings`, `.records`, and `.conflicts` as the
+   classification authority; do not manually parse the datasheet when the summary is available.
+2. Build the full cut inventory before processing. Bind records by the indices returned from the
+   summary, not by guessed filenames or scan order.
+3. Resolve every native API needed for the batch before the first expensive operation. The usual
+   chain is `fit_gold`, `metadata.set_EF_correction`, and `k_convert`; trust the fetched signatures
+   over examples in this file.
 
-```python
-scans = load_data("data/")            # identity index (no classification)
-summary = inspect_experiment(scans)   # kinds, decision lists, conflicts
-print("gold:", summary.gold, "| conflicts:", len(summary.conflicts))
-```
+## Scientific Invariants
 
-## Workflow
+- Select the gold record from `summary.gold`. Fit it exactly once during the task and reuse the
+  resulting `EF_correction` for every cut. Never hard-code a correction or refit per scan.
+- When the fetched gold-fit contract offers polynomial order and outlier handling, use the requested
+  fourth-order fit with outlier exclusion. Keep the fit result and correction in named variables so
+  they can be inspected.
+- Read `theta_offset_deg` from the `ExperimentSummary.records` entry for the cut being processed.
+  If the required offset is absent from both data and metadata, ask the user; never infer or guess it.
+- For each cut: apply the shared Fermi correction, shift `theta_par` by that record's metadata offset,
+  then convert the complete cut with `k_convert`. Do not report a slice or preview as the final result.
+- Do not process gold, mappings, or unsupported records as cuts. A conflict is diagnostic, not an
+  automatic exclusion: follow the resolved `summary.cuts` / record kind, retain records that the
+  classifier keeps, and report the metadata-versus-shape disagreement.
 
-1. Use the fitted gold curve to level the Fermi edge of the $E_k\text{--}k$ data and set the Fermi energy to zero $\rightarrow$ set the high-symmetry point in angle space to zero $\rightarrow$ convert to k-space.
-2. Compose the adapter surface (`peaksMCP.overrides`: `load_data`,
-   `inspect_experiment`, `convert_experiment`) with native
-   `peaks` steps obtained via `search` / `get`
-   (`da.fit_gold`, `da.metadata.set_EF_correction`, coordinate shifts,
-   `da.k_convert`). Never reimplement an existing function, and never call an
-   API by name before its canonical id was fetched with `get` — run_cell
-   verifies the proof ledger.
-3. When performing 4th-order polynomial fitting (`poly4`) on gold data, outliers must be excluded prior to fitting (`outlier_exclusion=True`).
-4. **One gold fit, then per-scan conversion**: run the native
-   `da.fit_gold` once on the Au reference, apply its `EF_correction` with
-   `da.metadata.set_EF_correction(...)`, shift the high-symmetry angle
-   (`da.assign_coords(theta_par=da.theta_par - theta_par_offset_deg)`) and call
-   `da.k_convert()` per scan — compose these in the notebook; there is no
-   shortcut that skips the calibration: never re-fit per cut.
-5. **3-D cubes**: convert the FULL cube (never extract a centre slice and
-   report it as a complete conversion — a sliced result is only a partial
-   preview); set the normal-emission reference angles on the metadata before
-   `k_convert` when the geometry requires it.
+## Validation And Persistence
 
-## Required Parameters
-
-* `theta_par_offset_deg` (High-symmetry point position): Provided either in the agent note inside `experiment_metadata.json` or explicitly by asking the user in the conversation. This parameter cannot be deduced from the data.
-* **Fermi Energy**: Priority sequence is Gold data fitting (`da.fit_gold`, files labeled `Au` in the datasheet) $>$ Ask the user in the conversation. Inspect the experiment first with `inspect_experiment` — it reports classification conflicts (e.g. 3-D cubes labelled `sweep`) before any preprocessing starts.
-* Other metadata (such as polarization, photon energy, etc.) is used strictly for judgment/verification and does not participate in calculations.
-
-## Deliverables & Output Protocol
-
-Use the peaksMCP plotting façades (`plot_batch`, `plot_validation_pair`,
-`show_mapping_slice`) for figures; when raw matplotlib is unavoidable, follow
-the figure conventions in the server instructions (constrained_layout, DejaVu
-Sans with mathtext symbols, English labels, 150/300 dpi).
-
-**Cells never persist anything.** `run_cell` hard-blocks file writes
-(`savefig` / writers / unclear file modes): results persist exclusively
-through the `save_with_consent` tool, which appends a preview record cell,
-stages the variable's exact bytes in a unified temp area (server-owned
-gateway, strict TTL), shows the user a consent card with the real content
-summary (path, size, sha256, structure) and writes the file only when the
-user approves on that card — one variable/file per call, `overwrite=True`
-only permits replacing an existing target after approval. PXT-to-NetCDF
-conversion persists through `convert_experiment` (same staged gateway).
-Notebook autosave is notebook provenance, not analysis persistence. There is
-no code-level approval flag and no save function in the model Python surface.
-
-Figures to keep must be assigned to a variable first
-(`fig = plot_validation_pair(...)`) and then saved with `save_with_consent`
-(target `.png`/`.svg`/`.pdf`), never with `fig.savefig` inside a cell.
-
-## Figure debugging protocol
-
-When a figure output is questioned, diagnose **whether an image rendered** before changing any code:
-
-1. Read the `run_cell` reply: a rendered cell returns the
-   "Inline figure rendered in the notebook ..." line.
-2. **Marker present** → the figure WAS rendered. The problem is its *content*: inspect the data/values used (`inspect_notebook` on the relevant variables).
-3. **Bare `<Figure ...>` repr with no image marker** → the figure was NOT displayed. Fix the display, not the fit.
+1. Inspect every processed variable. A completed cut must have momentum-space coordinates and an
+   energy axis aligned to the Fermi level; dimensions, coordinate ranges, and NaN fraction must be
+   scientifically plausible.
+2. Render at least one raw-versus-processed comparison with `plot_validation_pair`. Use `plot_batch`
+   for multi-cut review. A render marker proves only that an image exists; inspect the values and
+   coordinates before accepting its content.
+3. Persist each final cut from its live variable with `save_with_consent`, one expected NetCDF path
+   per call. Count only receipts whose status is `saved`. Persist a figure only when requested, using
+   its figure variable through the same tool.
+4. Append a final Markdown cell through `run_cell(cell_type="markdown")`. Record the gold evidence,
+   Fermi correction, per-record angular offset source, processed count, output filenames, failures,
+   validation result, and save-receipt outcome.

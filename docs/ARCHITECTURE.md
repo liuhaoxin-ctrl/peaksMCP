@@ -41,8 +41,13 @@ inspect_notebook / run_cell / save_with_consent) and the private loopback
 restart degrades to a plain REST restart and reports READY without the Comm
 stage (kernel + MCP still fully recovered).
 
+`run_cell` is the single model-facing append operation. With `cell_type="code"`
+it API-checks and executes a new code cell; with `cell_type="markdown"` it
+appends a non-executed record or final summary. Both forms append at the end,
+and neither can edit, delete, or reorder notebook history.
+
 ## Development entry points
 
-- `peaksMCP launch`
+- `peaksMCP dash`
 - `%load_ext peaksMCP.server.jupyter_peaks.jupyter_mcp_extension`
 - `pytest tests`

@@ -1,2 +1,2 @@
-No task-specific workflow instructions are available beyond the goal below. Discover the usable
-capabilities and determine the correct execution sequence yourself.
+The prompt below defines the scientific goal, deliverables, and safety constraints only. Discover
+the available capabilities, their contracts, and the correct execution sequence yourself.

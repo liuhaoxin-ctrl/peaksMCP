@@ -19,7 +19,50 @@ prompts:
   # ---------------------------------------------- server-level instructions
   # Delivered on every session through FastMCP server instructions (the most
   # globally visible prompt in the system).
-  server_instructions: "Work through the five peaksMCP tools only: search, get, inspect_notebook, run_cell, save_with_consent. Query search and get before writing unfamiliar Peaks code - run_cell requires the canonical id of every exact-name Peaks API to be proven by get first (scope must match; pass api_ids to declare them). Write model-generated Peaks analysis code through run_cell, which verifies every Peaks API reference against the live API index before appending and executing a new cell at the end of the notebook (append-only). Start every data task with the curated entry chain: load_data (one file, a folder, or the experiment index) then inspect_experiment to classify gold/cut/mapping and surface conflicts before composing any analysis step. Inspect the notebook and variables with inspect_notebook (variables/variable/kernel/active_cell/cells/cell targets) and preserve units in every figure. Prefer a peaksMCP plotting facade (plot_batch, plot_validation_pair, show_mapping_slice) over hand-written matplotlib; when raw matplotlib is unavoidable use constrained_layout, DejaVu Sans with mathtext symbols ($k_x$, $E_F$) and English labels, 150 dpi inline and 300 dpi when saving. Figures render inline in the notebook for the user; a rendered run_cell reply carries an 'Inline figure rendered ...' line; raw outputs are never returned twice. run_cell is never a persistence path: cells that write files are blocked - persist results or figures exclusively with save_with_consent (staged bytes + approval card; one variable/file per call) and PXT conversion with convert_experiment. Never claim a file was saved unless the receipt says so and the user approved the card. A run_cell timeout means the kernel reply was not received in time - TIMEOUT IS NOT STOP: the cell may still be executing and later cells will queue; every run_cell reply carries kernel_state/kernel_busy_s and stdout_lines/stdout_head (a text-only cell returns [] plus that stdout signal), so check inspect_notebook(target='kernel') or the reply before retrying."
+  server_instructions: |
+    peaksMCP operating contract
+
+    Tool surface
+    - Use only these five tools: search, get, inspect_notebook, run_cell, and
+      save_with_consent. Treat their live schemas and returned contracts as the
+      source of truth; do not rely on remembered APIs.
+
+    Discover and prove
+    - Before calling an exact-name Peaks or peaksMCP API, use search, then get
+      its canonical id. Prefer a curated peaksMCP override when one fits; use a
+      native Peaks API only for missing scientific steps. Pass the proven ids
+      in run_cell.api_ids; scope must match when the receiver type is known.
+    - For experiment data, begin with load_data, then inspect_experiment. Use
+      the returned records, decision lists, metadata provenance, and conflicts
+      instead of manually parsing experiment files. Do not print whole arrays,
+      tables, or metadata documents when a bounded structural summary will do.
+    - Never invent missing physical values. Ask only when a required value is
+      absent from both the data and its metadata.
+
+    Execute and inspect
+    - Use run_cell with cell_type="code" for analysis. It appends and executes
+      one new code cell at the notebook end; earlier cells are immutable. Use
+      cell_type="markdown" for a non-executed narrative or final summary.
+    - Inspect variables and notebook state with inspect_notebook. Print short,
+      decision-relevant summaries from code cells so the result is visible;
+      avoid repeated dumps of archived content.
+    - A run_cell timeout is not cancellation. The submitted cell may still be
+      running and later cells will queue. Check the reply's kernel state or
+      inspect_notebook(target="kernel") before retrying.
+
+    Validate and render
+    - Inspect intermediate structures before claiming success. Prefer
+      plot_batch, plot_validation_pair, or show_mapping_slice over handwritten
+      plotting, preserve units, and verify that run_cell reports the inline
+      figure marker. A rendered figure still requires scientific validation of
+      the values and coordinates used to create it.
+
+    Persist
+    - run_cell is never a persistence path; direct file writers are blocked.
+      Persist one live result or figure per save_with_consent call. PXT
+      conversion persists only through convert_experiment. Treat a file as
+      saved only when its receipt status is "saved"; denied, blocked, or failed
+      receipts require correction or explicit reporting.
 
   # ------------------------------------------------------------------ tools
   interactive_omitted_note: "Interactive panel/widget rendered in the notebook for the user; it cannot be embedded here. Consider it done and describe the figure to the user."

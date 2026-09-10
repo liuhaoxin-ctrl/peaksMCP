@@ -428,8 +428,37 @@ def test_p2_prompt_includes_the_same_task_body(tmp_path):
         output_dir=tmp_path / "output",
         notebook_path=tmp_path / "work.ipynb",
     )
-    assert "Complete the following workflow end to end" in rendered
-    assert "semantic capabilities" in rendered
+    assert "Completion requirements" in rendered
+    assert "Fit the gold\n   exactly once" in rendered
+    assert "five operations" in rendered
+
+
+def test_prompt_conditions_share_common_body_and_keep_p1_tool_agnostic(tmp_path):
+    kwargs = {
+        "run_id": "trial",
+        "input_dir": tmp_path / "input",
+        "output_dir": tmp_path / "output",
+        "notebook_path": tmp_path / "work.ipynb",
+    }
+    rendered = {condition: rc.render_prompt(condition, **kwargs) for condition in ("p1", "p2")}
+    common = rc.COMMON_PROMPT_FILE.read_text(encoding="utf-8").strip()
+    for marker, value in {
+        "{RUN_ID}": kwargs["run_id"],
+        "{INPUT_DIR}": str(kwargs["input_dir"]),
+        "{OUTPUT_DIR}": str(kwargs["output_dir"]),
+        "{NOTEBOOK_PATH}": str(kwargs["notebook_path"]),
+    }.items():
+        common = common.replace(marker, value)
+    common += "\n"
+
+    assert rendered["p1"].endswith(common)
+    assert rendered["p2"].endswith(common)
+    p1_prefix = rendered["p1"][: -len(common)]
+    p2_prefix = rendered["p2"][: -len(common)]
+    for tool in ("search", "get", "inspect_notebook", "run_cell", "save_with_consent"):
+        assert tool not in p1_prefix, tool
+        assert tool in p2_prefix, tool
+    assert 'cell_type="markdown"' in p2_prefix
 
 
 def test_score_reports_conservative_and_evidence_coverage():

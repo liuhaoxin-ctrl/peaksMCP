@@ -1,5 +1,5 @@
-version: 1
-id: arpes-cut-preprocessing-e2e-v1
+version: 2
+id: arpes-cut-preprocessing-e2e-v2
 title: Autonomous ARPES cut preprocessing
 
 objective: >-
@@ -9,11 +9,14 @@ objective: >-
 conditions:
   p1:
     label: goal-only
-    description: The agent receives only the scientific goal and operational constraints.
+    description: >-
+      The agent receives the scientific goal, deliverables, and operational constraints without
+      benchmark-provided tool names or execution checkpoints.
   p2:
     label: tool-aware
     description: >-
-      The agent receives the same goal plus a semantic map of the MCP capability surface.
+      The agent receives the same common task plus a semantic map of the five-tool MCP surface and
+      explicit execution checkpoints.
 
 default_repetitions: 3
 required_conditions: [p1, p2]

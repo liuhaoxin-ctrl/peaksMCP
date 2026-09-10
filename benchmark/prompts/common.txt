@@ -1,40 +1,43 @@
-You are responsible for completing an ARPES preprocessing task autonomously.
+You are responsible for completing an ARPES cut-preprocessing task autonomously.
 
 Trial ID: {RUN_ID}
 Input directory: {INPUT_DIR}
 Output directory: {OUTPUT_DIR}
 Notebook: {NOTEBOOK_PATH}
 
-Complete the following workflow end to end:
+Goal
 
-1. Determine what every available record represents, including the gold reference, cuts,
-   mappings, and records that should not be processed.
-2. Process every cut and only the cuts. Each final result must be in momentum space.
-3. Obtain the Fermi-level correction by fitting the gold reference during this trial. Do not
-   use a remembered or hard-coded correction. Fit gold ONCE and reuse that correction for
-   every cut - refitting per scan is a contract violation, not an optimisation.
-   Before using any Peaks API by name, search for it and fetch its contract with get; the
-   notebook gate refuses exact-name calls that were not proven this session (declare them
-   per cell with api_ids).
-4. Obtain the high-symmetry angular offset from the experiment's own metadata. Do not guess it.
-5. Create one final NetCDF product per cut at:
+Process the complete experiment from the supplied input, producing one scientifically valid,
+reviewable momentum-space NetCDF product for every cut and for no other record.
+
+Completion requirements
+
+1. Build a complete inventory of the available records. Identify the gold reference, every cut,
+   mappings, unsupported records, and classification conflicts before processing begins.
+2. Derive the Fermi-level correction from the selected gold record during this trial. Fit the gold
+   exactly once and reuse that correction for every cut; never use a remembered or hard-coded
+   correction and never refit per cut.
+3. Derive each cut's high-symmetry angular offset from the experiment metadata associated with that
+   record. Do not guess it or substitute an unrelated metadata value.
+4. Apply the Fermi correction, angular zeroing, and momentum conversion to every cut. Each final
+   product must contain the full processed cut in momentum space, not a preview or centre slice.
+5. Persist exactly one product per cut at:
    {OUTPUT_DIR}/<original-stem>_processed.nc
-6. Leave at least one clear before/after validation figure in the notebook. The notebook is the
-   execution record: append new work and do not alter or delete prior cells.
-7. Persist results only through the system's consent-gated persistence capability. Do not write
-   files directly from notebook code.
-8. Ask for scientific information only when it is genuinely absent and cannot be inferred from
-   the data or metadata. Make all ordinary workflow decisions yourself.
+6. Leave at least one clear before/after validation figure in the notebook and inspect the processed
+   structures before declaring success.
+7. At the end, append one Markdown cell containing the selected gold and evidence, fitted Fermi
+   correction, angular offset and metadata source, number of cuts processed, every output filename,
+   every unprocessed target with its exact reason, and whether validation and persistence completed.
 
-At the end, append one Markdown cell containing:
+Operating constraints
 
-- the selected gold record and the evidence for that choice;
-- the fitted Fermi-level correction;
-- the angular offset and its metadata source;
-- the number of cuts processed and every output filename;
-- any unprocessed target and the exact reason;
-- whether all requested validation and persistence steps completed.
-
-Evaluation material is intentionally outside your workspace. Do not inspect benchmark source,
-evaluator directories, reference products, prior runs, or hidden answer keys. Use only the input
-data, the active notebook, and the enabled tool surface.
+- Preserve the input data. The notebook is an append-only execution record: add new work at the end
+  and do not alter or delete earlier cells.
+- Persist analysis results only through the enabled consent-gated persistence capability. A request,
+  plan, or denied/failed save is not a saved product.
+- Keep notebook output bounded and decision-relevant. Do not dump complete arrays or metadata files.
+- Ask for scientific information only when it is genuinely absent from both the data and metadata.
+  Make all ordinary workflow decisions yourself.
+- Evaluation material is intentionally outside the workspace. Do not inspect benchmark source,
+  evaluator directories, reference products, prior runs, or hidden answer keys. Use only the input,
+  the active notebook, and the enabled agent tool surface.

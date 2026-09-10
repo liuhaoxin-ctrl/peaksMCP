@@ -117,8 +117,8 @@ checks:
     title: EF 来自 fit_gold，不是硬编码常数
     fix: >-
       出现硬编码的 EF 常数（如 2.6591）说明 agent 记住了答案而不是执行流程。
-      prompts.server_instructions / skill 必须明确"EF 只能由 fit_gold 现场
-      拟合"，manifest 的 fit_gold 契约要写清返回 EF_correction 的用法。
+      benchmark common prompt / cut skill 必须明确"EF 只能由 fit_gold 现场
+      拟合"；native_catalog 的 fit_gold 契约要写清返回 EF_correction 的用法。
 
   # ------------------------------------------------------------------ Access
   A1_get_before_use:
@@ -209,7 +209,7 @@ checks:
     title: 出了验证图
     fix: >-
       没有图像输出也没有 plot_* 调用。核对 plot_validation_pair / plot_batch
-      的别名覆盖，以及 server_instructions 里"必须出图验证"的要求。
+      的别名覆盖，以及 benchmark common prompt / cut skill 的出图验证要求。
 
   S3_silent_cell_ratio:
     subsystem: Show
@@ -225,7 +225,8 @@ checks:
     title: notebook 最后有完整的运行总结
     fix: >-
       最终 markdown 总结缺失或字段不全。agent 需要明确记录 gold、EF、theta offset、
-      处理数量、输出文件和失败项；这既是人工复核入口，也是机器可追溯性的最低要求。
+      处理数量、输出文件和失败项；通过 run_cell(cell_type="markdown") 追加，
+      这是人工复核入口，也是机器可追溯性的最低要求。
 
   # -------------------------------------------------------------------- Save
   V1_outputs_in_place:

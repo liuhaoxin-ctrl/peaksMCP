@@ -1,7 +1,29 @@
-A peaksMCP MCP server is available through your host agent's MCP interface. Tool names may be
-namespaced or exposed behind a generic MCP proxy, so discover rather than assume host-level names.
-The server provides semantic capabilities to search its scientific API catalog, fetch a complete
-API contract, inspect the live notebook, append and execute verified notebook cells, and persist a
-live variable through staged human consent. Prefer high-level peaksMCP adapters when they match the
-intent; use native Peaks APIs only for steps not covered by an adapter. Search first, fetch the
-exact contract before use, and inspect intermediate state instead of relying on memory.
+A peaksMCP MCP server is available through the host agent. Host-level names may be namespaced, so
+resolve tools by their descriptions. The server's model-facing surface has five operations:
+
+- search: find a curated peaksMCP adapter or native Peaks API by intent;
+- get: fetch one canonical contract and prove that API for this session;
+- inspect_notebook: inspect bounded variables, cells, and live kernel state;
+- run_cell: append API-checked code cells, or append a non-executed Markdown cell with
+  cell_type="markdown";
+- save_with_consent: stage and request approval for one live variable or figure.
+
+Use the following checkpoints without skipping ahead:
+
+1. Inspect the notebook, then resolve and prove load_data and inspect_experiment. Use them to build
+   the complete inventory; do not manually parse the datasheet or dump metadata files.
+2. Before starting the batch, search and get the exact contracts needed for gold fitting, applying
+   its correction, momentum conversion, and validation plotting. Pass those canonical ids in each
+   code cell's api_ids.
+3. Read the selected cut indices and theta_offset_deg values from ExperimentSummary records. Fit the
+   selected gold once, retain the correction in a named variable, and reuse it for all cuts.
+4. Process every classified cut, inspect each result's dimensions and coordinates, and keep a named
+   validation figure. Use short printed checkpoints rather than large representations.
+5. Call save_with_consent once per final cut using the exact required filename. Treat only
+   status="saved" as success; diagnose and correct denied, blocked, or failed receipts before
+   claiming completion.
+6. Append the required final Markdown summary through run_cell with cell_type="markdown" after the
+   save receipts and validation result are known.
+
+Prefer curated peaksMCP adapters when they cover the intent. Use native Peaks APIs only for the
+scientific steps that the adapter surface does not provide, and trust live contracts over memory.

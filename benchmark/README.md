@@ -42,10 +42,10 @@ previous profile, Jupyter root, and notebook after the campaign, including failu
 
 ## Conditions
 
-- **P1 goal-only** gives the scientific goal and operational constraints. It measures discovery
-  plus execution.
-- **P2 tool-aware** adds a semantic description of the MCP capability surface. It controls most
-  discoverability and measures execution capability.
+- **P1 goal-only** gives the scientific goal, deliverables, and operational constraints without
+  benchmark-provided tool names or checkpoints. It measures discovery plus execution.
+- **P2 tool-aware** adds the semantic five-tool map and explicit execution checkpoints. It controls
+  most discoverability and measures execution capability.
 
 Each condition runs in a separate fresh model session, kernel, and notebook. The runner randomizes
 condition order within each paired replicate. P2 is never sent as a follow-up to a failed P1.

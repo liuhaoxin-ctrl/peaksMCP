@@ -23,7 +23,7 @@ tools:
       for override APIs; never source paths. A successful get also records
       the canonical proof in the run ledger: run_cell executes an exact-name
       Peaks call only after its canonical id was fetched here with a
-      matching scope.
+      matching scope when the receiver type is known.
   inspect_notebook:
     title: Inspect Notebook
     description: >
@@ -46,18 +46,17 @@ tools:
   run_cell:
     title: Run Cell
     description: >
-      Write model-generated code to a NEW cell at the END of the notebook and
-      execute it (append-only log: cells are never edited, deleted or
-      reordered). Every Peaks API reference is verified against the live
-      index; canonical-API proof is a HARD gate: an exact-name Peaks call
-      runs only after its canonical id was fetched with get this session
-      (scope must match; pass api_ids to declare the ids this cell relies
-      on). run_cell is NEVER a persistence path: cells that write files
-      (savefig / writers / unclear file modes) are hard-blocked - persist
-      results with save_with_consent and PXT conversion with
-      convert_experiment. Returns the executed cell identity plus a
-      normalised output list (errors, figure markers); text stays in the
-      notebook as the shared record.
+      Append one NEW cell at the END of the notebook (append-only log: cells
+      are never edited, deleted or reordered). cell_type="code" verifies
+      every Peaks API reference against the live index and executes the cell;
+      exact-name calls require a matching canonical id fetched with get and
+      declared through api_ids (scope is strict when the receiver type is
+      known). cell_type="markdown" appends a non-executed
+      narrative or final summary and does not accept api_ids. Code cells are
+      NEVER a persistence path: file writers are hard-blocked; persist results
+      with save_with_consent and PXT conversion with convert_experiment. Code
+      responses include the cell identity, normalised errors/figure markers,
+      and bounded stdout signals; notebook text remains the shared record.
   save_with_consent:
     title: Save Variable With Consent
     description: >

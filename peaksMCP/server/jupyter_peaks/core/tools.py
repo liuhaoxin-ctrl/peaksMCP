@@ -6,7 +6,7 @@ import json
 import re
 import uuid
 from functools import wraps
-from typing import Any
+from typing import Any, Literal
 
 from fastmcp import FastMCP
 from mcp.types import TextContent
@@ -558,23 +558,24 @@ def register_unsafe_tools(mcp: FastMCP, notebook: UnsafeNotebookBackend, audit: 
         code: str,
         timeout: float = 120.0,
         api_ids: list[str] | None = None,
+        cell_type: Literal["code", "markdown"] = "code",
     ) -> dict[str, Any]:
-        """Run code in one new notebook cell (API-checked) and return the
-        normalised output summary.
+        """Append one code or Markdown cell at the end of the notebook.
 
-        ``api_ids`` optionally declares the canonical Peaks API ids this cell
-        relies on; every declared id must already be proven by a successful
-        ``get`` this session (unproven ids are refused).  Raw Jupyter outputs
-        are never echoed to the model: the response replaces them with an
-        ``output`` list containing only errors, the "Inline figure rendered
-        ..." line and interactive markers, while ``stdout_lines`` /
-        ``stdout_head`` report the cell's own print output (a text-only cell
-        therefore returns ``[]`` plus the stdout signal).  Cell identity and
-        execution flags stay on the response, and ``kernel_state`` /
-        ``kernel_busy_s`` say whether the kernel is still executing - a timeout
-        never interrupts it, so inspect before retrying (or use
-        ``inspect_notebook(target="kernel")``).
+        Code cells are API-checked and executed. ``api_ids`` declares their
+        canonical Peaks API dependencies; every declared id must already be
+        proven by a successful ``get`` this session. Markdown cells are
+        appended without execution and reject ``api_ids`` because they cannot
+        call APIs. Raw Jupyter outputs are never echoed to the model: code-cell
+        responses replace them with a normalised ``output`` list plus
+        ``stdout_lines`` / ``stdout_head``. A timeout never interrupts the
+        kernel, so inspect its state before retrying.
         """
+        if cell_type == "markdown":
+            if api_ids:
+                raise ValueError("api_ids are only valid for code cells")
+            return notebook.add_cell(source=code, cell_type="markdown")
+
         result = notebook.write_with_api_check(code=code, timeout=timeout, api_ids=api_ids)
         if isinstance(result, dict) and isinstance(result.get("outputs"), list):
             cell = {

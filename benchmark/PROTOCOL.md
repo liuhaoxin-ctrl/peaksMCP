@@ -48,9 +48,10 @@ direct evaluator/reference access markers.
 
 ## 3. Conditions
 
-- **P1, goal-only:** tests end-to-end discoverability plus execution capability.
-- **P2, tool-aware:** provides only the semantic tool map and tests execution capability with
-  discoverability largely controlled.
+- **P1, goal-only:** tests end-to-end discoverability plus execution capability without
+  benchmark-provided tool names or checkpoints.
+- **P2, tool-aware:** provides the semantic five-tool map and execution checkpoints, then tests
+  execution capability with discoverability largely controlled.
 
 P1 and P2 are separate trials with fresh sessions. Never send P2 after a P1 failure in the same
 conversation. Pair trials by case and replicate number.

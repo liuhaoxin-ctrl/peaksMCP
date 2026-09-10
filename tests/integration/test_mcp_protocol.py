@@ -98,6 +98,53 @@ async def test_write_returns_normalised_output_without_raw_outputs():
 
 
 @pytest.mark.asyncio
+async def test_run_cell_can_append_a_markdown_summary_without_execution():
+    """The five-tool surface must support the benchmark's final Markdown cell."""
+    calls: list[tuple[str, dict]] = []
+
+    class MarkdownBridge:
+        connected = True
+
+        def request(self, operation, payload=None, timeout=30.0):
+            calls.append((operation, payload or {}))
+            if operation != "add_cell":
+                raise AssertionError(f"unexpected operation {operation!r}")
+            return {
+                "id": "summary-cell",
+                "index": 7,
+                "cell_type": payload["cell_type"],
+                "source": payload["source"],
+                "saved": True,
+            }
+
+    state = SharedState(FakeIPython())
+    state.bridge = MarkdownBridge()
+    server = JupyterPeaksMCPServer(state)
+    async with Client(server.mcp) as client:
+        result = await client.call_tool(
+            "run_cell",
+            {"code": "## Final summary\nAll requested outputs saved.", "cell_type": "markdown"},
+        )
+        with pytest.raises(ToolError, match="api_ids are only valid for code cells"):
+            await client.call_tool(
+                "run_cell",
+                {"code": "invalid", "cell_type": "markdown", "api_ids": ["api:x"]},
+            )
+
+    assert result.data["cell_type"] == "markdown"
+    assert result.data["source"].startswith("## Final summary")
+    assert calls == [
+        (
+            "add_cell",
+            {
+                "source": "## Final summary\nAll requested outputs saved.",
+                "cell_type": "markdown",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_invalid_tool_arguments_are_rejected():
     server = JupyterPeaksMCPServer(SharedState(FakeIPython()))
     async with Client(server.mcp) as client:
