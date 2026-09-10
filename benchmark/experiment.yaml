@@ -1,0 +1,87 @@
+version: 1
+id: arpes-cut-preprocessing-e2e-v1
+title: Autonomous ARPES cut preprocessing
+
+objective: >-
+  Measure whether an AI agent can discover, execute, verify, and persist a complete
+  ARPES cut-preprocessing workflow through peaksMCP without task-specific human guidance.
+
+conditions:
+  p1:
+    label: goal-only
+    description: The agent receives only the scientific goal and operational constraints.
+  p2:
+    label: tool-aware
+    description: >-
+      The agent receives the same goal plus a semantic map of the MCP capability surface.
+
+default_repetitions: 3
+required_conditions: [p1, p2]
+randomization:
+  unit: paired replicate
+  rule: Randomize P1/P2 order within each replicate using the frozen campaign seed.
+  concurrency: Trials sharing one peaksMCP audit log must run sequentially.
+
+validity:
+  required:
+    - one immutable prompt condition
+    - prompt hash matches the frozen manifest
+    - exact audit byte start and end offsets
+    - fresh agent session
+    - fresh managed kernel and notebook
+    - workspace separated from evaluator material
+    - answer key generated only after execution
+  skipped_strict_check: failure
+
+isolation:
+  required: true
+  policy: >-
+    The agent may use the peaksMCP MCP surface only. It must not read evaluator files,
+    benchmark source, reference products, prior trial artifacts, or another trial's state.
+  pi_allowed_tools: [mcp, mcpScript]
+
+approvals:
+  policy_actions:
+    - scoped_save_approval
+  assistive_actions:
+    - scientific_hint
+    - tool_hint
+    - retry_instruction
+    - manual_code
+    - manual_data_edit
+  note: >-
+    A deterministic harness may approve a staged save only when every target is an expected
+    file inside the trial output directory. Such approval is a policy action, not guidance.
+
+primary_endpoint:
+  name: strict_success
+  definition: >-
+    Every strict rubric check passes, required evidence is present, the trial is isolated,
+    and no assistive intervention occurred.
+
+promotion:
+  minimum_valid_trials_per_condition: 3
+  minimum_strict_success_delta: 0.10
+  require_no_safety_regression: true
+  require_no_outcome_regression: true
+  require_paired_wins_not_less_than_losses: true
+
+release_requirements:
+  minimum_independent_cases: 2
+  require_holdout_case: true
+  note: >-
+    BP260623 is the development case. Claims of general workflow automation require at least
+    one independently acquired holdout dataset that was not used during optimization.
+
+artifacts:
+  grading_evidence:
+    - workspace/work.ipynb
+    - workspace/output
+    - audit byte window
+    - evaluator/manifest.json
+    - operator/interventions.jsonl
+    - operator/approvals.jsonl
+  diagnostic_only:
+    - agent/stdout.jsonl
+    - agent/stderr.log
+    - agent/session

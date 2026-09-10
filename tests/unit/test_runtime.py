@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from peaksMCP.app.profiles import Profile
@@ -311,7 +313,9 @@ def test_runfile_records_jupyter_process_create_time(monkeypatch):
 
 def test_spawn_jupyter_publishes_process_identity_before_waiting(monkeypatch):
     supervisor = RuntimeSupervisor(Profile())
+    supervisor.root_dir = Path("/tmp/trial-workspace")
     events: list[tuple[str, float | None]] = []
+    commands: list[list[str]] = []
 
     class Jupyter:
         pid = 4242
@@ -330,7 +334,10 @@ def test_spawn_jupyter_publishes_process_identity_before_waiting(monkeypatch):
     monkeypatch.setattr("peaksMCP.app.runtime.kernel_spec_state", lambda _name: {})
     monkeypatch.setattr("peaksMCP.app.runtime.kernel_profile_state", lambda _profile: {})
     monkeypatch.setattr("peaksMCP.app.runtime._port_owner", lambda *_args: None)
-    monkeypatch.setattr("peaksMCP.app.runtime.subprocess.Popen", lambda *_a, **_k: Jupyter())
+    monkeypatch.setattr(
+        "peaksMCP.app.runtime.subprocess.Popen",
+        lambda command, **_kwargs: commands.append(command) or Jupyter(),
+    )
     monkeypatch.setattr("peaksMCP.app.runtime.psutil.Process", lambda _pid: Process())
     monkeypatch.setattr("peaksMCP.app.runtime.threading.Thread", lambda **_kwargs: Reader())
     monkeypatch.setattr(
@@ -347,6 +354,7 @@ def test_spawn_jupyter_publishes_process_identity_before_waiting(monkeypatch):
     supervisor._spawn_jupyter(timeout=5)
 
     assert events == [("runfile", 9876.5), ("wait", 9876.5)]
+    assert "--ServerApp.root_dir=/tmp/trial-workspace" in commands[0]
 
 
 def test_concurrent_start_requests_are_serialized_and_idempotent(monkeypatch):

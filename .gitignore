@@ -21,5 +21,6 @@ peaksMCP-snapshot-*.ipynb
 .smoke-*
 聊天记录.md
 benchmark/runs/
+benchmark/campaigns/
 .pi/
 .workbuddy-ai/

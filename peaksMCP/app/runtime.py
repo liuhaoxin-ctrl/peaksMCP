@@ -56,6 +56,7 @@ class RuntimeSupervisor:
         self.jupyter_process_create_time: float | None = None
         self.kernel_id: str | None = None
         self.session_id: str | None = None
+        self.root_dir = Path.cwd().resolve()
         self.notebook_path = "peaksMCP-runtime.ipynb"
         self._reader: threading.Thread | None = None
         self._dashboard: uvicorn.Server | None = None
@@ -124,6 +125,7 @@ class RuntimeSupervisor:
             write_runfile({
                 "pid": os.getpid(), "profile": self.profile.name,
                 "kernel_id": self.kernel_id, "session_id": self.session_id,
+                "root_dir": str(self.root_dir),
                 "notebook_path": self.notebook_path,
                 "jupyter_url": self.jupyter_url, "dashboard_url": self.dashboard_url,
                 "jupyter_port": self.profile.jupyter.port,
@@ -165,6 +167,7 @@ class RuntimeSupervisor:
             "--ServerApp.port_retries=0",
             f"--ServerApp.token={self.token}",
             "--ServerApp.open_browser=False",
+            f"--ServerApp.root_dir={self.root_dir}",
         ]
         self.jupyter_process_create_time = None
         self.jupyter = subprocess.Popen(
@@ -681,7 +684,8 @@ class RuntimeSupervisor:
             "jupyter_state": self.jupyter_state,
             "last_error": self.last_error,
             "pid": os.getpid(), "profile": self.profile.name, "kernel_id": self.kernel_id,
-            "session_id": self.session_id, "notebook_path": self.notebook_path,
+            "session_id": self.session_id, "root_dir": str(self.root_dir),
+            "notebook_path": self.notebook_path,
             "jupyter_url": self.jupyter_url, "dashboard_url": self.dashboard_url,
             "notebook_url": f"{self.jupyter_url}/lab/tree/{self.notebook_path}",
             "mcp_url": f"http://{self.profile.mcp.host}:{self.profile.mcp.port}/mcp",

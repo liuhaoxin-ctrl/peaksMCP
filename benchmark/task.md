@@ -1,71 +1,18 @@
-# 给 agent 的提示词
+# Prompt Contract
 
-两个版本。**先用 P1 跑一遍，再用 P2 跑一遍**——差别本身就是结论：
+The canonical prompts are immutable source files:
 
-* P1 失败、P2 成功 → 系统能力是够的，问题是**可发现性**（Contract / Access 没把能力暴露出来）。
-* P1 和 P2 都失败 → 能力本身缺失，或 Show / Save 链路断了。
-* P1 就成功 → 这一档任务对当前系统已经没问题，该加难度。
+- `prompts/common.txt` contains the scientific task and artifact requirements shared by every
+  condition.
+- `prompts/p1_goal_only.txt` contains the goal-only condition prefix.
+- `prompts/p2_tool_aware.txt` contains the tool-aware condition prefix.
 
-提示词里**故意不教怎么做**。一旦教了流程，测的就是提示词而不是系统。
+`run_case.py init --condition p1|p2` concatenates exactly one condition prefix with the common task,
+replaces the trial path placeholders, writes `workspace/prompt.txt`, and freezes its SHA-256 in the
+evaluator manifest.
 
-下面 `{...}` 是占位符，由 `run_case.py init` 渲染成 `prompt.txt`，替换成真实绝对路径。
+Do not hand-edit a rendered prompt. Do not give one agent both conditions. Do not send P2 as a
+follow-up after P1. A prompt hash mismatch invalidates the trial.
 
----
-
-## P1 · 裸提示（goal only）
-
-```text
-我要你把一批 ARPES 数据的 cut 全部做完预处理。
-
-输入目录：{INPUT_DIR}
-输出目录：{OUTPUT_DIR}（不存在就自己创建）
-
-要求：
-1. 先弄清楚这批数据里每条记录分别是什么（哪条是金的参考、哪些是 cut、哪些是 mapping）。
-2. 只处理 cut：对每一条 cut 做完整的预处理，得到 k 空间结果。
-   费米能级必须用金参考现场拟合得到，不能用记忆里的数值。
-   高对称点的角度偏移必须来自数据自带的实验记录，不要自己猜。
-3. 每条 cut 输出一个文件到输出目录，命名为 <原始文件名>_processed.nc。
-4. 所有工作都在 notebook 里完成，并且 notebook 里要留下能看出"处理前后对比"的图。
-5. 落盘必须走系统提供的持久化方式，不要自己直接写文件。
-6. 只有在数据里真的找不到、且无法推断的信息才问我，其余自己决定。
-
-做完之后在 notebook 最后加一个 markdown cell，写清楚：
-- 你判断的 gold 是哪一条，依据是什么
-- 拟合出的费米能级修正值
-- 使用的角度偏移量及其来源
-- 一共处理了几条，输出了哪些文件
-- 有没有哪条没处理，为什么
-```
-
-## P2 · 装备提示（goal + 指向工具）
-
-在 P1 的基础上，开头多一段：
-
-```text
-你可以通过 MCP 使用 peaksMCP 的能力。相关约定：
-- 用 peaks_search_api 找 API，用 peaks_get_api 读它的完整说明，不要凭记忆写函数名。
-- 能查到的能力优先用，查不到再用 peaks 的原生函数，组合起来做。
-- 需要把结果写到磁盘时，用系统提供的保存方式走人工确认，不要自己写文件。
-- 想看当前 notebook 里的变量或某个 cell 的结果，用对应的查看工具。
-
-（其余同上）
-```
-
----
-
-## 为什么提示词长这样
-
-| 提示词里的要求 | 实际在测什么 |
-|---|---|
-| "先弄清楚每条是什么" | Contract：`inspect_experiment` 是不是唯一的分类入口，且结论 agent 看得到 |
-| "只处理 cut" | Contract + Run：分类结论有没有真的驱动了后续动作 |
-| "费米能级必须现场拟合" | 防止 agent 背答案（硬编码 `2.6591`） |
-| "角度偏移必须来自实验记录" | Contract：元数据里的 `theta_offset` 有没有进契约 |
-| "输出到 <stem>_processed.nc" | Save：产物命名与落点是否受控 |
-| "落盘走系统提供的持久化方式" | Save：单一网关是否成立 |
-| "notebook 里留对比图" | Show：验证图链路 |
-| "最后写 markdown 总结" | 给评分器一个可读的结论产物，同时也测 agent 有没有真的掌握全局 |
-
-刻意**没有**提到的：具体函数名、处理步骤、`fit_gold` / `k_convert` 之类的名字。
-这些应该由 `search`/`get` 提供——如果 agent 找不到，那就是系统要改的地方。
+P1 measures discovery plus execution. P2 controls most discoverability and measures execution.
+Their paired outcome is diagnostic evidence, not an escalation sequence.

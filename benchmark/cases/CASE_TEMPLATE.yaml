@@ -1,0 +1,33 @@
+version: 1
+id: replace-me
+title: Human-readable case title
+split: holdout
+
+paths:
+  data_env: PEAKSMCP_BENCH_DATA
+  data_default: /absolute/path/to/preconverted-netcdf-input
+  datasheet_env: PEAKSMCP_BENCH_DATASHEET
+  datasheet_default: /absolute/path/to/datasheet.csv
+  reference_env: PEAKSMCP_BENCH_REFERENCE
+  reference_default: /absolute/path/to/human/reference/products
+
+parser:
+  kind: l112_datasheet
+  file_stem_template: BP_{index:04d}
+  input_suffixes: [.nc]
+  output_template: '{stem}_processed.nc'
+
+staging:
+  strategy: copy
+  include_suffixes: [.nc]
+  exclude_globs: ['*_processed.nc']
+  include_datasheet: true
+
+scientific_contract:
+  target_kind: cut
+  gold_selection: State the metadata field that authoritatively identifies gold.
+  theta_offset_source: State the metadata field containing the angular offset.
+  expected_gold_indices: []
+  expected_theta_offset_deg: null
+
+known_challenge: Describe edge cases without revealing them to the agent prompt.

@@ -371,22 +371,35 @@ def _netcdf_safe(data: Any) -> Any:
             return True
         if isinstance(value, (list, tuple)):
             return all(scalar_ok(item) for item in value)
-        if isinstance(value, dict):
-            return all(
-                isinstance(key, str) and scalar_ok(item) for key, item in value.items()
-            )
+        # Mappings are NOT storable: NetCDF attributes accept only str, numbers,
+        # ndarray, list, tuple and bytes.  Accepting them here made every save
+        # of a scan carrying `experiment_metadata_json` fail at write time.
         return False
+
+    def netcdf_value(value: Any) -> Any | None:
+        """NetCDF-storable form of one attribute value, or None to drop it."""
+        if isinstance(value, (dict, list, tuple)) and not scalar_ok(value):
+            try:
+                # The embedded metadata document (and anything else structured)
+                # is stored as JSON - the form the conversion header reader
+                # already restores with ``json.loads``.
+                return json.dumps(value, default=str)
+            except (TypeError, ValueError):
+                return None
+        if scalar_ok(value):
+            return list(value) if isinstance(value, tuple) else value
+        module = type(value).__module__ or ""
+        if module.startswith("pint") or module.startswith("numpy"):
+            return str(value)
+        return None
 
     def sanitize_attrs(attrs: dict[str, Any]) -> None:
         for key in [k for k in attrs.keys()]:
-            value = attrs[key]
-            if scalar_ok(value):
-                continue
-            module = type(value).__module__ or ""
-            if module.startswith("pint") or module.startswith("numpy"):
-                attrs[key] = str(value)
-            else:
+            replacement = netcdf_value(attrs[key])
+            if replacement is None:
                 attrs.pop(key, None)
+            else:
+                attrs[key] = replacement
 
     copy = data.copy(deep=False)
     sanitize_attrs(copy.attrs)

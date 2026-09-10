@@ -225,3 +225,68 @@ def test_consent_request_reports_nobody_reachable_without_a_frontend():
     assert ConsentManager(_Disconnected()).request("save_ticket", {}) is None
     assert ConsentManager(callback=lambda *_: False).request("save_ticket", {}) is False
     assert ConsentManager(callback=lambda *_: None).request("save_ticket", {}) is None
+
+
+def test_netcdf_safe_stores_a_mapping_attribute_as_json(tmp_path):
+    """A scan carrying the embedded experiment-metadata document must still be
+    savable: NetCDF attrs cannot hold mappings, so they are stored as JSON (the
+    form the conversion header reader already parses back)."""
+    import io
+    import json
+
+    import xarray as xr
+
+    document = {"records": {"20": {"is_gold_reference": True}}, "notes": ["a", "b"]}
+    data = _array()
+    data.attrs["experiment_metadata_json"] = document
+    data.attrs["_scan"] = {"name": "BP_0020"}          # peaks metadata model-like mapping
+
+    buffer = io.BytesIO()
+    save_module._netcdf_safe(data).to_netcdf(buffer)
+    buffer.seek(0)
+    restored = xr.open_dataarray(buffer).load()
+
+    assert isinstance(restored.attrs["experiment_metadata_json"], str)
+    assert json.loads(restored.attrs["experiment_metadata_json"]) == document
+    assert isinstance(restored.attrs["_scan"], str)
+    # the source object keeps its in-memory mapping (only the copy is coerced)
+    assert data.attrs["experiment_metadata_json"] == document
+
+
+def test_save_card_uses_the_dedicated_frontend_operation():
+    """Regression: the card branch (``operation="save_ticket"``) was unreachable
+    because the request was wrapped in the generic ``request_consent``
+    operation, so the user saw a dialog without the staged product while the
+    gateway waited for an approval that could never arrive."""
+    from peaksMCP.server.jupyter_peaks.mcp_server import JupyterPeaksMCPServer
+    from peaksMCP.server.jupyter_peaks.security import ConsentManager
+
+    class _Bridge:
+        connected = True
+
+        def __init__(self):
+            self.calls = []
+
+        def request(self, operation, payload=None, timeout=30):
+            self.calls.append((operation, payload))
+            return {"approved": True}
+
+    class _Server:
+        pass
+
+    server = _Server()
+    server.consent = ConsentManager(_Bridge())
+    server.audit = type("A", (), {"write": lambda *a, **k: None})()
+
+    preview = {"ticket_id": "t1", "items": [{"path": "/out/x.nc", "sha256": "ab"}]}
+    assert JupyterPeaksMCPServer._approve_save_card(server, preview) is True
+    operation, payload = server.consent.bridge.calls[0]
+    assert operation == "save_ticket", server.consent.bridge.calls
+    assert payload["details"]["ticket_id"] == "t1"
+
+    class _Timeout(_Bridge):
+        def request(self, operation, payload=None, timeout=30):
+            raise TimeoutError("nobody answered")
+
+    server.consent = ConsentManager(_Timeout())
+    assert JupyterPeaksMCPServer._approve_save_card(server, preview) is None

@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://peaksmcp.local/benchmark/campaign-result.schema.json",
+  "title": "peaksMCP benchmark campaign result",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "campaign_id",
+    "conditions",
+    "paired_diagnosis",
+    "failure_frequency",
+    "trial_results"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "campaign_id": {"type": "string", "minLength": 1},
+    "case": {"type": "string"},
+    "conditions": {"type": "object"},
+    "paired_diagnosis": {"type": "array", "items": {"type": "object"}},
+    "failure_frequency": {"type": "object"},
+    "trial_results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["run_id", "condition", "valid", "strict_success", "result"],
+        "properties": {
+          "run_id": {"type": "string"},
+          "replicate": {"type": ["integer", "null"]},
+          "condition": {"enum": ["p1", "p2"]},
+          "valid": {"type": "boolean"},
+          "strict_success": {"type": "boolean"},
+          "result": {"type": "string"}
+        }
+      }
+    }
+  }
+}

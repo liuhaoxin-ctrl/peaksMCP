@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -198,6 +199,7 @@ def _spawn_host_process(args: argparse.Namespace) -> subprocess.Popen[Any]:
     descriptor = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     stream = os.fdopen(descriptor, "a", encoding="utf-8")
     notebook_arg = ["--notebook", args.notebook] if getattr(args, "notebook", None) else []
+    root_arg = ["--root-dir", args.root_dir] if getattr(args, "root_dir", None) else []
     try:
         # Launch from the package root, NOT the caller's cwd: if the user
         # runs from a directory that contains a sibling ``peaksMCP`` folder
@@ -205,7 +207,16 @@ def _spawn_host_process(args: argparse.Namespace) -> subprocess.Popen[Any]:
         # namespace package and shadows the installed package, breaking
         # ``import peaksMCP`` ("unknown location", no __version__).
         return subprocess.Popen(
-            [sys.executable, "-m", "peaksMCP", "_serve", "--profile", args.profile, *notebook_arg],
+            [
+                sys.executable,
+                "-m",
+                "peaksMCP",
+                "_serve",
+                "--profile",
+                args.profile,
+                *root_arg,
+                *notebook_arg,
+            ],
             stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.STDOUT,
             start_new_session=True, close_fds=True,
             cwd=str(Path(__file__).resolve().parent.parent),
@@ -214,7 +225,7 @@ def _spawn_host_process(args: argparse.Namespace) -> subprocess.Popen[Any]:
         stream.close()
 
 
-def _workspace_key(path: str) -> str:
+def _workspace_key(path: str, root_dir: str | None = None) -> str:
     """Normalize a notebook path the way the host would resolve it.
 
     The Jupyter host serves from the package root and treats relative
@@ -223,11 +234,39 @@ def _workspace_key(path: str) -> str:
     Comparing these keys avoids needless host replacements for equivalent
     spellings of the same notebook.
     """
-    root = Path(__file__).resolve().parent.parent
+    root = (
+        Path(root_dir).expanduser().resolve()
+        if root_dir
+        else Path(__file__).resolve().parent.parent
+    )
     candidate = Path(path)
     if not candidate.is_absolute():
         candidate = root / candidate
     return os.path.normpath(str(candidate))
+
+
+def _normalize_workspace_request(
+    root_dir: str | None,
+    notebook: str | None,
+) -> tuple[Path, str | None]:
+    """Resolve a Jupyter root and a root-relative notebook path."""
+    root = (
+        Path(root_dir).expanduser().resolve()
+        if root_dir
+        else Path.cwd().resolve()
+    )
+    if notebook is None:
+        return root, None
+    requested = Path(notebook).expanduser()
+    if requested.is_absolute() and root_dir is None:
+        root = requested.parent.resolve()
+        return root, requested.name
+    resolved = requested.resolve() if requested.is_absolute() else (root / requested).resolve()
+    try:
+        relative = resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"notebook {resolved} is outside Jupyter root {root}") from exc
+    return root, relative.as_posix()
 
 
 def _host_matches_request(
@@ -235,10 +274,20 @@ def _host_matches_request(
 ) -> bool:
     """Return whether a live host satisfies the requested workspace."""
     requested_notebook = getattr(args, "notebook", None)
+    requested_root = getattr(args, "root_dir", None)
+    active_root = current.get("root_dir")
+    if requested_root is not None and (
+        active_root is None
+        or Path(active_root).expanduser().resolve()
+        != Path(requested_root).expanduser().resolve()
+    ):
+        return False
     if requested_notebook is not None:
         active_notebook = current.get("notebook_path")
-        if not active_notebook or _workspace_key(active_notebook) != _workspace_key(
-            requested_notebook
+        if not active_notebook or _workspace_key(
+            active_notebook, active_root
+        ) != _workspace_key(
+            requested_notebook, requested_root
         ):
             return False
     requested_profile = getattr(args, "profile", None)
@@ -266,7 +315,7 @@ def _replace_host(data: dict[str, Any], args: argparse.Namespace) -> None:
         f"{data.get('profile')!r}, notebook {data.get('notebook_path')!r}) "
         f"to honor requested workspace "
         f"(profile {getattr(args, 'profile', 'default')!r}, "
-        f"notebook {requested_notebook!r})",
+        f"root {getattr(args, 'root_dir', None)!r}, notebook {requested_notebook!r})",
         file=sys.stderr,
     )
     _terminate_supervisor(int(data["pid"]))
@@ -361,8 +410,15 @@ def command_dash(args: argparse.Namespace) -> None:
 def command_serve(args: argparse.Namespace) -> None:
     from .app.runtime import RuntimeSupervisor
     supervisor = RuntimeSupervisor(_profile(args.profile))
-    if getattr(args, "notebook", None):
-        supervisor.notebook_path = args.notebook
+    root_dir, notebook = _normalize_workspace_request(
+        getattr(args, "root_dir", None),
+        getattr(args, "notebook", None),
+    )
+    if not root_dir.is_dir():
+        raise SystemExit(f"Jupyter root directory does not exist: {root_dir}")
+    supervisor.root_dir = root_dir
+    if notebook:
+        supervisor.notebook_path = notebook
     supervisor.serve_forever()
 
 
@@ -391,33 +447,55 @@ def command_status(args: argparse.Namespace) -> None:
     _json(status)
 
 
+class HostTeardownError(RuntimeError):
+    """The managed host could not be stopped (kill escalation exhausted).
+
+    A *library* failure, not a CLI verdict: callers such as the benchmark
+    runner must be able to record it (``except Exception``) instead of having
+    ``SystemExit`` escape a ``finally`` and decide the run's exit status.
+    """
+
+
+def _pid_is_host(pid: int) -> bool:
+    """Whether ``pid`` still looks like a live ``peaksMCP _serve`` host."""
+    try:
+        command = psutil.Process(pid).cmdline()
+    except (psutil.Error, OSError):
+        return False
+    joined = " ".join(command)
+    return "peaksMCP" in joined and "_serve" in joined
+
+
 def _terminate_supervisor(pid: int) -> None:
     """Stop a supervisor: SIGTERM first, escalate to SIGKILL, wait until gone.
 
     The supervisor's own ``stop()`` tears down JupyterLab (8s ceiling) and the
-    dashboard (3s) before exiting, so a plain 20s SIGTERM wait is enough in the
-    normal case; the SIGKILL path only fires for a wedged process.
+    dashboard (3s) before exiting, so a plain 10s SIGTERM wait is enough in the
+    normal case; the SIGKILL path only fires for a wedged process.  A pid that
+    no longer belongs to a peaksMCP host counts as gone (pid reuse must never
+    turn into a hang or a false teardown failure).
     """
+    if not _pid_is_host(pid):
+        return
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
         return  # already gone
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except OSError:
+        if not _pid_is_host(pid):
             return
         time.sleep(0.2)
-    os.kill(pid, signal.SIGKILL)
+    with contextlib.suppress(ProcessLookupError):
+        os.kill(pid, signal.SIGKILL)
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except OSError:
+        if not _pid_is_host(pid):
             return
         time.sleep(0.2)
-    raise SystemExit("supervisor did not exit even after SIGKILL; inspect the process tree")
+    raise HostTeardownError(
+        f"supervisor pid {pid} did not exit even after SIGKILL; inspect the process tree"
+    )
 
 
 def _jupyter_process_matches(
@@ -597,6 +675,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("version").set_defaults(func=lambda _a: print(__version__))
     dash = sub.add_parser("dash", help="start the dashboard host if needed, then open the operator console")
     dash.add_argument("notebook", nargs="?", default=None, help="notebook file to use as the workspace (e.g. peaksMCP-snapshot-xxx.ipynb)")
+    dash.add_argument("--root-dir", default=None, help="Jupyter workspace root (defaults to the peaksMCP launch directory)")
     dash.add_argument("--profile", default="default")
     dash.add_argument("--timeout", type=float, default=15, help="seconds to wait for the dashboard host to answer")
     dash.set_defaults(func=command_dash)
@@ -604,10 +683,12 @@ def build_parser() -> argparse.ArgumentParser:
     opened = sub.add_parser("open", help=argparse.SUPPRESS)
     opened.add_argument("--profile", default="default")
     opened.add_argument("--timeout", type=float, default=15)
+    opened.add_argument("--root-dir", default=None)
     opened.set_defaults(func=command_dash)
     serve = sub.add_parser("_serve")
     serve.add_argument("--profile", default="default")
     serve.add_argument("--notebook", default=None)
+    serve.add_argument("--root-dir", default=None)
     serve.set_defaults(func=command_serve)
     sub.add_parser("status").set_defaults(func=command_status)
     sub.add_parser("stop").set_defaults(func=command_stop)

@@ -286,15 +286,26 @@ def _record_verified_api(state: SharedState, entry: dict[str, Any]) -> None:
     state.unknown_api_attempts.pop(name, None)
 
 
+#: Audit arguments kept in full: the executed cell IS the product's record of
+#: what ran, and everything downstream (operator review, the benchmark grader)
+#: reads it back.  A blanket 200-character cap silently hid every call past the
+#: cap - a cell that imported first and called ``load_data()`` afterwards looked
+#: like it never used the curated verb.
+_AUDIT_FULL_ARGUMENTS = frozenset({"code"})
+#: Other arguments stay bounded: they are summaries, not records.
+_AUDIT_ARGUMENT_MAX = 200
+
+
 def _summarize_arguments(args: tuple, kwargs: dict[str, Any]) -> dict[str, Any]:
-    """Compact, JSON-safe argument summary for the audit trail."""
+    """JSON-safe argument summary for the audit trail (``code`` in full)."""
     summary: dict[str, Any] = {}
     for index, value in enumerate(args):
-        text = str(value)
-        summary[str(index)] = text[:200]
+        summary[str(index)] = str(value)[:_AUDIT_ARGUMENT_MAX]
     for key, value in kwargs.items():
         text = str(value)
-        summary[str(key)] = text[:200]
+        summary[str(key)] = (
+            text if key in _AUDIT_FULL_ARGUMENTS else text[:_AUDIT_ARGUMENT_MAX]
+        )
     return summary
 
 

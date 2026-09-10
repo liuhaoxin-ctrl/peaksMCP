@@ -1,0 +1,36 @@
+You are responsible for completing an ARPES preprocessing task autonomously.
+
+Trial ID: {RUN_ID}
+Input directory: {INPUT_DIR}
+Output directory: {OUTPUT_DIR}
+Notebook: {NOTEBOOK_PATH}
+
+Complete the following workflow end to end:
+
+1. Determine what every available record represents, including the gold reference, cuts,
+   mappings, and records that should not be processed.
+2. Process every cut and only the cuts. Each final result must be in momentum space.
+3. Obtain the Fermi-level correction by fitting the gold reference during this trial. Do not
+   use a remembered or hard-coded correction.
+4. Obtain the high-symmetry angular offset from the experiment's own metadata. Do not guess it.
+5. Create one final NetCDF product per cut at:
+   {OUTPUT_DIR}/<original-stem>_processed.nc
+6. Leave at least one clear before/after validation figure in the notebook. The notebook is the
+   execution record: append new work and do not alter or delete prior cells.
+7. Persist results only through the system's consent-gated persistence capability. Do not write
+   files directly from notebook code.
+8. Ask for scientific information only when it is genuinely absent and cannot be inferred from
+   the data or metadata. Make all ordinary workflow decisions yourself.
+
+At the end, append one Markdown cell containing:
+
+- the selected gold record and the evidence for that choice;
+- the fitted Fermi-level correction;
+- the angular offset and its metadata source;
+- the number of cuts processed and every output filename;
+- any unprocessed target and the exact reason;
+- whether all requested validation and persistence steps completed.
+
+Evaluation material is intentionally outside your workspace. Do not inspect benchmark source,
+evaluator directories, reference products, prior runs, or hidden answer keys. Use only the input
+data, the active notebook, and the enabled tool surface.

@@ -770,3 +770,29 @@ def test_inspect_experiment_counts_each_scan_once_across_int_and_str_keys():
     assert summary.cuts == [15], summary.cuts
     assert summary.gold == [20]
     assert [row.index for row in summary.records] == [15, 20]
+
+
+def test_inspect_experiment_reports_a_three_d_record_labelled_sweep_as_mapping_conflict():
+    """A 3-D cube whose datasheet format says "sweep" is a mapping-shaped record:
+    the classifier must surface the conflict and treat it as a mapping."""
+    from peaksMCP.overrides.inspection import inspect_experiment
+    from peaksMCP.overrides.load import LoadedScans, ScanEntry
+
+    entries = [
+        ScanEntry(
+            stem="BP_0026",
+            path="/data/BP_0026.nc",
+            representation="netcdf",
+            experiment_index=26,
+            sizes={"eV": 107, "theta_par": 902, "deflector_perp": 31},
+        )
+    ]
+    document = {
+        "records": {"26": {"index": 26, "experiment": {"data_format": "sweep"}}},
+    }
+    summary = inspect_experiment(LoadedScans(entries, source="test", metadata_document=document))
+    assert len(summary.conflicts) == 1, summary.conflicts
+    conflict = summary.conflicts[0]
+    assert conflict.index == 26
+    assert "mapping" in conflict.issue.lower()
+    assert 26 in summary.mappings and 26 not in summary.cuts

@@ -302,3 +302,17 @@ def test_normalize_outputs_oversized_summary_line_is_suppressed():
     long = "x" * 250
     outputs = [{"output_type": "stream", "name": "stdout", "text": long + "\n"}]
     assert _normalize_outputs(outputs) == []
+
+
+def test_audit_keeps_the_executed_cell_code_in_full():
+    """The audit trail is the reviewable record of what ran: a 200-character cap
+    hid every call past it (a cell that imported first and called load_data()
+    later looked like it never used the curated verb)."""
+    from peaksMCP.server.jupyter_peaks.core.tools import _summarize_arguments
+
+    long_code = "import os\n" + "x = 1\n" * 200 + "scans = load_data('data_netcdf')\n"
+    summary = _summarize_arguments((), {"code": long_code, "timeout": 120.0})
+    assert summary["code"] == long_code          # full text, not a summary
+    assert len(summary["code"]) > 200
+    # other arguments stay bounded summaries
+    assert summary["timeout"] == "120.0"

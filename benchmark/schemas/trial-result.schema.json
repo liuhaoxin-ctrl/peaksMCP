@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://peaksmcp.local/benchmark/trial-result.schema.json",
+  "title": "peaksMCP benchmark trial result",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run",
+    "run_id",
+    "condition",
+    "validity",
+    "strict_success",
+    "score",
+    "checks"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 2},
+    "run": {"type": "string"},
+    "run_id": {"type": "string", "minLength": 1},
+    "campaign_id": {"type": ["string", "null"]},
+    "replicate": {"type": ["integer", "null"], "minimum": 1},
+    "condition": {"enum": ["p1", "p2", null]},
+    "strict_success": {"type": "boolean"},
+    "validity": {
+      "type": "object",
+      "required": ["valid", "checks"],
+      "properties": {
+        "valid": {"type": "boolean"},
+        "checks": {"type": "array", "items": {"type": "object"}}
+      }
+    },
+    "score": {
+      "type": "object",
+      "required": ["observed", "conservative", "evidence_coverage", "dimensions"],
+      "properties": {
+        "observed": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "conservative": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "evidence_coverage": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "dimensions": {"type": "object"}
+      }
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["check", "passed", "detail", "subsystem"],
+        "properties": {
+          "check": {"type": "string"},
+          "passed": {"type": ["boolean", "null"]},
+          "detail": {"type": "string"},
+          "subsystem": {"type": "string"},
+          "evidence": {"type": "array"}
+        }
+      }
+    }
+  }
+}

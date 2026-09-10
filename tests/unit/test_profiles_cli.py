@@ -38,6 +38,9 @@ def test_restart_without_component_restarts_whole_stack(monkeypatch, capsys):
         raise ProcessLookupError()  # process already gone -> kill loop exits
 
     monkeypatch.setattr(cli.os, "kill", fake_kill)
+    # The recorded pid must still look like a peaksMCP host: a recycled pid is
+    # deliberately left alone (see the pid-reuse test below).
+    monkeypatch.setattr(cli, "_pid_is_host", lambda _pid: True)
 
     def fake_read_runfile():
         return {"pid": 4242, "stale": False}
@@ -251,6 +254,53 @@ def test_dash_reuses_live_host_for_same_requested_notebook(monkeypatch):
     )
 
     assert cli._ensure_host(args) is current
+
+
+def test_host_workspace_match_includes_jupyter_root(tmp_path):
+    from types import SimpleNamespace
+
+    from peaksMCP import cli
+
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    current = {
+        "profile": "default",
+        "root_dir": str(first),
+        "notebook_path": "work.ipynb",
+    }
+    matching = SimpleNamespace(
+        profile="default", root_dir=str(first), notebook="work.ipynb"
+    )
+    different = SimpleNamespace(
+        profile="default", root_dir=str(second), notebook="work.ipynb"
+    )
+
+    assert cli._host_matches_request(matching, current) is True
+    assert cli._host_matches_request(different, current) is False
+
+
+def test_absolute_notebook_infers_its_parent_as_jupyter_root(tmp_path):
+    from peaksMCP import cli
+
+    notebook = tmp_path / "trial" / "work.ipynb"
+    notebook.parent.mkdir()
+    notebook.touch()
+
+    root, relative = cli._normalize_workspace_request(None, str(notebook))
+
+    assert root == notebook.parent
+    assert relative == "work.ipynb"
+
+
+def test_notebook_cannot_escape_explicit_jupyter_root(tmp_path):
+    from peaksMCP import cli
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    with pytest.raises(ValueError, match="outside Jupyter root"):
+        cli._normalize_workspace_request(str(root), "../other.ipynb")
 
 
 def test_dash_replaces_live_host_for_requested_profile(monkeypatch, tmp_path):
@@ -560,3 +610,37 @@ def test_launch_readiness_respects_autostart(
         }
     )
     assert ready is expected
+
+
+def test_terminate_supervisor_raises_a_catchable_error_not_system_exit(monkeypatch):
+    """Teardown failures must be catchable library errors.
+
+    The benchmark runner restores the managed host inside a ``finally``; a
+    ``SystemExit`` there escaped ``except Exception`` and decided the whole
+    campaign's exit status even though every trial had been graded.
+    """
+    from peaksMCP import cli
+
+    ticks = iter(range(0, 10_000))
+    monkeypatch.setattr(cli, "_pid_is_host", lambda _pid: True)
+    # An advancing clock: a frozen one would keep the deadline in the future.
+    monkeypatch.setattr(cli.time, "monotonic", lambda: float(next(ticks)))
+    monkeypatch.setattr(cli.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(cli.os, "kill", lambda _pid, _signal: None)
+
+    with pytest.raises(cli.HostTeardownError):
+        cli._terminate_supervisor(4242)
+    assert not issubclass(cli.HostTeardownError, SystemExit)
+    assert issubclass(cli.HostTeardownError, RuntimeError)
+
+
+def test_terminate_supervisor_ignores_a_reused_pid(monkeypatch):
+    """A pid that is no longer a peaksMCP host counts as gone, never a hang."""
+    from peaksMCP import cli
+
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(cli, "_pid_is_host", lambda _pid: False)
+    monkeypatch.setattr(cli.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+
+    cli._terminate_supervisor(999)  # returns immediately
+    assert killed == []

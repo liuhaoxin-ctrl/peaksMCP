@@ -1,5 +1,13 @@
 """Real-data E2E: a human at JupyterLab driving peaksMCP over its five tools.
 
+Scope: this file is the **product-path acceptance** for the MCP/Jupyter/Comm
+chain — real data, real browser, real kernel, real consent cards, all driven
+through the model-facing tools exactly as an agent would.  It is *not* the
+autonomous-agent benchmark: whether a model can interpret a task prompt,
+schedule tools and recover from its own mistakes is measured by
+``benchmark/run_campaign.py`` (campaign trials with P1/P2 conditions), which
+needs a model provider and therefore never runs in CI.
+
 The suite replaces the earlier mechanism-only live tests.  It simulates the
 real usage story end to end on the machine that holds the beamtime data:
 
@@ -37,6 +45,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import json
 import os
 import re
 import shutil
@@ -56,6 +66,14 @@ RAW_PXT_DIR = Path(
     or "/Users/haoxin/Documents/实验数据/BP260623/data"
 )
 _CONVERTED_HINT = Path("/Users/haoxin/Documents/实验数据/BP260623/data_netcdf")
+
+#: Experiment metadata document.  Overridable together with the raw folder so
+#: pointing PEAKSMCP_REALDATA_PXT at another dataset never silently pairs that
+#: data with BP260623 metadata (the identity check below enforces it).
+METADATA_JSON = Path(
+    os.environ.get("PEAKSMCP_REALDATA_METADATA")
+    or (_CONVERTED_HINT / "experiment_metadata.json")
+)
 
 #: The three scans the story needs: gold reference, one cut, one mapping cube.
 GOLD_STEM = "BP_0020"
@@ -107,14 +125,30 @@ class McpSession:
         self._ready = threading.Event()
         self._stack: contextlib.AsyncExitStack | None = None
         self._client = None
-        self._thread = threading.Thread(target=self._run, name="peaksmcp-e2e-session", daemon=True)
+        self._error: BaseException | None = None
+        self._start(what="open")
+
+    def _start(self, *, what: str) -> None:
+        """Start the session thread and fail with the real cause, never a bare timeout."""
+        self._error = None
+        self._ready = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run, name="peaksmcp-e2e-session", daemon=True
+        )
         self._thread.start()
         if not self._ready.wait(60):
-            raise RuntimeError("MCP session did not open within 60s")
+            raise RuntimeError(f"MCP session did not {what} within 60s")
+        if self._error is not None:
+            raise RuntimeError(f"MCP session {what} failed: {self._error!r}") from self._error
 
     def _run(self) -> None:
         asyncio.set_event_loop(self.loop)
-        self.loop.run_until_complete(self._open())
+        try:
+            self.loop.run_until_complete(self._open())
+        except BaseException as exc:  # noqa: BLE001 - reported to the caller
+            self._error = exc
+            self._ready.set()  # a failed open must not wait out the 60s budget
+            return
         self.loop.run_forever()
 
     async def _open(self) -> None:
@@ -139,22 +173,25 @@ class McpSession:
         """Open a fresh session after the in-kernel MCP server restarted."""
         self.close()
         self.loop = asyncio.new_event_loop()
-        self._ready = threading.Event()
-        self._thread = threading.Thread(
-            target=self._run, name="peaksmcp-e2e-session", daemon=True
-        )
-        self._thread.start()
-        if not self._ready.wait(60):
-            raise RuntimeError("MCP session did not reopen within 60s")
+        self._start(what="reopen")
 
     def close(self) -> None:
+        """Close the client, join the thread and close the loop (no races)."""
+
         async def _shutdown() -> None:
             if self._stack is not None:
                 await self._stack.aclose()
 
         with contextlib.suppress(Exception):
             asyncio.run_coroutine_threadsafe(_shutdown(), self.loop).result(20)
-        self.loop.call_soon_threadsafe(self.loop.stop)
+        with contextlib.suppress(RuntimeError):
+            self.loop.call_soon_threadsafe(self.loop.stop)
+        thread = getattr(self, "_thread", None)
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=10)
+        with contextlib.suppress(Exception):
+            if not self.loop.is_running() and not self.loop.is_closed():
+                self.loop.close()
 
 
 class Live:
@@ -239,11 +276,34 @@ class Live:
         return asyncio.run_coroutine_threadsafe(_check(), self.session.loop).result(timeout=60)
 
 
+def _stem_index(stem: str) -> int:
+    """Experiment index encoded in a scan stem (``BP_0015`` -> 15)."""
+    return int(stem.rsplit("_", 1)[-1])
+
+
+def _raw_fingerprint() -> dict[str, tuple[int, str]]:
+    """Size + sha256 per raw input file we actually read.
+
+    A filename listing cannot detect an edited source file, so the integrity
+    check hashes the inputs themselves (the suite is read-only towards them).
+    """
+    wanted = [f"{stem}.pxt" for stem in (GOLD_STEM, CUT_STEM, MAPPING_STEM)]
+    wanted.append("datasheet.csv")
+    fingerprint: dict[str, tuple[int, str]] = {}
+    for name in wanted:
+        path = RAW_PXT_DIR / name
+        if path.is_file():
+            fingerprint[name] = (path.stat().st_size, hashlib.sha256(path.read_bytes()).hexdigest())
+    return fingerprint
+
+
 def _prepare_home(home: Path) -> None:
     """Copy the three raw scans and convert them into the sibling layout.
 
     Mirrors the real dataset (raw in ``data/``, converted NetCDF in
-    ``data_netcdf/``) without ever writing inside the source folder.
+    ``data_netcdf/``) without ever writing inside the source folder.  The
+    metadata document must describe the data it is paired with, so its record
+    indexes are checked against the stems before anything is copied.
     """
     data = home / "data"
     converted = home / "data_netcdf"
@@ -253,9 +313,33 @@ def _prepare_home(home: Path) -> None:
         shutil.copy2(RAW_PXT_DIR / f"{stem}.pxt", data / f"{stem}.pxt")
     if (RAW_PXT_DIR / "datasheet.csv").is_file():
         shutil.copy2(RAW_PXT_DIR / "datasheet.csv", data / "datasheet.csv")
-    metadata = _CONVERTED_HINT / "experiment_metadata.json"
-    if metadata.is_file():
-        shutil.copy2(metadata, converted / "experiment_metadata.json")
+    if METADATA_JSON.is_file():
+        document = json.loads(METADATA_JSON.read_text(encoding="utf-8"))
+        records = document.get("records") or {}
+        known = {str(key) for key in records}
+        # Identity first: the document embeds the hash of the datasheet it was
+        # translated from, so pairing data with another experiment's metadata is
+        # detected instead of silently mixing two datasets.
+        datasheet = RAW_PXT_DIR / "datasheet.csv"
+        source_hash = document.get("source_sha256")
+        if datasheet.is_file() and source_hash:
+            observed = hashlib.sha256(datasheet.read_bytes()).hexdigest()
+            assert observed == str(source_hash), (
+                f"{METADATA_JSON} was translated from a different datasheet "
+                f"(source_sha256={source_hash}, observed={observed}); set "
+                "PEAKSMCP_REALDATA_METADATA to the document of this dataset"
+            )
+        # Coverage: the workflow's decisions come from the gold and cut records.
+        missing = [
+            str(_stem_index(stem))
+            for stem in (GOLD_STEM, CUT_STEM)
+            if str(_stem_index(stem)) not in known
+        ]
+        assert not missing, (
+            f"{METADATA_JSON} has no record for index(es) {missing}; set "
+            "PEAKSMCP_REALDATA_METADATA to the matching document"
+        )
+        shutil.copy2(METADATA_JSON, converted / "experiment_metadata.json")
 
     from peaksMCP.pxt_utils.converter import convert_pxt
 
@@ -277,7 +361,8 @@ def live(tmp_path_factory):
     home = tmp_path_factory.mktemp("peaksmcp_realdata_home")
     saved_home = os.environ.get("PEAKSMCP_HOME")
     saved_cwd = os.getcwd()
-    source_before = sorted(p.name for p in RAW_PXT_DIR.iterdir())
+    source_before = _raw_fingerprint()
+    source_listing = sorted(p.name for p in RAW_PXT_DIR.iterdir())
     _prepare_home(home)
     os.environ["PEAKSMCP_HOME"] = str(home)
     os.chdir(str(home))
@@ -354,31 +439,89 @@ def live(tmp_path_factory):
         for facade in (API_LOAD_DATA, API_INSPECT, API_VALIDATION, API_SLICE):
             stack.prove(facade)
 
-        yield stack, source_before
+        yield stack, (source_before, source_listing)
     finally:
-        if session is not None:
-            session.close()
-        if page is not None:
-            with contextlib.suppress(Exception):
-                page.close()
-        if browser is not None:
-            with contextlib.suppress(Exception):
-                browser.close()
-        if playwright is not None:
-            with contextlib.suppress(Exception):
-                playwright.stop()
+        # Process-global state first: a failure below must not leak the
+        # temporary CWD/HOME into whatever runs next.
         with contextlib.suppress(Exception):
-            supervisor.stop()
-        uninstall_kernel(kernel_name)
-        os.chdir(saved_cwd)
+            os.chdir(saved_cwd)
         if saved_home is None:
             os.environ.pop("PEAKSMCP_HOME", None)
         else:
             os.environ["PEAKSMCP_HOME"] = saved_home
+        with contextlib.suppress(Exception):
+            if session is not None:
+                session.close()
+        with contextlib.suppress(Exception):
+            if page is not None:
+                page.close()
+        with contextlib.suppress(Exception):
+            if browser is not None:
+                browser.close()
+        with contextlib.suppress(Exception):
+            if playwright is not None:
+                playwright.stop()
+        with contextlib.suppress(Exception):
+            supervisor.stop()
+        with contextlib.suppress(Exception):
+            uninstall_kernel(kernel_name)
+        # Source integrity is verified unconditionally, not inside one test:
+        # an edited or added file in the raw folder must always fail loudly.
+        after = _raw_fingerprint()
+        assert after == source_before, (
+            "raw beamtime inputs were modified by this suite: "
+            f"{sorted(set(source_before) ^ set(after)) or [n for n in after if source_before.get(n) != after[n]]}"
+        )
+        assert not list(RAW_PXT_DIR.glob("*.nc")), "conversion must never write into the raw folder"
 
 
-def test_cut_preprocessing_on_real_data(live):
-    """Human story 1: index -> gold fit -> Fermi leveling -> k-space cut + figure."""
+def _answer_save_card(
+    stack: Live, *, approve: bool, timeout: float = 120.0, pending=None
+) -> int:
+    """Answer staged-save consent cards in the real notebook frontend.
+
+    Mirrors the benchmark approval harness: look at every visible JupyterLab
+    dialog, act only on the one carrying the save-card marker, and keep
+    answering until the pending tool call settles (a staged save blocks on the
+    card, so the call runs on a worker thread while this loop clicks).
+    """
+    page = stack.page
+    selector = "button.jp-mod-accept" if approve else "button.jp-mod-reject"
+    deadline = time.monotonic() + timeout
+    clicks = 0
+    while time.monotonic() < deadline:
+        if pending is not None and pending.done():
+            return clicks
+        dialogs = page.locator(".jp-Dialog")
+        for index in range(dialogs.count()):
+            dialog = dialogs.nth(index)
+            if not dialog.is_visible():
+                continue
+            if not dialog.locator('[data-peaks-mcp-dialog="save-consent"]').count():
+                continue  # not a save card: leave other dialogs alone
+            button = dialog.locator(selector)
+            if button.count():
+                button.first.click()
+                clicks += 1
+                page.wait_for_timeout(300)
+        time.sleep(0.2)
+    if pending is not None and not pending.done():
+        raise AssertionError(f"the save consent card was never answered ({clicks} click(s))")
+    return clicks
+
+
+def test_acceptance_realdata_workflow(live):
+    """The acceptance scenario: an explicitly sequential, discovery-driven chain.
+
+    One test owns the whole ordered story (classification → gold fit → Fermi
+    leveling → angular zeroing → k-space cut → figure → mapping cube → slices →
+    console/MCP restart → Comm reconnect) because later steps reuse variables
+    the earlier steps created: splitting it into independent tests would either
+    duplicate the expensive gold fit or hide the dependency behind collection
+    order.  Everything the chain processes is *derived* from
+    ``inspect_experiment``\'s classification and the experiment metadata, never
+    hard-coded, so a broken classifier or offset source fails here.
+    """
     stack, _ = live
 
     index_cell = stack.cell(
@@ -390,20 +533,39 @@ def test_cut_preprocessing_on_real_data(live):
     assert "load_data:" in str(index_cell.get("stdout_head"))
 
     # The classification is the agent's entry point into the chain: it must be
-    # readable from the run_cell reply, never swallowed as a text/plain repr.
+    # readable from the run_cell reply, must be exactly right for this frozen
+    # dataset, and must drive every later choice (stems and theta offset).
     classify_cell = stack.cell(
         "classify the experiment",
-        "summary = inspect_experiment(scans)",
+        "summary = inspect_experiment(scans)\n"
+        # Exact classification for the frozen dataset: the metadata document
+        # classifies every record it lists, and the fixture's mapping (no
+        # record) is classified from its shape.  The conflict path needs a 3-D
+        # record labelled "sweep", which this subset does not load - it is
+        # unit-tested instead.
+        "assert summary.gold == [20], summary.gold\n"
+        "assert len(summary.cuts) == 14 and 15 in summary.cuts, summary.cuts\n"
+        "assert 1 in summary.mappings, summary.mappings\n"
+        "assert summary.conflicts == [], summary.conflicts\n"
+        "present = {int(s[-4:]) for s in scans.stems}\n"
+        "gold_index = next(i for i in summary.gold if i in present)\n"
+        "cut_index = next(i for i in summary.cuts if i in present)\n"
+        "mapping_index = next(i for i in summary.mappings if i in present)\n"
+        "gold_stem = f'BP_{gold_index:04d}'\n"
+        "cut_stem = f'BP_{cut_index:04d}'\n"
+        "mapping_stem = f'BP_{mapping_index:04d}'\n"
+        "theta_offset = next(r.theta_offset_deg for r in summary.records if r.index == cut_index)\n"
+        "assert theta_offset, 'the angular offset must come from the metadata'",
     )
     classification = str(classify_cell.get("stdout_head"))
     assert "inspect_experiment:" in classification, classify_cell
-    assert "gold=[" in classification and "cuts=" in classification, classify_cell
+    assert "gold=[20]" in classification and "cuts=14" in classification, classify_cell
 
     stack.cell(
-        "bind the three scans",
-        f"gold = scans['{GOLD_STEM}']\n"
-        f"cut = scans['{CUT_STEM}']\n"
-        f"mp = scans['{MAPPING_STEM}']",
+        "bind the three scans chosen by the classification",
+        "gold = scans[gold_stem]\n"
+        "cut = scans[cut_stem]\n"
+        "mp = scans[mapping_stem]",
     )
 
     stack.cell(
@@ -418,17 +580,22 @@ def test_cut_preprocessing_on_real_data(live):
     assert "c0" in ef_preview and "2.6" in ef_preview, ef_preview
 
     stack.cell(
-        "flatten EF and zero the high-symmetry angle",
+        "flatten EF and zero the high-symmetry angle from metadata",
         "cut.metadata.set_EF_correction(ef)\n"
-        f"shifted = cut.assign_coords(theta_par=cut.theta_par - {THETA_OFFSET_DEG})",
+        "shifted = cut.assign_coords(theta_par=cut.theta_par - theta_offset)",
         api_ids=[API_SET_EF],
     )
 
     stack.cell(
-        "convert the cut to k-space",
+        "convert the cut to k-space and verify the alignment",
         "kcut = shifted.k_convert(quiet=True)\n"
         "assert kcut.dims == ('eV', 'kx'), kcut.dims\n"
-        "assert float(kcut.kx.min()) < 0.0 < float(kcut.kx.max()), kcut.kx.values[[0, -1]]",
+        # Fermi leveling: the binding-energy axis crosses E_F = 0.
+        "assert float(kcut.eV.min()) <= 0.0 <= float(kcut.eV.max()), float(kcut.eV.min())\n"
+        # Angular zeroing: kx is odd about the high-symmetry angle, so the axis
+        # comes out symmetric about 0 (measured 0.021 on this reference data).
+        "assert abs(float(kcut.kx.min()) + float(kcut.kx.max())) <= 0.05, "
+        "(float(kcut.kx.min()), float(kcut.kx.max()))",
         api_ids=[API_K_CONVERT],
     )
     kcut_preview = stack.variable("kcut")
@@ -444,22 +611,54 @@ def test_cut_preprocessing_on_real_data(live):
     )
     assert stack.figure_markers(figure_cell) >= 1, figure_cell.get("output")
 
+    # --- persistence is part of the product path (finding: it was never exercised) ---
+    import concurrent.futures
+    import hashlib
 
-def test_mapping_preprocessing_and_binding_energy_slices(live):
-    """Human story 2: full-cube k-conversion, then the mapping's eV slices."""
-    stack, _ = live
+    saved_path = Path(os.environ["PEAKSMCP_HOME"]) / "saved" / f"{CUT_STEM}_processed.nc"
+    saved_path.parent.mkdir(parents=True, exist_ok=True)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        # save_with_consent stages the bytes and blocks on the card, so the
+        # tool call runs on a worker thread while the page answers it.
+        pending = executor.submit(
+            stack.session.call,
+            "save_with_consent",
+            {"variable_name": "kcut", "path": str(saved_path)},
+        )
+        _answer_save_card(stack, approve=True, pending=pending)
+        receipt = pending.result(timeout=240)
+    assert receipt.get("status") == "saved", receipt
+    assert Path(str(receipt.get("path"))) == saved_path, receipt
+    assert saved_path.is_file(), receipt
+    digest = hashlib.sha256(saved_path.read_bytes()).hexdigest()
+    assert receipt.get("sha256") == digest, (receipt.get("sha256"), digest)
+
+    denied_path = Path(os.environ["PEAKSMCP_HOME"]) / "denied" / f"{CUT_STEM}_processed.nc"
+    denied_path.parent.mkdir(parents=True, exist_ok=True)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        pending = executor.submit(
+            stack.session.call,
+            "save_with_consent",
+            {"variable_name": "kcut", "path": str(denied_path)},
+        )
+        _answer_save_card(stack, approve=False, pending=pending)
+        denied = pending.result(timeout=240)
+    assert denied.get("status") == "denied", denied
+    assert not denied_path.exists(), "a denied save must write nothing"
 
     stack.cell(
         "convert the full mapping cube",
-        "assert 'ef' in dir(), 'run the cut scenario first: the gold calibration is shared'\n"
         "mp.metadata.set_EF_correction(ef)\n"
         "kmap = mp.k_convert(quiet=True)\n"
         "assert {'eV', 'kx', 'ky'} <= set(kmap.dims), kmap.dims\n"
-        "assert kmap.sizes['kx'] > 100 and kmap.sizes['ky'] > 100, kmap.sizes",
+        "assert kmap.sizes['kx'] > 100 and kmap.sizes['ky'] > 100, kmap.sizes\n"
+        # The mapping keeps its own geometry (no angular shift is applied), so
+        # only the converted ranges are asserted here.
+        "assert float(kmap.kx.max()) > 0.1 and float(kmap.ky.max()) > 0.1, "
+        "(float(kmap.kx.max()), float(kmap.ky.max()))",
         api_ids=[API_SET_EF, API_K_CONVERT],
         timeout=300.0,
     )
-
     kmap_preview = stack.variable("kmap")
     assert set(kmap_preview["dims"]) == {"eV", "kx", "ky"}, kmap_preview
 
@@ -481,25 +680,11 @@ def test_mapping_preprocessing_and_binding_energy_slices(live):
         "assert float(kmap.eV.min()) < -0.5 < float(kmap.eV.max()), float(kmap.eV.min())",
     )
 
-
-def test_dashboard_reflects_the_live_session(live):
-    """Human story 3: operator console state, a console-driven MCP restart, Comm."""
-    stack, source_before = live
-
+    # --- the operator console drives the running session ---
     status = stack.status()
     assert status["aggregate"] in {"ready", "degraded"}
-    assert status["components"]["jupyter"]["state"] == "ready"
-    assert status["components"]["mcp"]["state"] == "ready"
     assert status["components"]["comm"]["state"] == "ready"
     assert status["notebook_open_url"]
-
-    health = stack.health()
-    assert health["ok"], health
-    assert set(health["tools"]) == FIVE_TOOLS
-    assert health["missing_tools"] == [] and health["unexpected_tools"] == []
-
-    unauthenticated = stack.dashboard("/api/status", token=None)
-    assert unauthenticated.status_code in {401, 403}, unauthenticated.status_code
 
     restarted = stack.dashboard("/api/restart/mcp", method="POST")
     assert restarted.status_code == 200, restarted.text
@@ -512,7 +697,6 @@ def test_dashboard_reflects_the_live_session(live):
     assert set(after["tools"]) == FIVE_TOOLS
     assert (after.get("status") or {}).get("comm_connected") is True
 
-    # The MCP restart must not touch the analysis state the human built up.
     stack.cell(
         "analysis state survives the console MCP restart",
         "assert {'kcut', 'kmap'} <= set(dir()), sorted(n for n in dir() if not n.startswith('_'))[:12]",
@@ -528,6 +712,24 @@ def test_dashboard_reflects_the_live_session(live):
         time.sleep(1)
     assert stack.status()["components"]["comm"]["state"] == "ready"
 
-    # The raw beamtime folder was only read: no conversion output landed there.
-    assert sorted(p.name for p in RAW_PXT_DIR.iterdir()) == source_before
-    assert not list(RAW_PXT_DIR.glob("*.nc")), "conversion must never write into the raw folder"
+
+def test_dashboard_reports_components_and_auth(live):
+    """Order-independent console smoke: component state, tool surface, auth gate.
+
+    Deliberately touches no notebook variable, so it can run alone, first, or
+    under test distribution without the acceptance scenario having executed.
+    """
+    stack, _ = live
+
+    status = stack.status()
+    assert status["components"]["jupyter"]["state"] == "ready"
+    assert status["components"]["mcp"]["state"] == "ready"
+    assert status["notebook_open_url"]
+
+    health = stack.health()
+    assert health["ok"], health
+    assert set(health["tools"]) == FIVE_TOOLS
+    assert health["missing_tools"] == [] and health["unexpected_tools"] == []
+
+    unauthenticated = stack.dashboard("/api/status", token=None)
+    assert unauthenticated.status_code in {401, 403}, unauthenticated.status_code

@@ -27,6 +27,11 @@ Uvicorn has bound successfully, authenticates operator API access with a separat
 operator-console token, and rejects non-loopback binding unless a profile explicitly sets
 `dashboard.allow_remote: true`.
 
+The supervisor accepts an explicit Jupyter root directory and records it in the runfile. Managed
+benchmark trials use the trial `workspace/` as that root and address the notebook as
+`work.ipynb`; host reuse compares both fields so two trials with the same notebook filename never
+share a kernel workspace accidentally.
+
 MCP restarts are verified with a per-MCP instance ID, and kernel restarts with a
 per-kernel instance ID. With a live frontend
 (``require_comm``) recovery reports READY only after that ID changes and the

@@ -75,8 +75,35 @@ class JupyterPeaksMCPServer:
         self.save_gateway = gateway
 
     def _approve_save_card(self, preview: dict) -> bool | None:
-        """Route the save card to the frontend; ``None`` = nobody was reachable."""
-        approved = self.consent.request("save_ticket", dict(preview))
+        """Route the staged-save preview to the frontend SAVE CARD.
+
+        The card is a dedicated frontend operation (``save_ticket``) that renders
+        the staged bytes (path, kind, size, sha256, structure).  Routing it
+        through ``ConsentManager.request`` wrapped it in the generic
+        ``request_consent`` operation, so the card branch was unreachable and the
+        user was asked by a dialog that shows no product information at all -
+        while the gateway waited for an approval that could never arrive.
+
+        Returns ``True`` (approved), ``False`` (refused) or ``None`` (nobody
+        answered / no channel), matching the gateway's tri-state contract.
+        """
+        details = dict(preview)
+        approved: bool | None
+        if self.consent.callback is not None:  # tests / embedded hosts
+            answer = self.consent.callback("save_ticket", details)
+            approved = None if answer is None else bool(answer)
+        else:
+            bridge = self.consent.bridge
+            if bridge is None or not getattr(bridge, "connected", False):
+                approved = None
+            else:
+                try:
+                    response = bridge.request("save_ticket", {"details": details}, timeout=120)
+                    approved = bool(response.get("approved"))
+                except TimeoutError:
+                    approved = None  # nobody answered: blocked, not a refusal
+                except Exception:  # noqa: BLE001 - the frontend reported an error
+                    approved = False
         items = preview.get("items") or []
         first = items[0] if items else {}
         self.audit.write(

@@ -161,6 +161,7 @@ async function showConsentDialog(operation, details, targetCell) {
  */
 async function showSaveCard(payload) {
     const body = document.createElement('div');
+    body.dataset.peaksMcpDialog = 'save-consent';
     body.style.maxWidth = '760px';
     body.style.fontSize = '13px';
     const header = document.createElement('div');

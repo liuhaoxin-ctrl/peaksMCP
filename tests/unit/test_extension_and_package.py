@@ -12,7 +12,10 @@ def test_prebuilt_extension_has_manifest_and_remote_entry():
     source = extension_source()
     manifest = json.loads((source / "package.json").read_text())
     assert manifest["name"] == "peaksmcp-jupyterlab"
-    assert any((source / "static").glob("remoteEntry.*.js"))
+    remote_entries = list((source / "static").glob("remoteEntry.*.js"))
+    assert remote_entries
+    bundles = list((source / "static").glob("*.js"))
+    assert any("save-consent" in path.read_text(encoding="utf-8") for path in bundles)
 
 
 def test_xarray_dependency_includes_public_datatree_api():
