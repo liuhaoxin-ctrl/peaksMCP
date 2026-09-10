@@ -81,6 +81,15 @@ TIER_MIXED = "mixed"
 #: ``plot_batch``.
 OVERRIDE_MIN_SCORE = 900
 
+#: Stage-1 acceptance for an alias *embedded* in a natural-language sentence
+#: ("帮我加载数据", "which scans are cuts"): the model rarely types the alias
+#: alone, and without this band the override tier was unreachable unless the
+#: agent guessed the exact alias - i.e. the black box only existed when it was
+#: not needed.  Aliases shorter than :data:`OVERRIDE_ALIAS_CONTAINED_MIN_LEN`
+#: are ignored so short generic words cannot hijack the tier.
+OVERRIDE_ALIAS_CONTAINED_SCORE = 720
+OVERRIDE_ALIAS_CONTAINED_MIN_LEN = 4
+
 #: Full-tree fingerprint checks are expensive (an os.walk over every Peaks +
 #: peaksMCP source file).  ``ApiIndex.is_stale()`` runs on every search and
 #: write, so the fingerprint result is cached for this window: source edits are
@@ -623,6 +632,34 @@ def build_index() -> ApiIndex:
     return ApiIndex(entries=entries, peaks_version=getattr(peaks, "__version__", "?"), fingerprint=fingerprint)
 
 
+def _alias_contained(query: str, query_tokens: set[str], aliases: list[str]) -> bool:
+    """True when one of ``aliases`` sits inside a longer natural-language query.
+
+    Both phrasings matter: the alias may appear verbatim ("帮我加载数据") or with
+    the CJK/latin boundary moved, e.g. the alias ``哪些是cut`` against the query
+    "哪些是 cut" — so the check accepts a raw substring *or* full token coverage
+    of the alias.  Aliases shorter than the minimum length are skipped: a short
+    word inside a sentence is not intent evidence, and the override tier must
+    not hijack generic queries.
+    """
+    for alias in aliases:
+        if len(alias) < OVERRIDE_ALIAS_CONTAINED_MIN_LEN:
+            continue
+        if alias in query:
+            return True
+        # CJK aliases are matched by bigram, not by the raw run: the alias
+        # ``哪些是cut`` must match "…里哪些是 cut", where the run around it is
+        # longer.  ASCII words must match whole (they carry the intent).
+        required = {
+            token
+            for token in _tokens(alias)
+            if token.isascii() or len(token) == 2
+        }
+        if required and required <= query_tokens:
+            return True
+    return False
+
+
 def _rank_entries(
     entries: list[dict[str, Any]],
     query: str,
@@ -634,8 +671,10 @@ def _rank_entries(
     """Score entries for one query with deterministic lexical ranking.
 
     Scores mirror the search contract: exact name 1000, exact alias 900,
-    name-prefix 800, name-substring 700, alias-substring 650, then the
-    token-overlap fallback. ``tier`` restricts the candidate set to ``all`` /
+    name-prefix 800, alias-contained-in-the-sentence 720 (the natural-language
+    band), name-substring 700, alias-substring 650, then the token-overlap
+    fallback.  Each row carries its match kind so the override tier can accept
+    the alias band without lowering the name thresholds. ``tier`` restricts the candidate set to ``all`` /
     :data:`TIER_OVERRIDE` / :data:`TIER_NATIVE`.
 
     Exposure gating: ``advanced`` entries (the curated low-level layer) are
@@ -644,7 +683,7 @@ def _rank_entries(
     them by default.
     """
     qtokens = _tokens(query)
-    scored: list[tuple[int, str, dict[str, Any]]] = []
+    scored: list[tuple[int, str, dict[str, Any], str]] = []
     for item in entries:
         if scope != "all" and item["scope"] != scope:
             continue
@@ -658,16 +697,19 @@ def _rank_entries(
         docstring = str(item.get("docstring", "")).lower()
         aliases = [str(alias).lower() for alias in item.get("aliases", [])]
         if name == query:
-            score = 1000
+            score, match = 1000, "name_exact"
         elif query in aliases:
-            score = 900
+            score, match = 900, "alias_exact"
         elif name.startswith(query):
-            score = 800
+            score, match = 800, "name_prefix"
         elif query in name:
-            score = 700
+            score, match = 700, "name_substring"
+        elif _alias_contained(query, qtokens, aliases):
+            score, match = OVERRIDE_ALIAS_CONTAINED_SCORE, "alias_contained"
         elif any(query in alias or alias in query for alias in aliases):
-            score = 650
+            score, match = 650, "alias_partial"
         else:
+            match = "tokens"
             if item.get("kind") == "symbol":
                 # Non-callable re-exported modules (peaks.xr, peaks.netcdf, ...)
                 # are informational only; they must not hijack task queries via
@@ -694,7 +736,7 @@ def _rank_entries(
                 and score < 900
             ):
                 continue
-            scored.append((score, str(item["id"]), item))
+            scored.append((score, str(item["id"]), item, match))
     scored.sort(key=lambda row: (-row[0], row[1]))
     return scored
 
@@ -767,12 +809,12 @@ def _compact_entry(item: dict[str, Any], score: int | None = None) -> dict[str, 
 
 
 def _compact_rows(
-    rows: list[tuple[int, str, dict[str, Any]]], limit: int
+    rows: list[tuple[int, str, dict[str, Any], str]], limit: int
 ) -> list[dict[str, Any]]:
     """Deduplicate ranked rows by (module, name), keep score, cap to limit."""
     seen: set[tuple[str, str]] = set()
     output: list[dict[str, Any]] = []
-    for score, _, item in rows:
+    for score, _, item, _match in rows:
         key = (str(item.get("module", "")), str(item.get("name", "")))
         if key in seen:
             continue
@@ -870,7 +912,10 @@ def search_index_tiered(
     override_rows = _rank_entries(
         entries, query, scope, TIER_OVERRIDE, include_advanced=include_advanced
     )
-    if override_rows and override_rows[0][0] >= OVERRIDE_MIN_SCORE:
+    if override_rows and (
+        override_rows[0][0] >= OVERRIDE_MIN_SCORE
+        or override_rows[0][3] == "alias_contained"
+    ):
         return TIER_OVERRIDE, _compact_rows(override_rows, limit)
     return TIER_MIXED, _compact_rows(
         _rank_entries(entries, query, scope, "all", include_advanced=include_advanced),

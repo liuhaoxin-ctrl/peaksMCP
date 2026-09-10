@@ -72,6 +72,34 @@ contract wrote `inspect_experiment(scans=...)` and got a `TypeError`.
   complete (no undocumented parameters) and its required set must equal the
   signature's.
 
+### Fixed: the override tier is reachable from natural language (P2-I)
+
+`search` only entered the override tier when the query equalled a canonical
+name or an alias *exactly*, so a phrase like "帮我看看这批数据里哪些是 cut"
+scored 650 and fell through to the fuzzy namespace where a native function
+(`extract_cut`) outranked the curated verb: the black box only existed when the
+agent already knew its name.
+
+- `discovery/index.py`: ranking now carries its match kind, and a new band
+  accepts an **alias contained in the sentence** (score 720, alias at least 4
+  characters) — matched by raw substring or, for CJK, by bigram coverage so the
+  alias `哪些是cut` also matches "…里哪些是 cut". Name prefix/substring
+  thresholds and the exact-name/alias scores are unchanged, so short generic
+  fragments (`plot`, `load`) still fall through to the native tier instead of
+  being captured by `plot_batch`/`load_data`.
+- Alias audit: the curated corpora were reviewed end to end (manifest 78 → 67,
+  native catalog 132 → 125; 191 total) — near-duplicate phrasings dropped, and
+  `inspect_experiment` gained classification intents
+  (`classify scans`, `which scans are cuts`, `数据分类`, `扫描类型`,
+  `哪些是cut`, …) so a "which scans are cuts" question lands on the
+  classification owner.
+- `tests/unit/test_discovery.py`: the alias coverage gate now checks **every**
+  curated alias (it used to stop after the first 60, leaving most manifest
+  aliases and the whole native catalog untested) and two new tests lock the
+  natural-language band and the no-hijack guarantee. `tools/benchmark_search.py`
+  improves from Top-1 0.890 / MRR 0.9406 to **Top-1 0.918 / MRR 0.9566**
+  (Top-3 1.000 in both).
+
 ## [Unreleased] — 2026-09-10 (earlier)
 
 ### E2E is now the real-data human-simulation suite (BREAKING for the suite)

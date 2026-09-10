@@ -22,7 +22,7 @@ apis:
   tot:
     aliases: [total intensity, integrated intensity, spectral weight, 总强度, 谱权重]
   extract_cut:
-    aliases: [slice data, crop spectrum, line cut, 切片, 选区, 截取]
+    aliases: [slice data, crop spectrum, line cut, 切片, 截取]
   radial_cuts:
     aliases: [radial cut, angular cut, 径向切片, 径向切割]
   deriv:
@@ -74,7 +74,6 @@ apis:
       - gold fit
       - Fermi level fit
       - 金参考拟合
-      - 金边拟合
       - 金拟合
       - 费米边拟合
       - 费米能级拟合
@@ -101,17 +100,12 @@ apis:
     aliases:
       - interactive viewer
       - interactive plot
-      - GUI viewer
       - data viewer widget
       - 3D viewer
       - 交互式查看器
       - 交互式绘图
       - 三维查看器
-      - interactive
-      - interactive panel
-      - panel viewer
       - 交互面板
-      - 原生交互查看器
     docstring_note: |
       peaks' native Qt interactive viewer for loaded data.
       Use: data.disp() or disp([da, ...], primary_dim=...); import from

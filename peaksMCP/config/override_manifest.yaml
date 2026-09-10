@@ -17,36 +17,22 @@ apis:
     export: peaksMCP.overrides.load_data
     exposure: facade
     aliases:
-    - load data
-    - load dataset
-    - load folder
-    - load directory
-    - load experiment
-    - load files
-    - 加载目录
-    - 加载文件夹
-    - 批量加载
-    - read dataset
-    - open dataset
-    - open data
-    - read data
-    - load a file
-    - load data file
-    - data file
-    - load pxt
-    - read pxt
-    - open pxt
-    - pxt file
-    - load raw scan
-    - open raw scan
-    - 加载
-    - 读取
-    - 加载数据
-    - 读取数据
-    - 打开数据
-    - 加载PXT
-    - 读取PXT
-    - 打开PXT
+    - "load data"
+    - "load dataset"
+    - "load folder"
+    - "load experiment"
+    - "load pxt"
+    - "read pxt"
+    - "open dataset"
+    - "加载数据"
+    - "读取数据"
+    - "打开数据"
+    - "加载PXT"
+    - "读取PXT"
+    - "打开PXT"
+    - "加载目录"
+    - "批量加载"
+    - "加载"
     summary: Load any data for the agent - one file, or an identity index of a folder/list.
     inputs:
       - {name: source, type: 'str | Path | list | tuple', required: true, note: 'one .pxt/.nc file, a folder, or a sequence of paths'}
@@ -64,14 +50,13 @@ apis:
     export: peaksMCP.overrides.convert_experiment
     exposure: facade
     aliases:
-    - convert experiment
-    - convert scans
-    - convert file or folder
-    - convert experiment folder
-    - single or batch conversion
-    - PXT转换
-    - 转换实验
-    - 转换文件或目录
+    - "convert experiment"
+    - "convert scans"
+    - "convert experiment folder"
+    - "single or batch conversion"
+    - "PXT转换"
+    - "转换实验"
+    - "转换文件或目录"
     summary: Thin PXT-to-NetCDF compatibility boundary under human consent (no
       analysis freedom; one verb repeated per file).
     inputs:
@@ -94,14 +79,20 @@ apis:
     export: peaksMCP.overrides.inspect_experiment
     exposure: facade
     aliases:
-    - inspect experiment
-    - experiment summary
-    - list scans and kinds
-    - scan classification
-    - summarize experiment records
-    - 检查实验
-    - 实验概览
-    - 扫描分类
+    - "inspect experiment"
+    - "experiment summary"
+    - "experiment classification"
+    - "scan classification"
+    - "classify scans"
+    - "scan kinds"
+    - "which scans are cuts"
+    - "检查实验"
+    - "实验概览"
+    - "扫描分类"
+    - "数据分类"
+    - "扫描类型"
+    - "哪些是cut"
+    - "有哪些cut"
     summary: 'Classify one experiment: per-record ScanKind, decision lists and
       shape conflicts (the single classification owner).'
     inputs:
@@ -119,19 +110,17 @@ apis:
     export: peaksMCP.overrides.plot_batch
     exposure: facade
     aliases:
-    - publication grid
-    - paper figure grid
-    - publication figure set
-    - 论文配图
-    - 发表级图组
-    - batch plotting
-    - plot batch
-    - batch figures
-    - batch grid
-    - 批量画图
-    - 批量画谱图
-    - 批量绘图
-    - 批量图
+    - "publication grid"
+    - "publication figure set"
+    - "batch plotting"
+    - "batch grid"
+    - "plot batch"
+    - "batch figures"
+    - "论文配图"
+    - "发表级图组"
+    - "批量画图"
+    - "批量绘图"
+    - "批量图"
     summary: Deterministic inline grid of matplotlib figures for a list of DataArrays.
     inputs:
       - {name: data, type: 'sequence of 1D/2D DataArray', required: true}
@@ -157,15 +146,15 @@ apis:
     export: peaksMCP.overrides.plot_validation_pair
     exposure: facade
     aliases:
-    - before after validation
-    - before-after pair
-    - raw vs k-space
-    - raw vs kx
-    - validate cut
-    - cut validation
-    - 处理前后对比
-    - 验证图
-    - 单条验证
+    - "before after validation"
+    - "raw vs k-space"
+    - "raw vs kx"
+    - "cut validation"
+    - "validate cut"
+    - "处理前后对比"
+    - "对比图"
+    - "验证图"
+    - "单条验证"
     summary: 'Inline before/after figure for one cut: raw angle-space vs processed
       k-space.'
     inputs:
@@ -191,16 +180,16 @@ apis:
     export: peaksMCP.overrides.show_mapping_slice
     exposure: facade
     aliases:
-    - mapping slice
-    - slice of mapping
-    - energy map
-    - map slice
-    - constant energy map
-    - 切片图
-    - mapping切片
-    - mapping切片图
-    - 展示mapping
-    - 固定能层图
+    - "mapping slice"
+    - "slice of mapping"
+    - "constant energy map"
+    - "map slice"
+    - "energy map"
+    - "切片图"
+    - "mapping切片"
+    - "mapping切片图"
+    - "固定能层图"
+    - "展示mapping"
     summary: Render one slice of a mapping DataArray and print a one-line report.
     inputs:
       - {name: data, type: 'DataArray with >=2 dims', required: true, note: 'a mapping cube or any multi-dim array'}

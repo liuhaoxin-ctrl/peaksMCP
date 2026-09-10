@@ -29,8 +29,11 @@ def test_at_least_sixty_natural_language_aliases_rank_top_three():
         for query in (config.get("aliases") or [])
     ]
     assert len(cases) >= 60
+    # EVERY curated alias is a promise: the manifest and the native catalog are
+    # both sources, so the whole corpus is checked (the first-60 slice used to
+    # leave most manifest aliases and the whole native catalog untested).
     reciprocal_ranks = []
-    for query, expected in cases[:60]:
+    for query, expected in cases:
         names = [match["name"] for match in index.search(query, limit=3)]
         assert expected in names, (query, expected, names)
         reciprocal_ranks.append(1 / (names.index(expected) + 1))
@@ -273,3 +276,32 @@ def test_stale_index_is_hot_rebuilt_by_search_and_get(monkeypatch, tmp_path):
     # A fresh index is not stale and search works end to end.
     state.api_index = build_index()
     assert search("k_convert")["count"] >= 1
+
+
+def test_natural_language_phrases_reach_the_override_tier():
+    """The black box must be reachable without the agent guessing the alias:
+    an alias embedded in a sentence puts the override row in the override tier
+    (the model rarely types an alias alone)."""
+    index = build_index()
+    cases = (
+        ("帮我看看这批数据里哪些是 cut", "inspect_experiment"),
+        ("帮我加载数据", "load_data"),
+        ("which scans are cuts", "inspect_experiment"),
+        ("load the dataset from disk", "load_data"),
+        ("转换实验数据", "convert_experiment"),
+    )
+    for query, expected in cases:
+        namespace, rows = index.search_tiered(query, limit=3)
+        assert namespace == "override", (query, namespace, [row["name"] for row in rows])
+        assert rows[0]["name"] == expected, (query, [row["name"] for row in rows])
+
+
+def test_generic_name_fragments_do_not_hijack_the_override_tier():
+    """The containment band is alias-only: a short generic word must fall
+    through to the native tier instead of being captured by plot_batch."""
+    index = build_index()
+    namespace, rows = index.search_tiered("plot", limit=3)
+    assert namespace == "mixed"
+    assert rows[0]["name"] != "plot_batch"
+    namespace, rows = index.search_tiered("load", limit=3)
+    assert rows[0]["name"] != "load_data", rows
