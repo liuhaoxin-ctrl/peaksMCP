@@ -794,5 +794,7 @@ def test_inspect_experiment_reports_a_three_d_record_labelled_sweep_as_mapping_c
     assert len(summary.conflicts) == 1, summary.conflicts
     conflict = summary.conflicts[0]
     assert conflict.index == 26
-    assert "mapping" in conflict.issue.lower()
+    issue = conflict.issue.lower()
+    assert "disagree" in issue and "declared format" in issue
+    assert "do not drop" in issue          # the record must not be silently skipped
     assert 26 in summary.mappings and 26 not in summary.cuts

@@ -847,8 +847,9 @@ def check_run(ctx: Ctx) -> list[Result]:
     expected_names = {item["output_name"] for item in ctx.key["expected_outputs"]}
     actual = set(ctx.outputs)
     missing = sorted(expected_names - actual)
+    _missing_note = ("，缺 " + "、".join(missing[:10]) + ("…" if len(missing) > 10 else "")) if missing else ""
     out.append(Result("R1_all_targets_processed", not missing,
-                      f"期望 {len(expected_names)} 个，实到 {len(actual & expected_names)} 个",
+                      f"期望 {len(expected_names)} 个，实到 {len(actual & expected_names)} 个{_missing_note}",
                       evidence=missing[:10]))
 
     fit_calls = sum(len(re.findall(r"fit_gold\s*\(", block)) for block in ctx.unique_code)
@@ -1054,7 +1055,8 @@ def check_save(ctx: Ctx) -> list[Result]:
     out.append(Result(
         "V1_outputs_in_place",
         len(exact) == len(expected_names) and not misplaced and not duplicates,
-        f"exact output targets {len(exact)}/{len(expected_names)}; "
+        f"exact output targets {len(exact)}/{len(expected_names)}"
+        f"{'; missing ' + ', '.join(sorted(expected_names - set(exact))) if expected_names - set(exact) else ''}; "
         f"misplaced {len(misplaced)}; duplicate locations {len(duplicates)}",
         evidence=(misplaced + duplicates)[:10],
     ))
@@ -1268,7 +1270,9 @@ def check_quality(ctx: Ctx) -> list[Result]:
 
     total = len(expected_names)
     out.append(Result("Q1_kspace_dims", len(ok_dims) == total,
-                      f"{len(ok_dims)}/{total} 个期望产物含 k 空间维度", evidence=notes[:5]))
+                      f"{len(ok_dims)}/{total} 个期望产物含 k 空间维度"
+                      + (f"；缺 {sorted(set(expected_names) - set(ok_dims))}" if set(expected_names) - set(ok_dims) else ""),
+                      evidence=notes[:5]))
     out.append(Result("Q2_ef_zeroed", len(ok_ef) == total,
                       f"{len(ok_ef)}/{total} 个期望产物 EF 已归零"))
     out.append(Result("Q3_theta_zeroed", len(ok_theta) == total,
@@ -1286,7 +1290,8 @@ def check_quality(ctx: Ctx) -> list[Result]:
             "Q4_matches_human_reference",
             passed,
             f"{len(ok_ref)}/{total} expected products match the human reference; "
-            f"missing references {len(missing_references)}",
+            f"missing references {len(missing_references)}"
+            + (f": {missing_references[:5]}" if missing_references else ""),
             evidence=(missing_references + notes)[:8],
         ))
     return out

@@ -148,8 +148,11 @@ def _conflict_for(
             data_format=data_format,
             dims=dims,
             issue=(
-                f"3-D record labelled 'sweep' (dims {dims}) is a mapping-shaped "
-                "cube; treat it as a mapping scan, never as a cut"
+                f"3-D record labelled 'sweep' (dims {dims}): the declared Data "
+                "format and the real shape disagree. Report the conflict and "
+                "decide from the declared format (the task contract) - the data "
+                "format is authoritative, comments are not. Do not drop the "
+                "record silently, and do not assume 2-D cut geometry for it"
             ),
         )
     if len(dims) == 2 and format_kind == "mapping" and not ({"x", "y"} <= names):
