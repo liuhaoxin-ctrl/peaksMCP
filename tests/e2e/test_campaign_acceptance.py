@@ -63,10 +63,6 @@ def _run(args: list[str], timeout: float, env: dict[str, str] | None = None) -> 
     )
 
 
-@pytest.mark.skipif(
-    not (RAW_PXT_DIR / "BP_0015.pxt").is_file(),
-    reason=f"raw beamtime data not found under {RAW_PXT_DIR}; set PEAKSMCP_REALDATA_PXT",
-)
 def _default_ports_busy() -> str | None:
     """Reason string when the managed stack's fixed ports are already taken.
 
@@ -87,6 +83,10 @@ def _default_ports_busy() -> str | None:
     return None
 
 
+@pytest.mark.skipif(
+    not (RAW_PXT_DIR / "BP_0015.pxt").is_file(),
+    reason=f"raw beamtime data not found under {RAW_PXT_DIR}; set PEAKSMCP_REALDATA_PXT",
+)
 def test_campaign_runs_end_to_end_with_a_deterministic_agent(tmp_path):
     busy = _default_ports_busy()
     if busy is not None:

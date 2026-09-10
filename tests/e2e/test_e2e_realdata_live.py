@@ -441,30 +441,34 @@ def live(tmp_path_factory):
 
         yield stack, (source_before, source_listing)
     finally:
-        # Process-global state first: a failure below must not leak the
-        # temporary CWD/HOME into whatever runs next.
-        with contextlib.suppress(Exception):
-            os.chdir(saved_cwd)
-        if saved_home is None:
-            os.environ.pop("PEAKSMCP_HOME", None)
-        else:
-            os.environ["PEAKSMCP_HOME"] = saved_home
-        with contextlib.suppress(Exception):
-            if session is not None:
-                session.close()
-        with contextlib.suppress(Exception):
-            if page is not None:
-                page.close()
-        with contextlib.suppress(Exception):
-            if browser is not None:
-                browser.close()
-        with contextlib.suppress(Exception):
-            if playwright is not None:
-                playwright.stop()
-        with contextlib.suppress(Exception):
-            supervisor.stop()
-        with contextlib.suppress(Exception):
-            uninstall_kernel(kernel_name)
+        # Teardown order matters: the supervisor removes its runfile from
+        # whatever PEAKSMCP_HOME is set at that moment, so the environment must
+        # only be restored AFTER the host is stopped - otherwise the test would
+        # delete the developer's real runfile.
+        try:
+            with contextlib.suppress(Exception):
+                if session is not None:
+                    session.close()
+            with contextlib.suppress(Exception):
+                if page is not None:
+                    page.close()
+            with contextlib.suppress(Exception):
+                if browser is not None:
+                    browser.close()
+            with contextlib.suppress(Exception):
+                if playwright is not None:
+                    playwright.stop()
+            with contextlib.suppress(Exception):
+                supervisor.stop()
+            with contextlib.suppress(Exception):
+                uninstall_kernel(kernel_name)
+        finally:
+            with contextlib.suppress(Exception):
+                os.chdir(saved_cwd)
+            if saved_home is None:
+                os.environ.pop("PEAKSMCP_HOME", None)
+            else:
+                os.environ["PEAKSMCP_HOME"] = saved_home
         # Source integrity is verified unconditionally, not inside one test:
         # an edited or added file in the raw folder must always fail loudly.
         after = _raw_fingerprint()
@@ -473,6 +477,9 @@ def live(tmp_path_factory):
             f"{sorted(set(source_before) ^ set(after)) or [n for n in after if source_before.get(n) != after[n]]}"
         )
         assert not list(RAW_PXT_DIR.glob("*.nc")), "conversion must never write into the raw folder"
+        assert sorted(p.name for p in RAW_PXT_DIR.iterdir()) == source_listing, (
+            "the suite added or removed entries in the raw beamtime folder"
+        )
 
 
 def _answer_save_card(

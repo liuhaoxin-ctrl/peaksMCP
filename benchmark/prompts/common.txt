@@ -11,7 +11,11 @@ Complete the following workflow end to end:
    mappings, and records that should not be processed.
 2. Process every cut and only the cuts. Each final result must be in momentum space.
 3. Obtain the Fermi-level correction by fitting the gold reference during this trial. Do not
-   use a remembered or hard-coded correction.
+   use a remembered or hard-coded correction. Fit gold ONCE and reuse that correction for
+   every cut - refitting per scan is a contract violation, not an optimisation.
+   Before using any Peaks API by name, search for it and fetch its contract with get; the
+   notebook gate refuses exact-name calls that were not proven this session (declare them
+   per cell with api_ids).
 4. Obtain the high-symmetry angular offset from the experiment's own metadata. Do not guess it.
 5. Create one final NetCDF product per cut at:
    {OUTPUT_DIR}/<original-stem>_processed.nc

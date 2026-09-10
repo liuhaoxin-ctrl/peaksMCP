@@ -113,50 +113,57 @@ def main() -> int:
         "summary = inspect_experiment(scans)\n"
         "assert summary.gold, 'no gold reference classified'\n"
         "present = {int(s[-4:]) for s in scans.stems}\n"
-        "gold_stem = f'BP_{next(i for i in summary.gold if i in present):04d}'\n"
-        "cut_index = next(i for i in summary.cuts if i in present)\n"
-        "cut_stem = f'BP_{cut_index:04d}'\n"
+        "gold_index = next(i for i in summary.gold if i in present)\n"
+        "gold_stem = f'BP_{gold_index:04d}'\n"
+        "cut_stems = [f'BP_{i:04d}' for i in summary.cuts if i in present]\n"
+        "assert cut_stems, 'no cut in this index'\n"
+        "cut_index = int(cut_stems[0][-4:])\n"
         "theta_offset = next(r.theta_offset_deg for r in summary.records if r.index == cut_index)\n"
         "assert theta_offset, 'angular offset missing from the metadata'",
     )
+    inventory_cell = cell(
+        "inventory",
+        "import json\n"
+        "print(json.dumps({'gold': gold_stem, 'cuts': cut_stems, 'theta': theta_offset}))",
+    )
+    inventory = json.loads(str(inventory_cell.get("stdout_head") or "{}").strip())
+    cut_stems = list(inventory["cuts"])
+    print(f"[scripted-agent] processing {len(cut_stems)} cut(s): {cut_stems[:4]}...", flush=True)
+
+    # One gold fit, reused for every cut (the contract the grader checks).
     cell(
-        "fit gold",
+        "fit gold once",
         "gold = scans[gold_stem]\n"
         "fit = gold.fit_gold(plot=False, show=False)\n"
         "ef = dict(fit.attrs['EF_correction'])\n"
         "assert 'c0' in ef, ef",
         api_ids=[FIT_GOLD],
     )
-    cell(
-        "level and zero",
-        "cut = scans[cut_stem]\n"
-        "cut.metadata.set_EF_correction(ef)\n"
-        "shifted = cut.assign_coords(theta_par=cut.theta_par - theta_offset)",
-        api_ids=[SET_EF],
-    )
-    cell(
-        "k-space",
-        "kcut = shifted.k_convert(quiet=True)\n"
-        "assert kcut.dims == ('eV', 'kx'), kcut.dims\n"
-        "assert float(kcut.eV.min()) <= 0.0 <= float(kcut.eV.max())\n"
-        "assert abs(float(kcut.kx.min()) + float(kcut.kx.max())) <= 0.05",
-        api_ids=[K_CONVERT],
-    )
-    # The product name follows the case contract (<stem>_processed.nc); the stem
-    # was chosen by the classification inside the kernel, so ask for it instead
-    # of guessing.
-    name_cell = cell("product name", "print(f'{cut_stem}_processed.nc')")
-    product_name = str(name_cell.get("stdout_head") or "").strip().splitlines()[-1]
-    assert product_name.endswith("_processed.nc"), name_cell
-    # The save is consent-gated: the benchmark approval harness answers the card.
-    target = output_dir / product_name
-    receipt = client.call(
-        "save_with_consent",
-        {"variable_name": "kcut", "path": str(target)},
-    )
-    print(f"[scripted-agent] save receipt: {json.dumps(receipt, ensure_ascii=False)[:200]}", flush=True)
-    if receipt.get("status") != "saved":
-        raise SystemExit(f"save did not complete: {receipt}")
+
+    for cut_stem in cut_stems:
+        cell(
+            f"level+zero {cut_stem}",
+            f"cut = scans[{cut_stem!r}]\n"
+            "cut.metadata.set_EF_correction(ef)\n"
+            "shifted = cut.assign_coords(theta_par=cut.theta_par - theta_offset)",
+            api_ids=[SET_EF],
+        )
+        cell(
+            f"k-space {cut_stem}",
+            "kcut = shifted.k_convert(quiet=True)\n"
+            "assert kcut.dims == ('eV', 'kx'), kcut.dims\n"
+            "assert float(kcut.eV.min()) <= 0.0 <= float(kcut.eV.max())\n"
+            "assert abs(float(kcut.kx.min()) + float(kcut.kx.max())) <= 0.05",
+            api_ids=[K_CONVERT],
+        )
+        # Consent-gated persistence: the benchmark harness answers each card.
+        target = output_dir / f"{cut_stem}_processed.nc"
+        receipt = client.call(
+            "save_with_consent", {"variable_name": "kcut", "path": str(target)}
+        )
+        if receipt.get("status") != "saved":
+            raise SystemExit(f"save {cut_stem} did not complete: {receipt}")
+        print(f"[scripted-agent] saved {target.name}", flush=True)
     return 0
 
 
