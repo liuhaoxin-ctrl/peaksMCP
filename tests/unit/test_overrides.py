@@ -681,3 +681,24 @@ def test_batch_publish_skips_existing_targets_without_overwrite(tmp_path):
     assert existing.read_bytes() == b"already-converted"
     assert fresh.exists()
     assert not list(tmp_path.glob(".*.part-*"))
+
+
+def test_load_data_prefers_netcdf_when_one_stem_has_pxt_and_nc(tmp_path, capsys):
+    """A folder holding both the raw scan and its conversion must index the
+    NetCDF (raw PXT loads without geometry) and say so."""
+    (tmp_path / "BP_0015.pxt").write_bytes(b"BP_0015.pxt")
+    (tmp_path / "BP_0015.nc").write_bytes(b"BP_0015.nc")
+    capsys.readouterr()
+    scans = load_data(str(tmp_path))
+    assert [entry.stem for entry in scans.entries] == ["BP_0015"]
+    assert scans.entries[0].representation == "netcdf"
+    assert scans.duplicate_stems == ["BP_0015"]
+    out = capsys.readouterr().out
+    assert "both .pxt and .nc" in out
+
+
+def test_load_data_is_eager_by_default():
+    """Analysis is eager: native fit_gold cannot fit a dask-backed scan."""
+    import inspect
+
+    assert inspect.signature(load_data).parameters["lazy"].default is False

@@ -1,4 +1,4 @@
-"""Unified data loading facade: identity index first, data as the lazy layer.
+"""Unified data loading facade: identity index first, then the data layer.
 
 One entry for the agent to load ANY data — any number of files, any
 supported type — from a notebook:
@@ -289,16 +289,21 @@ class LoadedScans:
         entries: list[ScanEntry],
         *,
         source: str,
-        lazy: bool = True,
+        lazy: bool = False,
         metadata_document: dict[str, Any] | None = None,
         metadata_source: str = METADATA_SOURCE_NONE,
         metadata_path: str | None = None,
+        duplicate_stems: list[str] | None = None,
     ) -> None:
         entries = sorted(entries, key=lambda entry: entry.stem)
         self.entries = entries
         self._by_stem = {entry.stem: entry for entry in entries}
         self.source = source
         self.lazy = lazy
+        #: Stems that appeared as both raw ``.pxt`` and converted ``.nc`` in the
+        #: SAME folder: the NetCDF entry is indexed (full geometry) and the
+        #: collision is reported, never silently resolved.
+        self.duplicate_stems = sorted(duplicate_stems or [])
         #: Translated/parsed experiment metadata document (all records) when
         #: one was found; the single classification owner (inspect_experiment)
         #: reads it together with entry sizes.  Not part of the model-facing
@@ -359,7 +364,7 @@ class LoadedScans:
 
     # -- data layer (the extra dimension) ------------------------------------
     def __getitem__(self, stem: str) -> Any:
-        """Load ONE file on demand; NetCDF stays lazy, PXT is read eagerly."""
+        """Load ONE file on demand (eager by default; PXT always eager)."""
         if stem in self._cache:
             return self._cache[stem]
         entry = self._by_stem.get(stem)
@@ -392,16 +397,22 @@ class LoadedScans:
         need = ""
         if self.needs_conversion:
             need = f"; {len(self.needs_conversion)} still need(s) conversion"
+        dupes = ""
+        if self.duplicate_stems:
+            dupes = (
+                f"; {len(self.duplicate_stems)} stem(s) had both .pxt and .nc "
+                "(NetCDF indexed)"
+            )
         meta = f"; metadata={self.metadata_source}"
         if self.metadata_path:
             meta += f" at {self.metadata_path}"
-        reserved = len(need) + len(tail)
+        reserved = len(need) + len(dupes) + len(tail)
         # Keep the line within 200 chars end to end: the metadata path is only
         # included when the whole line still fits (truncation must never cut
         # the actionable conversion/classification tail first).
         if self.metadata_path and len(head) + len(meta) + reserved > 200:
             meta = f"; metadata={self.metadata_source}"
-        return (head + meta + need + tail)[:200]
+        return (head + meta + need + dupes + tail)[:200]
 
     def __repr__(self) -> str:
         """print(exp) shows the identity summary (the agent's first read)."""
@@ -434,17 +445,17 @@ def _attach_to(data: Any, document: dict[str, Any] | None, index: int | None) ->
 def load_data(
     source: str | Path | list[str | Path] | tuple[str | Path, ...],
     *,
-    lazy: bool = True,
+    lazy: bool = False,
     metadata: str | Path | dict[str, Any] | None = None,
 ) -> Any:
-    """Load data for the agent: identity index first, data as the lazy layer.
+    """Load data for the agent: identity index first, then the data layer.
 
     - one ``.pxt`` / ``.nc`` file  -> a single peaks DataArray;
     - a folder or a path list      -> a :class:`LoadedScans` index: every
       file's identity (stem, path, representation raw_pxt/netcdf/
       processed_netcdf, experiment index, header sizes) plus metadata
       provenance, without reading any data block, and the data layer
-      through ``scans[stem]`` (NetCDF lazy).
+      through ``scans[stem]`` (eager NetCDF by default).
 
     What each scan IS (gold/cut/mapping, decision lists, offsets, windows,
     shape conflicts) is classified by ``inspect_experiment(scans)`` — the
@@ -459,8 +470,11 @@ def load_data(
     ----------
     source : str, Path, list or tuple
         One file, one directory, or an explicit sequence of files.
-    lazy : bool, default True
-        NetCDF data stays chunked until accessed.
+    lazy : bool, default False
+        ``True`` keeps NetCDF values dask-backed until accessed, for
+        header-only inspection of many scans.  Analysis is eager by default:
+        dask-backed values must be materialised (``da.load()``) before native
+        Peaks numerics — ``fit_gold`` cannot fit a chunked array.
     metadata : str, Path or dict, optional
         Explicit experiment metadata document used for the index and attached
         to raw PXT arrays on load.
@@ -687,6 +701,23 @@ def _index_paths(
                 sizes=sizes,
             )
         )
+    # A folder may hold both the raw scan and its conversion under the same
+    # stem (``BP_0015.pxt`` next to ``BP_0015.nc``).  Only one entry can be
+    # indexed per stem: the converted NetCDF wins, because the raw PXT loads
+    # without the instrument geometry and a later ``k_convert`` would fail with
+    # a confusing metadata error.  The collision is reported, never silent.
+    by_stem: dict[str, ScanEntry] = {}
+    duplicate_stems: list[str] = []
+    for entry in sorted(entries, key=lambda item: (item.file_kind != "netcdf", item.path)):
+        prior = by_stem.get(entry.stem)
+        if prior is None:
+            by_stem[entry.stem] = entry
+            continue
+        duplicate_stems.append(entry.stem)
+        if entry.file_kind == "netcdf" and prior.file_kind != "netcdf":
+            by_stem[entry.stem] = entry
+    entries = list(by_stem.values())
+
     shown_source = directory.name if directory is not None else "sequence"
     scans = LoadedScans(
         entries,
@@ -695,6 +726,7 @@ def _index_paths(
         metadata_document=document,
         metadata_source=metadata_source,
         metadata_path=metadata_path,
+        duplicate_stems=duplicate_stems,
     )
     print(scans.summary_line())
     return scans

@@ -384,7 +384,7 @@ def test_cut_preprocessing_on_real_data(live):
     index_cell = stack.cell(
         "index the converted folder",
         "from peaksMCP.overrides import load_data, inspect_experiment\n"
-        "scans = load_data('data_netcdf', lazy=False)\n"
+        "scans = load_data('data_netcdf')\n"
         "summary = inspect_experiment(scans)",
     )
     assert index_cell["stdout_lines"] >= 1
@@ -422,8 +422,10 @@ def test_cut_preprocessing_on_real_data(live):
         "assert float(kcut.kx.min()) < 0.0 < float(kcut.kx.max()), kcut.kx.values[[0, -1]]",
         api_ids=[API_K_CONVERT],
     )
-    # Rich objects (DataArray/Dataset) are asserted inside the cell: the
-    # variable-inspection preview is for JSON-safe values such as ``ef``.
+    kcut_preview = stack.variable("kcut")
+    assert kcut_preview["dims"] == ["eV", "kx"], kcut_preview
+    assert kcut_preview["dtype"] == "float64", kcut_preview
+    assert kcut_preview["units"] is None or isinstance(kcut_preview["units"], str)
 
     figure_cell = stack.cell(
         "render the raw vs k-space validation figure",
@@ -448,6 +450,9 @@ def test_mapping_preprocessing_and_binding_energy_slices(live):
         api_ids=[API_SET_EF, API_K_CONVERT],
         timeout=300.0,
     )
+
+    kmap_preview = stack.variable("kmap")
+    assert set(kmap_preview["dims"]) == {"eV", "kx", "ky"}, kmap_preview
 
     slice_cell = stack.cell(
         "render the mapping's binding-energy slices",

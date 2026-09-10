@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+
 import dask.array as da
 import numpy as np
+import pint
 import pytest
 import xarray as xr
 
@@ -388,3 +391,36 @@ def test_inspect_with_text_outputs_reads_bounded_text_only():
         "active_cell", detail="summary", with_text_outputs=True
     )
     assert empty["text_outputs"] == "" and empty["text_truncated"] is None
+
+
+def test_pint_units_are_json_safe_and_do_not_mark_data_lazy():
+    """Peaks data carries pint units: the payload must stay serialisable and a
+    pint-wrapped numpy array is in memory (xarray alone reports it as lazy)."""
+    ureg = pint.UnitRegistry()
+    eager = xr.DataArray(
+        np.arange(3) * ureg.eV,
+        dims="eV",
+        coords={"eV": xr.DataArray(np.arange(3), dims="eV", attrs={"units": ureg.eV})},
+        attrs={"units": ureg.eV},
+        name="q",
+    )
+    summary = summarize_xarray(eager)
+    assert summary["units"] == "electron_volt"
+    assert summary["coords"]["eV"]["units"] == "electron_volt"
+    assert summary["lazy"] is False
+    json.dumps(summary)  # a structured reply must never fail to serialise
+
+    lazy = xr.DataArray(da.ones((3,), chunks=2) * ureg.eV, dims="eV")
+    assert summarize_xarray(lazy)["lazy"] is True
+
+
+def test_variable_listing_and_summary_handle_datasets():
+    """fit_gold returns a Dataset; listing/summary must not reach for .dtype."""
+    fit = xr.Dataset({"fit": ("eV", [1.0, 2.0])}, attrs={"EF_poly4": 2.65})
+    backend = NotebookBackend(SharedState(FakeIPython({"fit": fit})))
+    listing = backend.inspect("variables", detail="summary")
+    row = next(item for item in listing["variables"] if item["name"] == "fit")
+    assert "n_vars=1" in row["summary"]
+    preview = backend.inspect("variable", variable_name="fit", detail="preview")
+    assert preview["type"] == "xarray.Dataset"
+    assert preview["variables"]["fit"]["dims"] == ["eV"]

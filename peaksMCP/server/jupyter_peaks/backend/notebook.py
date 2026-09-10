@@ -70,6 +70,35 @@ def _json_value(value: Any, limit: int = 80) -> Any:
     return repr(value)[:500]
 
 
+def _units_text(attrs: dict[str, Any]) -> str | None:
+    """Text form of a units attribute.
+
+    Peaks data carries pint objects (``Unit`` / ``Quantity``) in ``units``;
+    they are not JSON-serialisable, and a structured tool reply that cannot be
+    serialised degrades to unstructured text, which strict MCP clients reject.
+    """
+    units = attrs.get("units") or attrs.get("unit")
+    return None if units is None else str(units)
+
+
+def _variable_is_in_memory(variable: Any) -> bool:
+    """Whether one xarray Variable's storage is resident in memory.
+
+    xarray reports pint-backed variables as *not* in memory (a pint Quantity is
+    a duck array), which mislabelled fully loaded Peaks data as lazy.  The
+    wrapped magnitude decides instead: a numpy magnitude is in memory, a dask
+    magnitude stays lazy.  Non-pint backends keep xarray's own answer.
+    """
+    data = getattr(variable, "_data", None)
+    magnitude = getattr(data, "magnitude", None)
+    if magnitude is not None:
+        return not (
+            getattr(magnitude, "chunks", None) is not None
+            or hasattr(magnitude, "__dask_graph__")
+        )
+    return bool(getattr(variable, "_in_memory", True))
+
+
 def _storage_is_in_memory(value: xr.DataArray | xr.Dataset) -> bool:
     """Report whether all backing storage is already resident in memory.
 
@@ -83,7 +112,7 @@ def _storage_is_in_memory(value: xr.DataArray | xr.Dataset) -> bool:
         if isinstance(value, xr.Dataset)
         else (value.variable,)
     )
-    return all(bool(getattr(variable, "_in_memory", True)) for variable in variables)
+    return all(_variable_is_in_memory(variable) for variable in variables)
 
 
 def _peaks_api_names(value: Any) -> list[str]:
@@ -142,7 +171,7 @@ def summarize_xarray(value: xr.DataArray | xr.Dataset | xr.DataTree) -> dict[str
             "dims": list(coordinate.dims),
             "size": int(coordinate.size),
             "dtype": str(coordinate.dtype),
-            "units": coordinate.attrs.get("units") or coordinate.attrs.get("unit"),
+            "units": _units_text(coordinate.attrs),
             "attrs": _json_value(dict(coordinate.attrs)),
         }
     peaks_apis = _peaks_api_names(value)
@@ -156,11 +185,11 @@ def summarize_xarray(value: xr.DataArray | xr.Dataset | xr.DataTree) -> dict[str
         "sizes": {str(key): int(item) for key, item in value.sizes.items()},
         "dtype": str(value.dtype) if isinstance(value, xr.DataArray) else None,
         "variables": {
-            str(name): {"dims": list(array.dims), "dtype": str(array.dtype), "units": array.attrs.get("units") or array.attrs.get("unit")}
+            str(name): {"dims": list(array.dims), "dtype": str(array.dtype), "units": _units_text(array.attrs)}
             for name, array in variables.items()
         },
         "coords": coordinates,
-        "units": value.attrs.get("units") or value.attrs.get("unit"),
+        "units": _units_text(value.attrs),
         "attrs": _json_value(dict(value.attrs)),
         "chunks": _json_value(chunks),
         "peaks_apis": peaks_apis,
@@ -240,7 +269,13 @@ def _one_line_summary(value: Any) -> str:
         text = f"{type(value).__name__}"
         if name:
             text += f" {name!r}"
-        text += f" dims=[{dims}] dtype={value.dtype} lazy={summarize_xarray(value)['lazy']}"
+        if isinstance(value, xr.Dataset):
+            # Dataset has no ``dtype``; report its variable count instead
+            # (fit_gold returns a Dataset, so this path is routine).
+            text += f" dims=[{dims}] n_vars={len(value.data_vars)}"
+        else:
+            text += f" dims=[{dims}] dtype={value.dtype}"
+        text += f" lazy={summarize_xarray(value)['lazy']}"
         return text[:_SUMMARY_LINE_MAX]
     if isinstance(value, xr.DataTree):
         return f"xarray.DataTree groups={len(list(value.subtree))}[{_SUMMARY_LINE_MAX}]"[:_SUMMARY_LINE_MAX]

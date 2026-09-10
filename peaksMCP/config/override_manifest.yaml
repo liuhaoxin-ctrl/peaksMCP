@@ -44,7 +44,8 @@ apis:
     - 打开PXT
     summary: Load any data for the agent - one file, or an identity index of a folder/list.
     inputs: 'source: one file (.pxt/.nc), a folder, or a sequence of paths; lazy:
-      bool=True; metadata: optional path/dict'
+      bool=False (True keeps values dask-backed; materialise with da.load() before
+      native numerics); metadata: optional path/dict'
     returns: 'peaks DataArray (one file) or LoadedScans (folder/sequence: identity
       index - stem/path/representation/sizes/metadata provenance + scans[stem] data
       layer; no classification)'

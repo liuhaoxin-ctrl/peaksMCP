@@ -28,19 +28,33 @@ Jupyter config: JupyterLab 4.6+ routes Comm traffic over ipykernel subshells by
 default, which races around kernel restarts (shell-channel drops flood the
 kernel log and stalled `restart all` past its readiness window).
 
-### Findings not yet fixed (found while building the real-data E2E)
+### Fixed: three defects the real-data E2E surfaced
 
-- `load_data(..., lazy=True)` (the adapter default) returns an array that
-  native `fit_gold` cannot fit (`'float' object has no attribute 'astype'`);
-  the suite loads with `lazy=False`.
-- `inspect_notebook(target="variables")` crashes when the namespace holds an
-  xarray `Dataset` (`fit_gold` returns one) — `'Dataset' object has no
-  attribute 'dtype'`; the Array case returns text-only content for
-  `target="variable"` previews although the tool declares an output schema.
-- A folder holding both `<stem>.pxt` and `<stem>.nc` indexes two entries per
-  stem and `scans[stem]` can pick the raw PXT (no L112 geometry), so a later
-  `k_convert` fails with a confusing metadata error; `load_data` gives no
-  warning. Converting into the sibling `<folder>_netcdf/` avoids it.
+- **`load_data` now loads eagerly by default** (`lazy: bool = False`). The old
+  default returned dask-backed values, and native `fit_gold` cannot fit a
+  chunked array (`'float' object has no attribute 'astype'`) — the canonical
+  workflow broke one step after loading. `lazy=True` stays available for
+  header-only inspection and is documented as needing `da.load()` before
+  native numerics.
+- **`inspect_notebook` handles Peaks data again**: a `Dataset` variable (what
+  `fit_gold` returns) no longer crashes the listing (`'Dataset' object has no
+  attribute 'dtype'` — the summary line reports `n_vars` instead), and pint
+  units (`Unit`/`Quantity`) are rendered as text, so the structured reply is
+  JSON-serialisable and strict MCP clients stop rejecting it with
+  `outputSchema defined but no structured output returned`. The `lazy` flag is
+  also accurate now: a pint-wrapped numpy array is in memory (xarray reports
+  duck arrays as not-in-memory), a pint-wrapped dask array stays lazy.
+- **A stem present as both `.pxt` and `.nc` in one folder is resolved, not
+  gambled**: the converted NetCDF is indexed (the raw PXT loads without
+  instrument geometry, so a later `k_convert` failed with a confusing
+  metadata error) and the collision is reported in the `load_data` summary
+  (`N stem(s) had both .pxt and .nc (NetCDF indexed)`), with the stems on
+  `LoadedScans.duplicate_stems`.
+
+Tests: `tests/unit/test_notebook.py` (pint payload, Dataset listing/summary),
+`tests/unit/test_overrides.py` (NetCDF preference + eager default), and the
+real-data E2E now asserts the structured DataArray preview and the eager
+default end to end.
 
 ## [Unreleased] — 2026-09-08
 
