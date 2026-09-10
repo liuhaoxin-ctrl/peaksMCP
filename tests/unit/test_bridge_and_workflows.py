@@ -190,7 +190,9 @@ def test_inspect_experiment_classifies_records_and_dimensionality(tmp_path):
     # declared Data format says cut, the extra axis is a detector axis, so the
     # record still yields its own (reduced) product.
     assert "cut target" in conflict.issue
-    assert "Reduce" in conflict.issue
+    # The deflector axis is scanned: the product is a plane, not an integral.
+    assert "Select one plane" in conflict.issue
+    assert "integrating" in conflict.issue
     rec20 = next(r for r in summary.records if r.index == 20)
     assert rec20.is_gold is True
 

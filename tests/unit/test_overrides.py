@@ -799,5 +799,5 @@ def test_inspect_experiment_reports_a_three_d_record_labelled_sweep_as_mapping_c
     # detector axis to reduce, so the record stays a cut target and yields its
     # own product.
     assert "cut target" in issue and "do not drop" in issue
-    assert "reduce" in issue
+    assert "select one plane" in issue and "integrating" in issue
     assert 26 in summary.cuts and 26 not in summary.mappings

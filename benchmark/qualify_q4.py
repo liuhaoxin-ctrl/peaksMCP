@@ -59,12 +59,11 @@ ORACLE_FILE = Path(__file__).resolve().parent / "q4_oracle.json"
 EF_LANDMARK_MAX = 0.15
 KX_LANDMARK_MAX = 0.05
 
-#: Controls the oracle MUST be able to detect before it may qualify.  The
-#: centre-slice control is deliberately not in this list: for record 26 a
-#: single deflector plane is nearly identical to the reduction, so it is a
-#: question about what the human product actually is (see the goal's step 2),
-#: not a discrimination requirement.
-REQUIRED_CONTROLS = ("wrong_ef", "no_zeroing", "wrong_angle", "wrong_scan")
+#: Controls the oracle MUST be able to detect before it may qualify.  Step 2
+#: settled the former blind spot: the human product for record 26 is the centre
+#: plane of the scanned deflector axis, so "integrate that axis" is not a
+#: legitimate variant but a mistake - and the oracle must catch it.
+REQUIRED_CONTROLS = ("wrong_ef", "no_zeroing", "wrong_angle", "wrong_scan", "deflector_integral")
 
 
 def _pipeline() -> tuple[dict[int, Any], dict[str, str]]:
@@ -90,7 +89,11 @@ def _pipeline() -> tuple[dict[int, Any], dict[str, str]]:
         cut = scans[f"BP_{index:04d}"]
         extra = [d for d in cut.dims if d not in ("eV", "theta_par")]
         if extra:
-            cut = cut.sum(extra)
+            # The deflector axis is scanned: the product is the centre plane,
+            # not the integral (measured against the human product: corr 1.0000
+            # and the same intensity scale for the plane, 0.7768 and 43.8x for
+            # the integral).
+            cut = cut.isel({extra[0]: cut.sizes[extra[0]] // 2})
         cut.metadata.set_EF_correction(ef)
         offset = offsets.get(index)
         if offset:
@@ -111,13 +114,13 @@ def _variants(products: dict[int, Any]) -> dict[str, dict[int, Any]]:
     ef = dict(fit.attrs["EF_correction"])
 
     controls: dict[str, dict[int, Any]] = {
-        "wrong_ef": {}, "no_zeroing": {}, "wrong_angle": {}, "centre_slice": {},
+        "wrong_ef": {}, "no_zeroing": {}, "wrong_angle": {}, "deflector_integral": {},
     }
     for raw_index in summary.cuts:
         index = int(raw_index)
         raw = scans[f"BP_{index:04d}"]
         extra = [d for d in raw.dims if d not in ("eV", "theta_par")]
-        base = raw.sum(extra) if extra else raw
+        base = raw.isel({extra[0]: raw.sizes[extra[0]] // 2}) if extra else raw
 
         shifted = dict(ef)
         shifted["c0"] = float(ef.get("c0", 0.0)) + 0.30  # a wrong Fermi level
@@ -139,12 +142,13 @@ def _variants(products: dict[int, Any]) -> dict[str, dict[int, Any]]:
         controls["wrong_angle"][index] = wrong_angle.k_convert(quiet=True)
 
         if extra:
-            # The deflector-resolved record: one detector plane instead of the
-            # integral the human product is built from.
-            plane = raw.isel({extra[0]: raw.sizes[extra[0]] // 2})
-            plane.metadata.set_EF_correction(ef)
-            plane = plane.assign_coords(theta_par=plane.theta_par - float(offset))
-            controls["centre_slice"][index] = plane.k_convert(quiet=True)
+            # The deflector-resolved record, integrated over the scanned axis
+            # instead of selecting the plane: the mistake the criteria must
+            # catch (43.8x the intensity scale of the human product).
+            whole = raw.sum(extra)
+            whole.metadata.set_EF_correction(ef)
+            whole = whole.assign_coords(theta_par=whole.theta_par - float(offset))
+            controls["deflector_integral"][index] = whole.k_convert(quiet=True)
     controls.update(_structural_controls(scans, summary, products))
     return controls
 
@@ -186,6 +190,8 @@ def _summary(rows: list[dict[str, Any]]) -> dict[str, float]:
         "shape_max": float(np.max(values("shape"))) if values("shape") else float("nan"),
         "coord_delta_max": float(np.max(values("coord_delta"))) if values("coord_delta") else float("nan"),
         "mask_overlap_min": float(np.min(values("mask_overlap"))) if values("mask_overlap") else float("nan"),
+        "efficiency_min": float(np.min(values("efficiency"))) if values("efficiency") else float("nan"),
+        "efficiency_max": float(np.max(values("efficiency"))) if values("efficiency") else float("nan"),
         "ef_landmark_max": float(np.max(values("ef_landmark"))) if values("ef_landmark") else float("nan"),
         "kx_landmark_max": float(np.max(values("kx_landmark"))) if values("kx_landmark") else float("nan"),
         "dims_ok": float(all(row["same_dims"] for row in rows)) if rows else 0.0,
@@ -211,6 +217,11 @@ def _thresholds(positive: dict[str, float], controls: dict[str, dict[str, float]
         "mask_overlap_min": 0.97,
         "ef_landmark_max": EF_LANDMARK_MAX,
         "kx_landmark_max": KX_LANDMARK_MAX,
+        # Intensity-scale band: a factor-2 window around the human product's
+        # scale.  Measured baseline ~1.0 for every product; integrating the
+        # scanned deflector axis lands at 43.8.
+        "efficiency_min": 0.5,
+        "efficiency_max": 2.0,
     }
     control_mask = [
         controls[name]["mask_overlap_min"]
@@ -270,7 +281,11 @@ def main() -> int:
             summary["ef_landmark_max"] > EF_LANDMARK_MAX
             or summary["kx_landmark_max"] > KX_LANDMARK_MAX
         )
-        if coord_separates or mask_separates or landmark_separates:
+        scale_separates = (
+            (np.isfinite(summary["efficiency_max"]) and summary["efficiency_max"] > 2.0)
+            or (np.isfinite(summary["efficiency_min"]) and summary["efficiency_min"] < 0.5)
+        )
+        if coord_separates or mask_separates or landmark_separates or scale_separates:
             continue
         undetectable.append(control_name)
         if control_name in REQUIRED_CONTROLS:
@@ -304,8 +319,8 @@ def main() -> int:
         "positive": positive,
         "controls": controls,
         "thresholds": _thresholds(positive, controls),
-        "gating_metrics": ["coord_delta", "mask_overlap", "ef_landmark", "kx_landmark"],
-        "recorded_metrics": ["corr", "nrmse", "shape", "efficiency"],
+        "gating_metrics": ["coord_delta", "mask_overlap", "ef_landmark", "kx_landmark", "efficiency"],
+        "recorded_metrics": ["corr", "nrmse", "shape"],
         "undetectable_controls": undetectable,
         "required_controls": list(REQUIRED_CONTROLS),
         "unqualified_reasons": reasons,

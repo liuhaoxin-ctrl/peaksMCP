@@ -1380,6 +1380,14 @@ def _reference_matches(row: dict[str, Any], thresholds: dict[str, Any]) -> bool:
         row["mask_overlap"] >= float(thresholds.get("mask_overlap_min", 0.97)),
         row["ef_landmark"] <= float(thresholds.get("ef_landmark_max", 0.15)),
         row["kx_landmark"] <= float(thresholds.get("kx_landmark_max", 0.05)),
+        # Intensity scale, not shape: selecting the centre plane of the scanned
+        # deflector axis reproduces the human product's scale (1.00), while
+        # integrating that axis is 43.8x brighter.  Correlation cannot see the
+        # difference (0.7768 vs 1.0000 only because one file differs), the mask
+        # and the grids cannot either.
+        float(thresholds.get("efficiency_min", 0.5))
+        <= row["efficiency"]
+        <= float(thresholds.get("efficiency_max", 2.0)),
     )
     return all(bool(item) for item in checks)
 
@@ -1515,8 +1523,8 @@ def check_quality(ctx: Ctx) -> list[Result]:
             evidence=[
                 f"{row['name']}: coordΔ={row['coord_delta']:.2e} "
                 f"mask={row['mask_overlap']:.3f} ef={row['ef_landmark']:.3f} "
-                f"kx={row['kx_landmark']:.3f} (recorded: corr={row['corr']:.4f} "
-                f"nrmse={row['nrmse']:.4f})"
+                f"kx={row['kx_landmark']:.3f} scale={row['efficiency']:.3f} "
+                f"(recorded: corr={row['corr']:.4f} nrmse={row['nrmse']:.4f})"
                 for row in failures[:5]
             ] or notes[:5],
         ))

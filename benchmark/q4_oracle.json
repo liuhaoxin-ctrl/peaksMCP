@@ -1,6 +1,6 @@
 {
   "status": "qualified",
-  "generated_at": "2026-09-10T18:03:00.577654+00:00",
+  "generated_at": "2026-09-10T18:06:06.018878+00:00",
   "data_dir": "/Users/haoxin/Documents/实验数据/BP260623/data_netcdf",
   "reference_dir": "/Users/haoxin/Documents/实验数据/BP260623/data_netcdf",
   "provenance": {
@@ -33,11 +33,13 @@
   },
   "positive": {
     "files": 14,
-    "corr_min": 0.7768287126414277,
-    "nrmse_max": 61.60901307597074,
-    "shape_max": 0.4309144072140189,
+    "corr_min": 0.9999480307773403,
+    "nrmse_max": 0.050284550048204264,
+    "shape_max": 0.011911512477017282,
     "coord_delta_max": 0.0009374943500711219,
     "mask_overlap_min": 0.9928209760619964,
+    "efficiency_min": 0.9994978117515972,
+    "efficiency_max": 1.0009899467492758,
     "ef_landmark_max": 0.0006875480866130879,
     "kx_landmark_max": 0.0004535930596940574,
     "dims_ok": 1.0
@@ -46,43 +48,51 @@
     "wrong_ef": {
       "files": 14,
       "corr_min": -0.3689756283956268,
-      "nrmse_max": 61.60901307597074,
+      "nrmse_max": 4.823694055200359,
       "shape_max": 1.5552207894303294,
       "coord_delta_max": 0.2994026850544016,
       "mask_overlap_min": 0.7865677045619116,
+      "efficiency_min": 0.24322827997580077,
+      "efficiency_max": 1.0356735115700417,
       "ef_landmark_max": 0.2556875480866112,
       "kx_landmark_max": 0.0004535930596940574,
       "dims_ok": 1.0
     },
     "no_zeroing": {
       "files": 14,
-      "corr_min": 0.7748242331013546,
-      "nrmse_max": 61.63135764794872,
-      "shape_max": 0.4371141541794149,
+      "corr_min": 0.8185346944610887,
+      "nrmse_max": 2.8962424900862818,
+      "shape_max": 0.3648369708805324,
       "coord_delta_max": 0.03149845040992727,
       "mask_overlap_min": 0.9260186643112255,
+      "efficiency_min": 0.999530852010222,
+      "efficiency_max": 1.0185381962832347,
       "ef_landmark_max": 0.000687546865677735,
       "kx_landmark_max": 0.0001497787742487655,
       "dims_ok": 1.0
     },
     "wrong_angle": {
       "files": 14,
-      "corr_min": 0.45751389687532185,
-      "nrmse_max": 59.967699586233046,
-      "shape_max": 0.6261583692149354,
+      "corr_min": 0.5103942277664699,
+      "nrmse_max": 4.044955403125417,
+      "shape_max": 0.5521606676843791,
       "coord_delta_max": 0.09532218053791491,
       "mask_overlap_min": 0.826350414228393,
+      "efficiency_min": 0.9989762548129869,
+      "efficiency_max": 1.0823689222987145,
       "ef_landmark_max": 0.0006875480177592763,
       "kx_landmark_max": 0.00030482939755371863,
       "dims_ok": 1.0
     },
-    "centre_slice": {
+    "deflector_integral": {
       "files": 1,
-      "corr_min": 0.9999982576365144,
-      "nrmse_max": 0.00242500023851817,
-      "shape_max": 0.0013275573759398078,
+      "corr_min": 0.7768287126414277,
+      "nrmse_max": 61.60901307597074,
+      "shape_max": 0.4309144072140189,
       "coord_delta_max": 0.0005973149455984483,
       "mask_overlap_min": 1.0,
+      "efficiency_min": 43.83891382485779,
+      "efficiency_max": 43.83891382485779,
       "ef_landmark_max": 0.00031243716055451287,
       "kx_landmark_max": 0.0003167006278047557,
       "dims_ok": 1.0
@@ -90,41 +100,44 @@
     "wrong_scan": {
       "files": 14,
       "corr_min": 0.1901171754746219,
-      "nrmse_max": 751.4465986303823,
+      "nrmse_max": 18.331822468555544,
       "shape_max": 0.9572984085822709,
       "coord_delta_max": 3.5015973149523885,
       "mask_overlap_min": 0.07887672844466906,
+      "efficiency_min": 0.10723212577470022,
+      "efficiency_max": 15.177155646403307,
       "ef_landmark_max": 0.0006875480866130879,
       "kx_landmark_max": 0.0004535930596940574,
       "dims_ok": 1.0
     }
   },
   "thresholds": {
-    "coord_delta_max": 0.016217972379999196,
-    "mask_overlap_min": 0.9594198201866109,
+    "coord_delta_max": 0.0028124830502133658,
+    "mask_overlap_min": 0.97,
     "ef_landmark_max": 0.15,
-    "kx_landmark_max": 0.05
+    "kx_landmark_max": 0.05,
+    "efficiency_min": 0.5,
+    "efficiency_max": 2.0
   },
   "gating_metrics": [
     "coord_delta",
     "mask_overlap",
     "ef_landmark",
-    "kx_landmark"
+    "kx_landmark",
+    "efficiency"
   ],
   "recorded_metrics": [
     "corr",
     "nrmse",
-    "shape",
-    "efficiency"
+    "shape"
   ],
-  "undetectable_controls": [
-    "centre_slice"
-  ],
+  "undetectable_controls": [],
   "required_controls": [
     "wrong_ef",
     "no_zeroing",
     "wrong_angle",
-    "wrong_scan"
+    "wrong_scan",
+    "deflector_integral"
   ],
   "unqualified_reasons": []
 }

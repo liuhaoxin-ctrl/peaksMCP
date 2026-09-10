@@ -169,11 +169,12 @@ def _conflict_for(
             dims=dims,
             issue=(
                 f"record declared 'sweep' carries extra dimensions {dims}: it "
-                "is still a cut target - the extra axis is a detector axis (the "
-                "deflector on this beamtime), not a second scanned coordinate. "
-                "Reduce it (integrate over the axis that is neither eV nor "
-                "theta_par), then run the normal cut chain and state the "
-                "reduction in your summary. Do not drop the record and do not "
+                "is still a cut target, and the extra axis is the deflector - a "
+                "SCANNED axis, not a detector sum. Select one plane along it "
+                "(the human product for this beamtime is the centre plane) and "
+                "run the normal cut chain on that plane; integrating over the "
+                "axis mixes different k_y regions and is wrong. State the plane "
+                "you selected in your summary. Do not drop the record and do not "
                 "treat it as a mapping: the declared Data format decides what "
                 "the record is"
             ),

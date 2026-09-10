@@ -36,10 +36,12 @@ def _metrics(**overrides):
 
 
 THRESHOLDS = {
-    "coord_delta_max": 1.6e-2,
-    "mask_overlap_min": 0.959,
+    "coord_delta_max": 2.8e-3,
+    "mask_overlap_min": 0.97,
     "ef_landmark_max": 0.15,
     "kx_landmark_max": 0.05,
+    "efficiency_min": 0.5,
+    "efficiency_max": 2.0,
 }
 
 
@@ -63,6 +65,16 @@ def test_a_wrong_fermi_level_fails_on_the_landmark_and_the_mask():
 
 def test_a_wrong_scan_fails_on_coordinates_and_mask():
     assert rc._reference_matches(_metrics(coord_delta=3.5, mask_overlap=0.079), THRESHOLDS) is False
+
+
+def test_integrating_the_scanned_deflector_axis_fails_on_the_intensity_scale():
+    """Record 26: the human product is the centre plane along the scanned
+    deflector axis.  Integrating it is 43.8x brighter at the same grids, mask
+    and landmarks, so only the scale separates the two."""
+    integral = _metrics(name="BP_0026_processed.nc", efficiency=43.8, corr=0.777)
+    assert rc._reference_matches(integral, THRESHOLDS) is False
+    plane = _metrics(name="BP_0026_processed.nc", efficiency=1.0, corr=1.0)
+    assert rc._reference_matches(plane, THRESHOLDS) is True
 
 
 def test_dimension_mismatch_fails_regardless_of_metrics():
@@ -93,7 +105,13 @@ def test_the_shipped_oracle_records_which_controls_it_cannot_detect():
     if not path.is_file():
         return
     document = json.loads(path.read_text(encoding="utf-8"))
-    assert document["gating_metrics"] == ["coord_delta", "mask_overlap", "ef_landmark", "kx_landmark"]
+    assert document["gating_metrics"] == [
+        "coord_delta", "mask_overlap", "ef_landmark", "kx_landmark", "efficiency",
+    ]
     assert "corr" in document["recorded_metrics"]
-    assert set(document["required_controls"]) <= {"wrong_ef", "no_zeroing", "wrong_angle", "wrong_scan"}
-    assert set(document["undetectable_controls"]) <= {"centre_slice", "wrong_ef", "no_zeroing", "wrong_angle", "wrong_scan"}
+    assert set(document["required_controls"]) == {
+        "wrong_ef", "no_zeroing", "wrong_angle", "wrong_scan", "deflector_integral",
+    }
+    assert document["undetectable_controls"] == [], (
+        "every control must be detectable now that the deflector reduction is settled"
+    )
