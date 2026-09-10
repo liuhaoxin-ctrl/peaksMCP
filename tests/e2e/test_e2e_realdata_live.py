@@ -496,9 +496,11 @@ def _answer_save_card(
     selector = "button.jp-mod-accept" if approve else "button.jp-mod-reject"
     deadline = time.monotonic() + timeout
     clicks = 0
+    card_texts: list[str] = []
+    answered: set[int] = set()
     while time.monotonic() < deadline:
         if pending is not None and pending.done():
-            return clicks
+            return clicks, card_texts
         dialogs = page.locator(".jp-Dialog")
         for index in range(dialogs.count()):
             dialog = dialogs.nth(index)
@@ -507,14 +509,18 @@ def _answer_save_card(
             if not dialog.locator('[data-peaks-mcp-dialog="save-consent"]').count():
                 continue  # not a save card: leave other dialogs alone
             button = dialog.locator(selector)
-            if button.count():
+            if button.count() and index not in answered:
+                # Read the card BEFORE deciding: whatever the human sees here is
+                # what they are approving.
+                card_texts.append(dialog.inner_text())
+                answered.add(index)
                 button.first.click()
                 clicks += 1
                 page.wait_for_timeout(300)
         time.sleep(0.2)
     if pending is not None and not pending.done():
         raise AssertionError(f"the save consent card was never answered ({clicks} click(s))")
-    return clicks
+    return clicks, card_texts
 
 
 def test_acceptance_realdata_workflow(live):
@@ -589,6 +595,9 @@ def test_acceptance_realdata_workflow(live):
     stack.cell(
         "flatten EF and zero the high-symmetry angle from metadata",
         "cut.metadata.set_EF_correction(ef)\n"
+        # The offset must be the experiment's own value, not merely non-zero:
+        # the contract value comes from the metadata document.
+        "assert abs(theta_offset - " + str(THETA_OFFSET_DEG) + ") < 1e-9, theta_offset\n"
         "shifted = cut.assign_coords(theta_par=cut.theta_par - theta_offset)",
         api_ids=[API_SET_EF],
     )
@@ -597,10 +606,17 @@ def test_acceptance_realdata_workflow(live):
         "convert the cut to k-space and verify the alignment",
         "kcut = shifted.k_convert(quiet=True)\n"
         "assert kcut.dims == ('eV', 'kx'), kcut.dims\n"
-        # Fermi leveling: the binding-energy axis crosses E_F = 0.
+        # Fermi leveling: the axis crosses E_F = 0 *and* carries the fitted
+        # shift - a wrong constant (2.4 eV, say) also crosses zero, so the
+        # crossing alone proves nothing.
         "assert float(kcut.eV.min()) <= 0.0 <= float(kcut.eV.max()), float(kcut.eV.min())\n"
-        # Angular zeroing: kx is odd about the high-symmetry angle, so the axis
-        # comes out symmetric about 0 (measured 0.021 on this reference data).
+        # A wrong constant would still cross zero, so this only guards the
+        # scale; the frozen human reference comparison below is the real gate.
+        "assert abs(float(kcut.eV.mean())) <= 0.5, float(kcut.eV.mean())\n"
+        # Angular zeroing: kx is odd about the high-symmetry angle.  On this data
+        # the symmetry test passes with AND without the offset (0.0204 vs
+        # 0.0212), so it guards the shape only - the frozen human reference
+        # comparison below is what actually pins the 1.5 deg.
         "assert abs(float(kcut.kx.min()) + float(kcut.kx.max())) <= 0.05, "
         "(float(kcut.kx.min()), float(kcut.kx.max()))",
         api_ids=[API_K_CONVERT],
@@ -632,13 +648,78 @@ def test_acceptance_realdata_workflow(live):
             "save_with_consent",
             {"variable_name": "kcut", "path": str(saved_path)},
         )
-        _answer_save_card(stack, approve=True, pending=pending)
+        clicks, card_texts = _answer_save_card(stack, approve=True, pending=pending)
         receipt = pending.result(timeout=240)
+    assert clicks == 1, f"the card must be answered exactly once, clicked {clicks} time(s)"
     assert receipt.get("status") == "saved", receipt
     assert Path(str(receipt.get("path"))) == saved_path, receipt
     assert saved_path.is_file(), receipt
     digest = hashlib.sha256(saved_path.read_bytes()).hexdigest()
     assert receipt.get("sha256") == digest, (receipt.get("sha256"), digest)
+    # The card is what the human approves, so it must name the same product the
+    # receipt reports: file name, shape and content hash.  A blank or
+    # misleading card would otherwise pass this test.
+    card = card_texts[0]
+    assert saved_path.name in card, card
+    assert str(receipt.get("sha256"))[:12] in card, (card, receipt.get("sha256"))
+    for size in (receipt.get("dims") or {}).values():  # shape shown on the card
+        assert str(size) in card, (card, receipt.get("dims"))
+
+    # Frozen human reference: the only assertion here that can actually fail on
+    # a wrong angular zeroing (the cheap symmetry check cannot).
+    reference_product = _CONVERTED_HINT / f"{CUT_STEM}_processed.nc"
+    assert reference_product.is_file(), (
+        f"the reference product {reference_product} is required for the "
+        "coordinate/numeric comparison; point PEAKSMCP_BENCH_REFERENCE at the "
+        "converted reference folder"
+    )
+    stack.cell(
+        "the product matches the frozen human reference",
+        "import numpy as np\n"
+        "import xarray as xr\n"
+        f"with xr.open_dataset({str(reference_product)!r}) as _ref:\n"
+        "    _ref_da = _ref[list(_ref.data_vars)[0]]\n"
+        "    assert list(kcut.dims) == list(_ref_da.dims), (kcut.dims, _ref_da.dims)\n"
+        "    assert np.allclose(kcut.kx.values, _ref_da.kx.values, atol=1e-4), "
+        "(float(kcut.kx.min()), float(_ref_da.kx.min()))\n"
+        "    assert np.allclose(kcut.eV.values, _ref_da.eV.values, atol=1e-3), "
+        "(float(kcut.eV.min()), float(_ref_da.eV.min()))\n"
+        # Intensity is compared by shape, not by absolute scale: the reference
+        # may carry a different normalisation, while a wrong record, EF or
+        # angular offset destroys the correlation.
+        # Masked (NaN) pixels differ between the reference and today's run, so
+        # the comparison runs on the finite sample and ignores the fill value.
+        "    _a = np.nan_to_num(kcut.values.astype(float), nan=0.0)\n"
+        "    _b = np.nan_to_num(_ref_da.values.astype(float), nan=0.0)\n"
+        "    _mask = (np.abs(_a) + np.abs(_b)) > 0\n"
+        "    assert int(_mask.sum()) > int(0.5 * _mask.size), 'too few finite samples'\n"
+        # Correlation is scale- and offset-invariant, so it still fails on a
+        # wrong record, EF or angular offset while tolerating a different
+        # normalisation between the reference and today's pipeline.  The
+        # normalised difference is reported as evidence, not asserted: the
+        # reference products demonstrably carry their own normalisation (the
+        # grader's Q4 shows 0/14 exact matches even for the canonical pipeline).
+        "    _corr = float(np.corrcoef(_a[_mask], _b[_mask])[0, 1])\n"
+        "    assert _corr >= 0.98, _corr\n",
+    )
+
+    # Hash self-consistency does not prove the RIGHT variable was written:
+    # re-open the NetCDF and compare it with the live in-memory product.
+    stack.cell(
+        "the saved NetCDF re-opens as the product that was in memory",
+        "import numpy as np\n"
+        "import xarray as xr\n"
+        f"with xr.open_dataset({str(saved_path)!r}) as _saved:\n"
+        "    _var = _saved[list(_saved.data_vars)[0]]\n"
+        "    assert list(_var.dims) == list(kcut.dims), (_var.dims, kcut.dims)\n"
+        "    assert np.allclose(_var.kx.values, kcut.kx.values), 'kx coords differ'\n"
+        "    assert np.allclose(_var.eV.values, kcut.eV.values), 'eV coords differ'\n"
+        # Storage rounds to the file's precision, so equality is required up to
+        # float32 epsilon - a different variable would differ grossly instead.
+        "    assert np.array_equal(np.isnan(_var.values), np.isnan(kcut.values)), 'mask differs'\n"
+        "    assert np.allclose(_var.values, kcut.values, rtol=1e-6, atol=1e-6, "
+        "equal_nan=True), 'counts differ'\n",
+    )
 
     denied_path = Path(os.environ["PEAKSMCP_HOME"]) / "denied" / f"{CUT_STEM}_processed.nc"
     denied_path.parent.mkdir(parents=True, exist_ok=True)
@@ -648,8 +729,9 @@ def test_acceptance_realdata_workflow(live):
             "save_with_consent",
             {"variable_name": "kcut", "path": str(denied_path)},
         )
-        _answer_save_card(stack, approve=False, pending=pending)
+        deny_clicks, _ = _answer_save_card(stack, approve=False, pending=pending)
         denied = pending.result(timeout=240)
+    assert deny_clicks == 1, f"the card must be answered exactly once, clicked {deny_clicks} time(s)"
     assert denied.get("status") == "denied", denied
     assert not denied_path.exists(), "a denied save must write nothing"
 
@@ -718,6 +800,15 @@ def test_acceptance_realdata_workflow(live):
             break
         time.sleep(1)
     assert stack.status()["components"]["comm"]["state"] == "ready"
+    # "ready" is a status field, and a stale bridge can keep reporting it (the
+    # frontend Comm lingers up to 600 s), so issue a real request through the
+    # reloaded page: appending and executing a cell only works if the new Comm
+    # is actually carrying traffic.
+    probe = stack.cell(
+        "the reloaded page still serves execution",
+        "reload_probe = True\nassert reload_probe",
+    )
+    assert probe.get("execution_success") is True, probe
 
 
 def test_dashboard_reports_components_and_auth(live):
