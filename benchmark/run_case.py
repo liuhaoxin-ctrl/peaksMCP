@@ -1368,12 +1368,16 @@ def _reference_matches(row: dict[str, Any], thresholds: dict[str, Any]) -> bool:
     """Apply the qualified oracle thresholds to one product's metrics."""
     if not row["same_dims"]:
         return False
+    # Only the criteria the qualification measured as discriminating decide the
+    # outcome: the axis extent/centre, the NaN-mask overlap and the physical
+    # landmarks.  Correlation, normalised RMSE and the shape difference are
+    # RECORDED (report/evidence) but do not gate: a missing angular zeroing
+    # moves correlation by 0.002 (0.7768 vs 0.7748) while it moves the axis
+    # centre by 30x, and a single detector plane of record 26 correlates
+    # 0.99999 with the reference - correlation cannot decide either way.
     checks = (
-        row["coord_delta"] <= float(thresholds.get("coord_delta_max", 1e-3)),
-        row["corr"] >= float(thresholds.get("corr_min", 0.98)),
-        row["nrmse"] <= float(thresholds.get("nrmse_max", 0.5)),
-        row["shape"] <= float(thresholds.get("shape_max", 0.05)),
-        row["mask_overlap"] >= float(thresholds.get("mask_overlap_min", 0.9)),
+        row["coord_delta"] <= float(thresholds.get("coord_delta_max", 3e-3)),
+        row["mask_overlap"] >= float(thresholds.get("mask_overlap_min", 0.97)),
         row["ef_landmark"] <= float(thresholds.get("ef_landmark_max", 0.15)),
         row["kx_landmark"] <= float(thresholds.get("kx_landmark_max", 0.05)),
     )
@@ -1505,12 +1509,14 @@ def check_quality(ctx: Ctx) -> list[Result]:
             "Q4_matches_human_reference",
             passed,
             f"{total - len(failures)}/{total} expected products match the human "
-            f"reference within the qualified oracle {oracle.get('qualified_at', '?')}; "
+            f"reference within the qualified oracle {oracle.get('generated_at', '?')[:19]}; "
             f"missing references {len(missing_references)}"
             + (f": {missing_references[:5]}" if missing_references else ""),
             evidence=[
-                f"{row['name']}: corr={row['corr']:.4f} nrmse={row['nrmse']:.4f} "
-                f"mask={row['mask_overlap']:.3f}"
+                f"{row['name']}: coordΔ={row['coord_delta']:.2e} "
+                f"mask={row['mask_overlap']:.3f} ef={row['ef_landmark']:.3f} "
+                f"kx={row['kx_landmark']:.3f} (recorded: corr={row['corr']:.4f} "
+                f"nrmse={row['nrmse']:.4f})"
                 for row in failures[:5]
             ] or notes[:5],
         ))

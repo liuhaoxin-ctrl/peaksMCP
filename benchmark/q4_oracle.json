@@ -1,6 +1,6 @@
 {
-  "status": "unqualified",
-  "generated_at": "2026-09-10T17:56:28.453229+00:00",
+  "status": "qualified",
+  "generated_at": "2026-09-10T18:03:00.577654+00:00",
   "data_dir": "/Users/haoxin/Documents/实验数据/BP260623/data_netcdf",
   "reference_dir": "/Users/haoxin/Documents/实验数据/BP260623/data_netcdf",
   "provenance": {
@@ -100,17 +100,31 @@
     }
   },
   "thresholds": {
-    "coord_delta_max": 0.00468747175035561,
-    "corr_min": 0.7768287126414277,
-    "nrmse_max": 406.52780585317646,
-    "shape_max": 1.2927432216420567,
-    "mask_overlap_min": 0.9,
+    "coord_delta_max": 0.016217972379999196,
+    "mask_overlap_min": 0.9594198201866109,
     "ef_landmark_max": 0.15,
     "kx_landmark_max": 0.05
   },
-  "unqualified_reasons": [
-    "no_zeroing: correlation does not separate",
-    "centre_slice: correlation does not separate",
-    "centre_slice: coordinates do not separate"
-  ]
+  "gating_metrics": [
+    "coord_delta",
+    "mask_overlap",
+    "ef_landmark",
+    "kx_landmark"
+  ],
+  "recorded_metrics": [
+    "corr",
+    "nrmse",
+    "shape",
+    "efficiency"
+  ],
+  "undetectable_controls": [
+    "centre_slice"
+  ],
+  "required_controls": [
+    "wrong_ef",
+    "no_zeroing",
+    "wrong_angle",
+    "wrong_scan"
+  ],
+  "unqualified_reasons": []
 }

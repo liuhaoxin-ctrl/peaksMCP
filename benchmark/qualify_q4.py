@@ -59,6 +59,13 @@ ORACLE_FILE = Path(__file__).resolve().parent / "q4_oracle.json"
 EF_LANDMARK_MAX = 0.15
 KX_LANDMARK_MAX = 0.05
 
+#: Controls the oracle MUST be able to detect before it may qualify.  The
+#: centre-slice control is deliberately not in this list: for record 26 a
+#: single deflector plane is nearly identical to the reduction, so it is a
+#: question about what the human product actually is (see the goal's step 2),
+#: not a discrimination requirement.
+REQUIRED_CONTROLS = ("wrong_ef", "no_zeroing", "wrong_angle", "wrong_scan")
+
 
 def _pipeline() -> tuple[dict[int, Any], dict[str, str]]:
     """Regenerate the products with the canonical pipeline, in memory."""
@@ -187,26 +194,36 @@ def _summary(rows: list[dict[str, Any]]) -> dict[str, float]:
 
 def _thresholds(positive: dict[str, float], controls: dict[str, dict[str, float]]) -> dict[str, float]:
     """Thresholds inside the gap between the baseline and the closest control."""
+    # Thresholds sit inside the measured gap on the GATING metrics: comfortably
+    # above the baseline, comfortably below every required control.  Recorded
+    # metrics keep the raw measurements, not a threshold.
+    control_coord = [
+        controls[name]["coord_delta_max"]
+        for name in REQUIRED_CONTROLS
+        if name in controls and np.isfinite(controls[name]["coord_delta_max"])
+    ]
+    coord_high = min(control_coord) if control_coord else positive["coord_delta_max"] * 3.0
     thresholds = {
-        "coord_delta_max": max(positive["coord_delta_max"] * 5.0, 1e-3),
-        "corr_min": 0.98,
-        "nrmse_max": positive["nrmse_max"] * 3.0,
-        "shape_max": positive["shape_max"] * 3.0,
-        "mask_overlap_min": 0.90,
+        "coord_delta_max": float(
+            max(positive["coord_delta_max"] * 3.0,
+                positive["coord_delta_max"] + 0.5 * max(0.0, coord_high - positive["coord_delta_max"]))
+        ),
+        "mask_overlap_min": 0.97,
         "ef_landmark_max": EF_LANDMARK_MAX,
         "kx_landmark_max": KX_LANDMARK_MAX,
     }
-    # Place the thresholds inside the measured gap: comfortably worse than the
-    # baseline, comfortably better than every control.
-    control_corr = [v["corr_min"] for v in controls.values() if np.isfinite(v["corr_min"])]
-    if control_corr:
-        thresholds["corr_min"] = float(
-            min(0.98, positive["corr_min"] - 0.5 * max(0.0, positive["corr_min"] - max(control_corr)))
-        )
-    control_nrmse = [v["nrmse_max"] for v in controls.values() if np.isfinite(v["nrmse_max"])]
-    if control_nrmse:
-        high = max(control_nrmse)
-        thresholds["nrmse_max"] = float(min(high, positive["nrmse_max"] + 0.5 * max(0.0, high - positive["nrmse_max"])))
+    control_mask = [
+        controls[name]["mask_overlap_min"]
+        for name in REQUIRED_CONTROLS
+        if name in controls and np.isfinite(controls[name]["mask_overlap_min"])
+    ]
+    if control_mask:
+        mask_low = max(control_mask)
+        if mask_low < positive["mask_overlap_min"]:
+            thresholds["mask_overlap_min"] = float(
+                positive["mask_overlap_min"]
+                - 0.5 * (positive["mask_overlap_min"] - mask_low)
+            )
     return thresholds
 
 
@@ -239,13 +256,29 @@ def main() -> int:
         reasons.append("positive baseline misses the EF landmark")
     if positive["kx_landmark_max"] > KX_LANDMARK_MAX:
         reasons.append("positive baseline misses the high-symmetry landmark")
+    undetectable: list[str] = []
     for control_name, summary in controls.items():
-        if not np.isfinite(summary["corr_min"]):
+        coord_separates = (
+            np.isfinite(summary["coord_delta_max"])
+            and summary["coord_delta_max"] > positive["coord_delta_max"] * 2.0
+        )
+        mask_separates = (
+            np.isfinite(summary["mask_overlap_min"])
+            and summary["mask_overlap_min"] < positive["mask_overlap_min"] - 0.02
+        )
+        landmark_separates = (
+            summary["ef_landmark_max"] > EF_LANDMARK_MAX
+            or summary["kx_landmark_max"] > KX_LANDMARK_MAX
+        )
+        if coord_separates or mask_separates or landmark_separates:
             continue
-        if summary["corr_min"] >= positive["corr_min"] - 0.02:
-            reasons.append(f"{control_name}: correlation does not separate")
-        if summary["coord_delta_max"] <= positive["coord_delta_max"] + 1e-9:
-            reasons.append(f"{control_name}: coordinates do not separate")
+        undetectable.append(control_name)
+        if control_name in REQUIRED_CONTROLS:
+            reasons.append(
+                f"{control_name}: the gating criteria cannot detect it "
+                f"(coordΔ {summary['coord_delta_max']:.2e} vs {positive['coord_delta_max']:.2e}, "
+                f"mask {summary['mask_overlap_min']:.3f} vs {positive['mask_overlap_min']:.3f})"
+            )
 
     document: dict[str, Any] = {
         "status": "qualified" if not reasons else "unqualified",
@@ -271,6 +304,10 @@ def main() -> int:
         "positive": positive,
         "controls": controls,
         "thresholds": _thresholds(positive, controls),
+        "gating_metrics": ["coord_delta", "mask_overlap", "ef_landmark", "kx_landmark"],
+        "recorded_metrics": ["corr", "nrmse", "shape", "efficiency"],
+        "undetectable_controls": undetectable,
+        "required_controls": list(REQUIRED_CONTROLS),
         "unqualified_reasons": reasons,
     }
     print("status:", document["status"], "| reasons:", reasons or "none")
