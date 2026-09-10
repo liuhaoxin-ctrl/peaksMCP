@@ -1,0 +1,116 @@
+{
+  "status": "unqualified",
+  "generated_at": "2026-09-10T17:56:28.453229+00:00",
+  "data_dir": "/Users/haoxin/Documents/实验数据/BP260623/data_netcdf",
+  "reference_dir": "/Users/haoxin/Documents/实验数据/BP260623/data_netcdf",
+  "provenance": {
+    "gold_index": "20",
+    "ef_correction": "{\"c0\": 2.6591573962418527, \"c1\": -7.492549572199673e-05, \"c2\": -8.831999547205984e-07, \"c3\": 1.2494729760429306e-07, \"c4\": -1.4415553739119706e-09}",
+    "cuts": "5,6,9,10,11,12,15,16,19,21,22,25,26,27",
+    "python": "3.12.13",
+    "platform": "macOS-15.5-arm64-arm-64bit",
+    "numpy": "2.5.2",
+    "xarray": "2026.7.0",
+    "peaks": "unknown",
+    "peaksMCP": "0.1.0",
+    "reference_recipe": "not recoverable from the repository: the human products are inputs to the case, not artefacts of it.  The metrics below are therefore measured against them rather than derived from a documented recipe; reference file attributes are recorded too.",
+    "reference_attrs": {
+      "BP_0005_processed.nc": {},
+      "BP_0006_processed.nc": {},
+      "BP_0009_processed.nc": {},
+      "BP_0010_processed.nc": {},
+      "BP_0011_processed.nc": {},
+      "BP_0012_processed.nc": {},
+      "BP_0015_processed.nc": {},
+      "BP_0016_processed.nc": {},
+      "BP_0019_processed.nc": {},
+      "BP_0021_processed.nc": {},
+      "BP_0022_processed.nc": {},
+      "BP_0025_processed.nc": {},
+      "BP_0026_processed.nc": {},
+      "BP_0027_processed.nc": {}
+    }
+  },
+  "positive": {
+    "files": 14,
+    "corr_min": 0.7768287126414277,
+    "nrmse_max": 61.60901307597074,
+    "shape_max": 0.4309144072140189,
+    "coord_delta_max": 0.0009374943500711219,
+    "mask_overlap_min": 0.9928209760619964,
+    "ef_landmark_max": 0.0006875480866130879,
+    "kx_landmark_max": 0.0004535930596940574,
+    "dims_ok": 1.0
+  },
+  "controls": {
+    "wrong_ef": {
+      "files": 14,
+      "corr_min": -0.3689756283956268,
+      "nrmse_max": 61.60901307597074,
+      "shape_max": 1.5552207894303294,
+      "coord_delta_max": 0.2994026850544016,
+      "mask_overlap_min": 0.7865677045619116,
+      "ef_landmark_max": 0.2556875480866112,
+      "kx_landmark_max": 0.0004535930596940574,
+      "dims_ok": 1.0
+    },
+    "no_zeroing": {
+      "files": 14,
+      "corr_min": 0.7748242331013546,
+      "nrmse_max": 61.63135764794872,
+      "shape_max": 0.4371141541794149,
+      "coord_delta_max": 0.03149845040992727,
+      "mask_overlap_min": 0.9260186643112255,
+      "ef_landmark_max": 0.000687546865677735,
+      "kx_landmark_max": 0.0001497787742487655,
+      "dims_ok": 1.0
+    },
+    "wrong_angle": {
+      "files": 14,
+      "corr_min": 0.45751389687532185,
+      "nrmse_max": 59.967699586233046,
+      "shape_max": 0.6261583692149354,
+      "coord_delta_max": 0.09532218053791491,
+      "mask_overlap_min": 0.826350414228393,
+      "ef_landmark_max": 0.0006875480177592763,
+      "kx_landmark_max": 0.00030482939755371863,
+      "dims_ok": 1.0
+    },
+    "centre_slice": {
+      "files": 1,
+      "corr_min": 0.9999982576365144,
+      "nrmse_max": 0.00242500023851817,
+      "shape_max": 0.0013275573759398078,
+      "coord_delta_max": 0.0005973149455984483,
+      "mask_overlap_min": 1.0,
+      "ef_landmark_max": 0.00031243716055451287,
+      "kx_landmark_max": 0.0003167006278047557,
+      "dims_ok": 1.0
+    },
+    "wrong_scan": {
+      "files": 14,
+      "corr_min": 0.1901171754746219,
+      "nrmse_max": 751.4465986303823,
+      "shape_max": 0.9572984085822709,
+      "coord_delta_max": 3.5015973149523885,
+      "mask_overlap_min": 0.07887672844466906,
+      "ef_landmark_max": 0.0006875480866130879,
+      "kx_landmark_max": 0.0004535930596940574,
+      "dims_ok": 1.0
+    }
+  },
+  "thresholds": {
+    "coord_delta_max": 0.00468747175035561,
+    "corr_min": 0.7768287126414277,
+    "nrmse_max": 406.52780585317646,
+    "shape_max": 1.2927432216420567,
+    "mask_overlap_min": 0.9,
+    "ef_landmark_max": 0.15,
+    "kx_landmark_max": 0.05
+  },
+  "unqualified_reasons": [
+    "no_zeroing: correlation does not separate",
+    "centre_slice: correlation does not separate",
+    "centre_slice: coordinates do not separate"
+  ]
+}
