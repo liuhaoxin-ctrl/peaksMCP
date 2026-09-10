@@ -31,7 +31,9 @@ tools:
       (bounded; raw cell outputs are NEVER returned - they travel exactly
       once, settled inside the run_cell reply). target discriminates:
       "variables" (namespace rows), "variable" (one named variable - pass
-      variable_name), "active_cell" (current cell identity/source metadata),
+      variable_name), "kernel" (live kernel state: busy/idle, so a timed-out
+      cell can be checked before retrying), "active_cell" (current cell
+      identity/source metadata),
       "cells" (bounded trailing notebook history - tail + pagination via
       limit/offset) or "cell" (one cell by id or index - pass cell). detail
       selects "summary" (one bounded line per item) or "preview"

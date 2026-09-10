@@ -360,7 +360,9 @@ class NotebookBackend:
         """Generic inspect_notebook protocol (target x detail, bounded).
 
         Targets: ``variables`` (listing rows), ``variable`` (one named
-        variable), ``active_cell`` / ``cells`` / ``cell`` (cell identity,
+        variable), ``kernel`` (live kernel/extension state, including whether
+        the kernel is still busy after a timeout), ``active_cell`` /
+        ``cells`` / ``cell`` (cell identity,
         source and - when ``with_text_outputs=True`` - the cell's bounded
         TEXT outputs: stream stdout/stderr + text/plain only, capped at
         ~8KB/cell; images and other payloads are never returned, so the
@@ -374,6 +376,8 @@ class NotebookBackend:
             if not variable_name:
                 raise ValueError("inspect_notebook: target='variable' requires variable_name")
             return self._inspect_variable(variable_name, detail=detail)
+        if target == "kernel":
+            return self._inspect_kernel(detail=detail)
         if target == "active_cell":
             return self._inspect_active_cell(detail=detail, with_text_outputs=with_text_outputs)
         if target == "cells":
@@ -390,6 +394,14 @@ class NotebookBackend:
             f"inspect_notebook: unknown target {target!r}; expected "
             "variables | variable | active_cell | cells | cell"
         )
+
+    def _inspect_kernel(self, *, detail: str) -> dict[str, Any]:
+        """Live kernel/extension state: the companion view for run_cell timeouts.
+
+        ``run_cell`` never interrupts the kernel, so the model uses this to see
+        whether the timed-out cell is still executing before it retries.
+        """
+        return {"target": "kernel", "detail": detail, **self.server_status()}
 
     def _inspect_variables(self, *, detail: str, limit: int) -> dict[str, Any]:
         limit = max(1, min(int(limit), _LIST_VARIABLES_LIMIT))
@@ -608,9 +620,14 @@ class NotebookBackend:
         }
 
     def server_status(self) -> dict[str, Any]:
+        busy_since = getattr(self.state, "busy_since", None)
         return {
             "status": "ready",
             "uptime_s": round(time.time() - self.state.started_at, 3),
+            # A run_cell timeout does not interrupt the kernel: the agent needs
+            # this to decide between waiting, inspecting and retrying.
+            "kernel_state": getattr(self.state, "kernel_state", None),
+            "kernel_busy_s": round(time.time() - busy_since, 3) if busy_since else None,
             "kernel_instance_id": self.state.kernel_instance_id,
             "mcp_instance_id": self.state.mcp_instance_id,
             "extension_loaded": True,

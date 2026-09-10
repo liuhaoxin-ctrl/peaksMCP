@@ -120,11 +120,11 @@ class SaveGateway:
     def __init__(self) -> None:
         self._staged: dict[str, PendingBatch] = {}
         self._lock = threading.RLock()
-        self._channel: Callable[[dict[str, Any]], bool] | None = None
+        self._channel: Callable[[dict[str, Any]], bool | None] | None = None
         self.scavenge()
 
     # -- channel ownership ---------------------------------------------------
-    def set_approval_channel(self, channel: Callable[[dict[str, Any]], bool] | None) -> None:
+    def set_approval_channel(self, channel: Callable[[dict[str, Any]], bool | None] | None) -> None:
         """Install the human-approval channel (frontend card) or remove it."""
         with self._lock:
             self._channel = channel
@@ -138,7 +138,10 @@ class SaveGateway:
         channel = self._channel
         if channel is None:
             return None
-        return bool(channel(self.ticket_payload(ticket)))
+        answer = channel(self.ticket_payload(ticket))
+        # ``None`` from the channel = the approver was unreachable (frontend
+        # offline); that is a blocked disposition, not a human refusal.
+        return None if answer is None else bool(answer)
 
     # -- registry ------------------------------------------------------------
     def scavenge(self) -> None:
@@ -694,7 +697,10 @@ def _save_result(
         if approved is None:
             gateway.discard(ticket.ticket_id)
             receipt.status = "blocked"
-            receipt.note = "no approval channel is installed; nothing was written"
+            receipt.note = (
+                "no approver was reachable (no approval channel, or the notebook "
+                "frontend is not connected); nothing was written"
+            )
             return receipt
         if not approved:
             gateway.discard(ticket.ticket_id)

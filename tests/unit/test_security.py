@@ -287,7 +287,10 @@ def test_syntax_errors_are_structured_and_blocked():
 
 
 def test_consent_fails_closed_without_frontend():
-    assert ConsentManager().request("delete", {}) is False
+    """No frontend means nobody can be asked: the answer is ``None`` (no
+    approver reachable), never ``False`` (which would claim a human refused).
+    Callers still fail closed - a falsy answer refuses the operation."""
+    assert ConsentManager().request("delete", {}) is None
 
 
 def test_notebook_is_append_only_no_delete_or_reorder():
@@ -799,3 +802,29 @@ def test_scope_mismatch_hint_distinguishes_proven_name(tmp_path):
     assert result.get("blocked") is True
     assert "scope" in result["message"] or "不匹配" in result["message"]
     assert "dataarray" in entry["id"]
+
+
+def test_run_cell_replies_carry_the_kernel_disposition(tmp_path):
+    """Every run_cell reply - including refusals - says whether the kernel is
+    busy, so a timeout can be triaged instead of guessed at."""
+    from unittest.mock import Mock
+
+    from peaksMCP.server.jupyter_peaks.backend import (
+        SharedState,
+        UnsafeNotebookBackend,
+    )
+
+    state = SharedState(Mock(user_ns={}))
+    state.require_consent = False
+    state.bridge = Mock()
+    state.bridge.request.return_value = {"ok": True}
+    notebook = UnsafeNotebookBackend(state, ConsentManager(), AuditLogger(str(tmp_path / "a.jsonl")))
+
+    blocked = notebook.write_with_api_check("da.make_up_a_name()", timeout=5)
+    assert blocked["blocked"] is True
+    assert blocked["kernel_state"] == "idle"
+
+    state.mark_busy()
+    busy = notebook.write_with_api_check("da.another_made_up_name()", timeout=5)
+    assert busy["kernel_state"] == "busy"
+    assert busy["kernel_busy_s"] is not None

@@ -190,3 +190,38 @@ def test_run_cell_timeout_returns_structured_note(tmp_path):
     result = backend.execute_code("import time; time.sleep(999)", timeout=0.05)
     assert result["execution_timed_out"] is True
     assert "TIMEOUT IS NOT STOP" in result["note"]
+
+
+def test_save_with_unreachable_approver_is_blocked_not_denied(tmp_path):
+    """The channel exists but the frontend is gone: nobody could approve, so the
+    receipt must say blocked - ``denied`` means a human actively refused, which
+    would make the agent believe it was rejected on purpose."""
+    bridge = _FakeBridge()
+    backend = _backend(tmp_path, {"scan": _array()}, bridge)
+    target = tmp_path / "out.nc"
+
+    def unreachable(payload):
+        bridge.events.append("consent-unreachable")
+        return None
+
+    save_module._set_approval_channel(unreachable)
+    receipt = backend.save_with_consent("scan", str(target))
+
+    assert receipt["status"] == "blocked", receipt
+    assert "reachable" in receipt["note"]
+    assert not target.exists()
+
+
+def test_consent_request_reports_nobody_reachable_without_a_frontend():
+    """``ConsentManager.request`` returns None (not False) when no approver can
+    be reached, so callers can tell "no channel" from "human said no"."""
+    from peaksMCP.server.jupyter_peaks.security import ConsentManager
+
+    assert ConsentManager().request("save_ticket", {}) is None
+
+    class _Disconnected:
+        connected = False
+
+    assert ConsentManager(_Disconnected()).request("save_ticket", {}) is None
+    assert ConsentManager(callback=lambda *_: False).request("save_ticket", {}) is False
+    assert ConsentManager(callback=lambda *_: None).request("save_ticket", {}) is None

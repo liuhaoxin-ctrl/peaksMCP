@@ -550,8 +550,13 @@ def register_unsafe_tools(mcp: FastMCP, notebook: UnsafeNotebookBackend, audit: 
         ``get`` this session (unproven ids are refused).  Raw Jupyter outputs
         are never echoed to the model: the response replaces them with an
         ``output`` list containing only errors, the "Inline figure rendered
-        ..." line and interactive markers; a text-only cell returns ``[]`` by
-        design.  Cell identity and execution flags stay on the response.
+        ..." line and interactive markers, while ``stdout_lines`` /
+        ``stdout_head`` report the cell's own print output (a text-only cell
+        therefore returns ``[]`` plus the stdout signal).  Cell identity and
+        execution flags stay on the response, and ``kernel_state`` /
+        ``kernel_busy_s`` say whether the kernel is still executing - a timeout
+        never interrupts it, so inspect before retrying (or use
+        ``inspect_notebook(target="kernel")``).
         """
         result = notebook.write_with_api_check(code=code, timeout=timeout, api_ids=api_ids)
         if isinstance(result, dict) and isinstance(result.get("outputs"), list):
@@ -574,6 +579,8 @@ def register_unsafe_tools(mcp: FastMCP, notebook: UnsafeNotebookBackend, audit: 
                 # 的长文本需要时用 inspect_notebook with_text_outputs 回读）。
                 "stdout_lines": stdout_lines,
                 "stdout_head": stdout_head,
+                "kernel_state": result.get("kernel_state"),
+                "kernel_busy_s": result.get("kernel_busy_s"),
                 "api_check": result.get("api_check"),
             }
         return result

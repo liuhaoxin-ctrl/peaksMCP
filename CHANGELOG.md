@@ -24,6 +24,30 @@ live before the fix:
   was dead code. Fixed to `rule_id`, with a regression test that asserts the
   card is requested (and declined) with the master switch off.
 
+### Fixed: P1 review findings round 1 (index keys, consent semantics, kernel state)
+
+- **One decision-list entry per scan.** `inspect_experiment` keyed loaded
+  entries by `entry.experiment_index` as-is, and that value comes either from
+  the file stem (int) or from a NetCDF attribute (often a string), so
+  `X.nc` + `X_processed.nc` produced `15` **and** `"15"`: on the real
+  BP260623 dataset the summary reported 42 records and 28 cuts (14 duplicated
+  pairs). Keys are normalised and rows de-duplicated — the same dataset now
+  reports 28 records, 14 cuts, 13 mappings, matching the reviewer's
+  independently computed key.
+- **"Nobody could approve" is no longer reported as "the human refused".**
+  `ConsentManager.request` returns a tri-state now (`True` / `False` /
+  `None` = no approver reachable — no channel, or the frontend is gone), the
+  gateway propagates it, and the save receipt says `blocked` with "no approver
+  was reachable" instead of `denied`. `run_cell` keeps failing closed on a
+  falsy answer but audits the accurate disposition
+  (`requires_explicit_consent` vs `no_consent_channel`).
+- **Kernel state is observable without a sixth tool.** Every `run_cell` reply
+  carries `kernel_state` (`busy`/`idle`) and `kernel_busy_s`, and
+  `inspect_notebook` gained a `kernel` target (status, uptime, instance ids,
+  Comm state, busy duration). A timeout never interrupts the kernel, so the
+  agent can now check instead of guessing — `run_cell`'s docstring documents
+  the `stdout_lines`/`stdout_head` signal at the same time.
+
 ## [Unreleased] — 2026-09-10 (earlier)
 
 ### E2E is now the real-data human-simulation suite (BREAKING for the suite)

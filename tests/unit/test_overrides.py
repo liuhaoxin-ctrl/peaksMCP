@@ -724,3 +724,46 @@ def test_inspect_experiment_prints_the_classification_line(tmp_path, capsys):
     # The line is the same one the model would read back from the cell.
     assert summary.summary_line() in out
     assert isinstance(summary, ExperimentSummary)
+
+
+def test_inspect_experiment_counts_each_scan_once_across_int_and_str_keys():
+    """``X.nc`` (index parsed from the stem) and ``X_processed.nc`` (index read
+    back from a NetCDF attribute as a string) are ONE scan: the decision lists
+    must not carry it twice, or the agent processes it twice."""
+    from peaksMCP.overrides.inspection import inspect_experiment
+    from peaksMCP.overrides.load import LoadedScans, ScanEntry
+
+    entries = [
+        ScanEntry(
+            stem="BP_0015",
+            path="/data/BP_0015.nc",
+            representation="netcdf",
+            experiment_index=15,
+            sizes={"eV": 10, "theta_par": 20},
+        ),
+        ScanEntry(
+            stem="BP_0015_processed",
+            path="/data/BP_0015_processed.nc",
+            representation="processed_netcdf",
+            experiment_index="15",  # string form of the same scan
+            sizes={"eV": 10, "kx": 20},
+        ),
+        ScanEntry(
+            stem="BP_0020",
+            path="/data/BP_0020.nc",
+            representation="netcdf",
+            experiment_index=20,
+            sizes={"eV": 10, "theta_par": 20},
+        ),
+    ]
+    document = {
+        "records": {
+            "15": {"index": 15, "experiment": {"data_format": "sweep"}},
+            "20": {"index": 20, "is_gold_reference": True, "experiment": {"data_format": "sweep"}},
+        }
+    }
+    scans = LoadedScans(entries, source="test", metadata_document=document)
+    summary = inspect_experiment(scans)
+    assert summary.cuts == [15], summary.cuts
+    assert summary.gold == [20]
+    assert [row.index for row in summary.records] == [15, 20]

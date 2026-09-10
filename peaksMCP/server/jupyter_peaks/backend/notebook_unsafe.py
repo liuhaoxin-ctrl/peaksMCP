@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from peaksMCP.config import prompts as _load_prompts
@@ -91,7 +92,17 @@ class UnsafeNotebookBackend:
             details: dict[str, Any] = {"code": code[:4000], "scan": scan.to_dict() if scan else None}
             approved = self.consent.request(operation, details)
             if not approved:
-                self.audit.write(operation, "denied", {"reason": "requires_explicit_consent"})
+                self.audit.write(
+                    operation,
+                    "denied" if approved is False else "blocked",
+                    {
+                        "reason": (
+                            "requires_explicit_consent"
+                            if approved is False
+                            else "no_consent_channel"
+                        )
+                    },
+                )
                 raise PermissionError("user did not approve the notebook operation")
         self.audit.write(operation, "approved", {})
 
@@ -220,6 +231,34 @@ class UnsafeNotebookBackend:
         return tag
 
     def write_with_api_check(
+        self,
+        code: str,
+        timeout: float = 120.0,
+        api_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Write and execute ``code`` after checking Peaks API references.
+
+        Every reply - blocked, refused or executed - carries ``kernel_state``
+        (``busy``/``idle``) and ``kernel_busy_s``: a timeout does NOT stop the
+        kernel, so the model must be able to see whether it is still working
+        before it retries or queues further cells.
+        """
+        return self._with_kernel_state(
+            self._write_with_api_check(code=code, timeout=timeout, api_ids=api_ids)
+        )
+
+    def _with_kernel_state(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Attach the live kernel disposition to one run_cell reply."""
+        state = self.state
+        busy_since = getattr(state, "busy_since", None)
+        payload.setdefault("kernel_state", getattr(state, "kernel_state", None))
+        payload.setdefault(
+            "kernel_busy_s",
+            round(time.time() - busy_since, 3) if busy_since else None,
+        )
+        return payload
+
+    def _write_with_api_check(
         self,
         code: str,
         timeout: float = 120.0,

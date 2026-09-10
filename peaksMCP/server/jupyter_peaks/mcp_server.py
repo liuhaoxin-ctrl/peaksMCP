@@ -74,13 +74,14 @@ class JupyterPeaksMCPServer:
         install_gateway(gateway)
         self.save_gateway = gateway
 
-    def _approve_save_card(self, preview: dict) -> bool:
+    def _approve_save_card(self, preview: dict) -> bool | None:
+        """Route the save card to the frontend; ``None`` = nobody was reachable."""
         approved = self.consent.request("save_ticket", dict(preview))
         items = preview.get("items") or []
         first = items[0] if items else {}
         self.audit.write(
             "save_consent",
-            "approved" if approved else "denied",
+            "approved" if approved else ("denied" if approved is False else "blocked"),
             {
                 "operation": preview.get("operation"),
                 "ticket_id": preview.get("ticket_id"),

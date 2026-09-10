@@ -424,3 +424,24 @@ def test_variable_listing_and_summary_handle_datasets():
     preview = backend.inspect("variable", variable_name="fit", detail="preview")
     assert preview["type"] == "xarray.Dataset"
     assert preview["variables"]["fit"]["dims"] == ["eV"]
+
+
+def test_kernel_target_reports_busy_state_for_timeout_recovery():
+    """A run_cell timeout never interrupts the kernel, so the agent needs a way
+    to see whether it is still executing before retrying."""
+    state = SharedState(FakeIPython({"scan": xr.DataArray([1])}))
+    backend = NotebookBackend(state)
+
+    idle = backend.inspect("kernel")
+    assert idle["target"] == "kernel"
+    assert idle["kernel_state"] == "idle"
+    assert idle["kernel_busy_s"] is None
+
+    state.mark_busy()
+    busy = backend.inspect("kernel")
+    assert busy["kernel_state"] == "busy"
+    assert isinstance(busy["kernel_busy_s"], float)
+    assert busy["kernel_busy_s"] >= 0.0
+
+    state.mark_idle()
+    assert backend.inspect("kernel")["kernel_state"] == "idle"

@@ -256,7 +256,15 @@ def _summarize_rows(
     mappings: list[int | str] = []
     conflicts: list[ExperimentConflict] = []
     windows: set[tuple[float, float]] = set()
-    for index, fields, kind, dims in rows:
+    seen_keys: set[int | str] = set()
+    for raw_index, fields, kind, dims in rows:
+        # One decision-list entry per experiment index: callers may hand over
+        # mixed int/str keys (raw file + processed product), and a duplicated
+        # index would make the agent process the same scan twice.
+        index = _as_key(raw_index)
+        if index in seen_keys:
+            continue
+        seen_keys.add(index)
         data_format = str(fields["data_format"])
         conflict = _conflict_for(
             index,
@@ -375,7 +383,11 @@ def _inspect_loaded(loaded: Any) -> ExperimentSummary:
     for entry in loaded.entries:
         if entry.experiment_index is None:
             continue
-        key = entry.experiment_index
+        # Normalise here: the index is parsed from the stem (int) or read back
+        # from a NetCDF attribute (frequently a string), so ``BP_0015.nc`` and
+        # ``BP_0015_processed.nc`` used to land as 15 and "15" — the same scan
+        # counted twice in every decision list.
+        key = _as_key(entry.experiment_index)
         prior = best_entry.get(key)
         if prior is None or _rank(entry) > _rank(prior):
             best_entry[key] = entry
