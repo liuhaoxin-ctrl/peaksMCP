@@ -704,6 +704,64 @@ def test_write_with_api_check_receiver_aware_and_scope_aware(monkeypatch, tmp_pa
     assert stale.state.api_index.is_stale() is False
 
 
+def test_unique_canonical_name_is_provable_on_an_untyped_receiver(tmp_path):
+    """A name with exactly one canonical id is reachable from an untyped receiver.
+
+    ``fit_gold`` is indexed once (as a DataArray method) and ``k_convert``
+    likewise; neither has a module/top-level twin.  An agent that loaded its
+    object through a facade (``gold = scans[stem]``) cannot be told to "get
+    the canonical id for this call's scope" - there is only one id and no way
+    to infer the call site's scope.  The proof requirement still applies (the
+    id must have been fetched this session); what disappears is the demand for
+    a twin that does not exist.
+    """
+    from unittest.mock import Mock
+
+    from peaksMCP.discovery.index import build_index
+    from peaksMCP.server.jupyter_peaks.backend import (
+        SharedState,
+        UnsafeNotebookBackend,
+    )
+    from peaksMCP.server.jupyter_peaks.security import AuditLogger, ConsentManager
+
+    state = SharedState(Mock(user_ns={}))
+    state.require_consent = False
+    state.api_index = build_index()
+    state.bridge = Mock()
+    state.bridge.request.return_value = {"ok": True}
+    backend = UnsafeNotebookBackend(
+        state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl")
+    )
+
+    # The index carries several scoped ids for the name (dataarray / module /
+    # ...), yet search exposes exactly one row: the twins cannot be discovered.
+    for name in ("fit_gold", "k_convert"):
+        assert len([e for e in state.api_index.entries if e["name"] == name]) >= 2
+        rows = [m for m in state.api_index.search(name, "all", 5) if m.get("name") == name]
+        assert len(rows) == 1
+
+    # Unproven: still blocked, and the reply still points at the canonical id.
+    blocked = backend.write_with_api_check("gold.fit_gold(plot=False)", timeout=5)
+    assert blocked.get("blocked"), blocked
+    assert "fit_gold" in str(blocked.get("unknown_refs"))
+
+    # After get, the method form works on a plain variable of unknown type,
+    # and so does the bare form of the one-id name.
+    _prove(state, state.api_index, "fit_gold", "dataarray")
+    _prove(state, state.api_index, "k_convert", "dataarray")
+    for code in (
+        "gold.fit_gold(plot=False)",
+        "k_convert(da, quiet=True)",
+        "shifted.k_convert(quiet=True)",
+    ):
+        result = backend.write_with_api_check(code, timeout=5)
+        assert not result.get("blocked"), (code, result)
+
+    # An inconclusive receiver stays fail-closed for names Peaks does not have.
+    blocked = backend.write_with_api_check("make().correct_EF()", timeout=5)
+    assert blocked.get("blocked"), blocked
+
+
 def test_project_import_gate_accepts_all_legal_import_forms(tmp_path):
     """Legal peaksMCP import shapes must all pass the API check: plain,
     parenthesised across lines, ``as`` renames, and module-alias calls."""
@@ -790,18 +848,28 @@ def test_scope_mismatch_hint_distinguishes_proven_name(tmp_path):
     state.bridge.request.return_value = {"ok": True}
     nb = UnsafeNotebookBackend(state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl"))
 
-    # 只证明 dataarray scope 的 k_convert。
-    entry = next(
-        e for e in state.api_index.entries
-        if e["name"] == "k_convert" and e["scope"] == "dataarray"
-    )
+    # 只证明 dataarray scope 的 k_convert：未定型调用点（裸调用 / 无法推断
+    # 接收者）接受该证明 —— search 只能给出这一条 id，找不到 module twin。
     _prove(state, state.api_index, "k_convert", "dataarray")
+    assert not nb.write_with_api_check("k_convert(da, quiet=True)", timeout=5).get("blocked")
+    assert not nb.write_with_api_check("shifted.k_convert(quiet=True)", timeout=5).get("blocked")
 
-    # 裸调用 k_convert(...) 需要 module/top scope 的证明 → scope 不匹配。
-    result = nb.write_with_api_check("k_convert(da, quiet=True)", timeout=5)
+    # 接收者 scope 已知时仍然严格：模块级 plot_bz 用在 DataArray 上 → scope 不匹配。
+    import numpy as np
+    import xarray as xr
+
+    typed = SharedState(Mock(user_ns={"da": xr.DataArray(np.zeros((4, 4)), dims=("eV", "kx"))}))
+    typed.require_consent = False
+    typed.api_index = build_index()
+    typed.bridge = Mock()
+    typed.bridge.request.return_value = {"ok": True}
+    nb_typed = UnsafeNotebookBackend(
+        typed, ConsentManager(), AuditLogger(tmp_path / "typed.jsonl")
+    )
+    _prove(typed, typed.api_index, "plot_bz", "module")
+    result = nb_typed.write_with_api_check("da.plot_bz(...)", timeout=5)
     assert result.get("blocked") is True
-    assert "scope" in result["message"] or "不匹配" in result["message"]
-    assert "dataarray" in entry["id"]
+    assert "不匹配" in result["message"] or "scope" in result["message"]
 
 
 def test_run_cell_replies_carry_the_kernel_disposition(tmp_path):

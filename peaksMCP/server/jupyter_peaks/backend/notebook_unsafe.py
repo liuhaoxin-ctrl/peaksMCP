@@ -501,22 +501,33 @@ class UnsafeNotebookBackend:
         return result
 
     def _proven_ids(self, leaf: str, call_scope: str | None) -> list[str]:
-        """Canonical ids in the proof ledger matching a leaf + call scope."""
+        """Canonical ids in the proof ledger matching a leaf + call scope.
+
+        The receiver's scope is only enforceable when the call site HAS one: a
+        known DataArray/Dataset/accessor receiver accepts a proof in that very
+        scope, so ``da.plot_bz(...)`` (a module-level API) stays blocked even
+        after ``plot_bz`` was fetched, and the scope-mismatch hint stays
+        meaningful.
+
+        A bare call or an untyped receiver carries no scope of its own, and
+        ``search`` returns exactly ONE row per name - the index's module-scope
+        twin of a DataArray method (``module:peaks.core.process.k_conversion:
+        k_convert``) is not discoverable through the model-facing tools.  The
+        old rule demanded precisely that twin for those call sites, so the
+        advice "search for the canonical id of this call's scope and get it
+        again" pointed at an id the caller could never find: the real-model
+        trials spent 11 blocked calls on it.  Untyped call sites therefore
+        accept any proven id for the name.  What the gate still guarantees is
+        unchanged - the name must resolve to a real Peaks API and must have
+        been fetched with ``get`` in this session.
+        """
+        untyped = call_scope in {None, "bare", "unknown_receiver"}
         proven: list[str] = []
         for snapshot in self.state.verified_apis.values():
             if snapshot.get("name") != leaf:
                 continue
-            entry_scope = snapshot.get("scope")
-            if call_scope in {"dataarray", "dataset", "datatree"}:
-                if entry_scope != call_scope:
-                    continue
-            elif call_scope in {None, "bare", "unknown_receiver"}:
-                if entry_scope not in {None, "module", "top_level", "top", "top-level"}:
-                    continue
-            else:
-                # Accessor-class scope (e.g. ``metadata`` / ``quick_fit``).
-                if entry_scope != call_scope:
-                    continue
+            if not untyped and snapshot.get("scope") != call_scope:
+                continue
             proven.append(str(snapshot["id"]))
         return sorted(set(proven))
 
