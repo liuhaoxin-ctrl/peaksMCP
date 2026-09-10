@@ -48,6 +48,30 @@ live before the fix:
   agent can now check instead of guessing — `run_cell`'s docstring documents
   the `stdout_lines`/`stdout_head` signal at the same time.
 
+### Changed: manifest v5 - the contract declares parameters, not prose (BREAKING)
+
+`config/override_manifest.yaml` moves from v4 to v5: `inputs` is now a
+structured list of `{name, type, required, default?, note?}` entries for all
+six adapters (37 declared parameters in total) instead of free text.
+
+The v4 text had already drifted from reality: `inspect_experiment` declared
+`scans:` while its first (required) parameter is `experiment`, and `plot_batch`
+declared `items:` while the real parameter is `data` — an agent following the
+contract wrote `inspect_experiment(scans=...)` and got a `TypeError`.
+
+- `config/schema.py` validates the v5 shape (non-empty list, identifier names,
+  non-empty types, boolean `required`, at least one required parameter, no
+  unknown keys).
+- `discovery/signatures.py` compares the declared names with the resolved
+  signature on every `get`: a declared name that does not exist, or a required
+  real parameter the contract omits, is reported as `contract_input_issues`
+  (with `contract_inputs_ok: false`) and blocks the `get` call; optional
+  parameters the contract does not mention are reported as
+  `contract_undocumented_params`.
+- `tests/unit/test_manifest_invariants.py` is the CI gate: every row must be
+  complete (no undocumented parameters) and its required set must equal the
+  signature's.
+
 ## [Unreleased] — 2026-09-10 (earlier)
 
 ### E2E is now the real-data human-simulation suite (BREAKING for the suite)

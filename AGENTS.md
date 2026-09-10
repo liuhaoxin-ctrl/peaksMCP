@@ -116,9 +116,13 @@ Claude Desktop <-> STDIO proxy <-> HTTP MCP <-> Jupyter kernel <-> JupyterLab Co
 - `peaksMCP/config/native_catalog.yaml` — upstream peaks presentation
   (aliases + docstring notes; fixed native tier; strict v1 schema)
 - `peaksMCP/config/override_manifest.yaml` — the single manifest of public
-  project APIs (strict v4 schema: one row per adapter with the FULL contract
-  - export/exposure/aliases/summary/inputs/returns/preconditions/
-  side_effects/errors/example; no seeds block)
+  project APIs (strict v5 schema: one row per adapter with the FULL contract
+  - export/exposure/aliases/summary/returns/preconditions/side_effects/
+  errors/example, and a STRUCTURED `inputs` list of
+  `{name, type, required, default?, note?}` entries; no seeds block).  The
+  declared input names are checked against the real signature at runtime
+  (`discovery/signatures.py`): a typo, rename or omitted required parameter
+  fails `tests/unit/test_manifest_invariants.py` and the `get` call
 - `peaksMCP/config/schema.py` — strict validation for both catalogs (duplicate
   keys, unknown fields, enum values, ghost references); a damaged default
   configuration fails the index build loudly

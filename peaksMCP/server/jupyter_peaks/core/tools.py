@@ -471,6 +471,12 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
                 "- the override manifest and its implementation have drifted; fix the "
                 "manifest row or the adapter before use."
             )
+        if detail.get("project_added") and detail.get("contract_input_issues"):
+            raise RuntimeError(
+                "manifest inputs do not match the adapter signature: "
+                + "; ".join(detail["contract_input_issues"])
+                + " - fix the manifest row before use."
+            )
         return detail
 
     def inspect_notebook(

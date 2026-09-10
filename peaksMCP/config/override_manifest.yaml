@@ -1,4 +1,4 @@
-version: 4
+version: 5
 # peaksMCP project API manifest - the model's curated black-box surface.
 #
 # Exactly six public adapters are registered here; every other peaksMCP
@@ -7,6 +7,11 @@ version: 4
 # statically into the API index (no AST scan of peaksMCP); native peaks APIs
 # are the only dynamically scanned tier.  Signatures are verified at runtime
 # by importing `export`; get returns this structured contract.
+#
+# v5: `inputs` is a STRUCTURED list of declared parameters
+# ({name, type, required, default?, note?}) instead of free text, so declared
+# parameter names are checked against the real signature (a typo or a rename
+# fails the schema/invariant tests and the runtime get call).
 apis:
   load_data:
     export: peaksMCP.overrides.load_data
@@ -43,9 +48,10 @@ apis:
     - 读取PXT
     - 打开PXT
     summary: Load any data for the agent - one file, or an identity index of a folder/list.
-    inputs: 'source: one file (.pxt/.nc), a folder, or a sequence of paths; lazy:
-      bool=False (True keeps values dask-backed; materialise with da.load() before
-      native numerics); metadata: optional path/dict'
+    inputs:
+      - {name: source, type: 'str | Path | list | tuple', required: true, note: 'one .pxt/.nc file, a folder, or a sequence of paths'}
+      - {name: lazy, type: bool, required: false, default: false, note: 'true keeps values dask-backed; materialise with da.load() before native numerics'}
+      - {name: metadata, type: 'str | Path | dict | None', required: false, default: null, note: 'explicit metadata document for the index'}
     returns: 'peaks DataArray (one file) or LoadedScans (folder/sequence: identity
       index - stem/path/representation/sizes/metadata provenance + scans[stem] data
       layer; no classification)'
@@ -68,8 +74,12 @@ apis:
     - 转换文件或目录
     summary: Thin PXT-to-NetCDF compatibility boundary under human consent (no
       analysis freedom; one verb repeated per file).
-    inputs: 'source: file or directory; output_dir; metadata; match: str="";
-      overwrite: bool=False'
+    inputs:
+      - {name: source, type: 'str | Path', required: true, note: 'one PXT file or a folder of PXT files'}
+      - {name: output_dir, type: 'str | Path | None', required: false, default: null, note: 'destination; defaults to the sibling <folder>_netcdf/'}
+      - {name: metadata, type: 'str | Path | None', required: false, default: null}
+      - {name: match, type: str, required: false, default: '', note: 'filename substring filter for a folder batch'}
+      - {name: overwrite, type: bool, required: false, default: false}
     returns: 'ConversionReport (per-item status/output_exists/errors/warnings);
       never printed - the report object is the outcome'
     preconditions: 'source exists; metadata exists when given; the target
@@ -94,9 +104,9 @@ apis:
     - 扫描分类
     summary: 'Classify one experiment: per-record ScanKind, decision lists and
       shape conflicts (the single classification owner).'
-    inputs: 'scans: LoadedScans from load_data (primary form); standalone documents
-      also accepted: metadata path/dict/DataArray with optional scans= dict of
-      index->DataArray'
+    inputs:
+      - {name: experiment, type: 'LoadedScans | str | Path | dict | DataArray', required: true, note: 'primary form: the load_data index; standalone metadata documents are also accepted'}
+      - {name: scans, type: 'dict[int | str, DataArray] | None', required: false, default: null, note: 'document-only form: loaded arrays keyed by record index'}
     returns: 'ExperimentSummary (records with ScanKind/dims/energy windows +
       gold/cuts/mappings decision lists + structured conflicts; JSON-safe)'
     preconditions: 'index entries carry header sizes; metadata document on the
@@ -123,8 +133,19 @@ apis:
     - 批量绘图
     - 批量图
     summary: Deterministic inline grid of matplotlib figures for a list of DataArrays.
-    inputs: 'items: sequence of 1D/2D xarray.DataArray; max_cols=5; shared_colorbar=''auto''|True|False;
-      titles/figsize/dpi optional'
+    inputs:
+      - {name: data, type: 'sequence of 1D/2D DataArray', required: true}
+      - {name: titles, type: 'sequence[str] | None', required: false, default: null}
+      - {name: max_cols, type: int, required: false, default: 5}
+      - {name: max_panels_per_figure, type: int, required: false, default: 20}
+      - {name: sharex, type: bool, required: false, default: false}
+      - {name: sharey, type: bool, required: false, default: false}
+      - {name: shared_units, type: bool, required: false, default: true}
+      - {name: shared_colorbar, type: "bool | 'auto'", required: false, default: "'auto'"}
+      - {name: figsize_per_panel, type: 'tuple[float, float]', required: false, default: '(4.0, 3.5)'}
+      - {name: dpi, type: int, required: false, default: 180}
+      - {name: cmap, type: str, required: false, default: "'viridis'"}
+      - {name: plot_kwargs, type: 'mapping passthrough', required: false, note: '**kwargs forwarded to the panel plot'}
     returns: list of matplotlib Figure (rendered inline in the notebook)
     preconditions: arrays are 1D/2D; a shared colorbar needs matching intensity units
     errors: shared_colorbar=True with incompatible units or ranges; titles length
@@ -147,8 +168,19 @@ apis:
     - 单条验证
     summary: 'Inline before/after figure for one cut: raw angle-space vs processed
       k-space.'
-    inputs: 'raw/processed: 2D xarray.DataArray with eV + one other dim; shared_scale=''auto''|True|False;
-      share_energy_axis optional; ef_line=True'
+    inputs:
+      - {name: raw, type: 'DataArray (eV + one other dim)', required: true}
+      - {name: processed, type: 'DataArray (k-space: eV + kx)', required: true}
+      - {name: title_raw, type: str, required: false, default: "'raw (θ)'"}
+      - {name: title_processed, type: str, required: false, default: "'k-space (E − E_F)'"}
+      - {name: ylabel, type: str, required: false, default: "'eV'"}
+      - {name: figsize, type: 'tuple[float, float]', required: false, default: '(9.0, 4.5)'}
+      - {name: dpi, type: int, required: false, default: 180}
+      - {name: cmap, type: str, required: false, default: "'viridis'"}
+      - {name: shared_scale, type: "bool | 'auto'", required: false, default: "'auto'"}
+      - {name: share_energy_axis, type: 'bool | None', required: false, default: null}
+      - {name: ef_line, type: bool, required: false, default: true}
+      - {name: colorbar_label, type: str, required: false, default: "'counts'"}
     returns: matplotlib Figure (rendered inline in the notebook)
     preconditions: both arrays are 2D with an eV dimension
     errors: not 2D or missing eV; explicit shared_scale=True on incompatible inputs
@@ -170,8 +202,13 @@ apis:
     - 展示mapping
     - 固定能层图
     summary: Render one slice of a mapping DataArray and print a one-line report.
-    inputs: 'data: mapping with >=2 dims; dim: str; index=''middle''|int; cmap=''viridis'';
-      debug=False'
+    inputs:
+      - {name: data, type: 'DataArray with >=2 dims', required: true, note: 'a mapping cube or any multi-dim array'}
+      - {name: dim, type: str, required: true, note: 'dimension to slice along'}
+      - {name: index, type: "int | 'middle'", required: false, default: "'middle'"}
+      - {name: title, type: 'str | None', required: false, default: null}
+      - {name: cmap, type: str, required: false, default: "'viridis'"}
+      - {name: debug, type: bool, required: false, default: false}
     returns: dict {status, verb, slice, figure} - the figure renders inline for the
       user
     preconditions: data has >=2 dims and no empty dims; slicing leaves at most 2 dims

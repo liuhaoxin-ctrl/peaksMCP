@@ -30,7 +30,7 @@ def _manifest_document() -> dict:
 
 def test_manifest_rows_declare_the_full_contract():
     document = _manifest_document()
-    assert document["version"] == 4
+    assert document["version"] == 5
     required = {
         "export", "exposure", "summary", "inputs", "returns",
         "preconditions", "side_effects", "errors", "example",
@@ -127,3 +127,63 @@ def test_manifest_examples_only_use_real_parameter_names():
             f"签名参数：{sorted(params)}"
         )
     assert skipped == [], f"example 无法解析的 row 应显式处理：{skipped}"
+
+
+def test_manifest_inputs_are_structured_and_complete():
+    """v5: every row declares its parameters as structured entries, and every
+    real parameter is covered (a contract that omits or invents a name is the
+    drift that made `inspect_experiment(scans=...)` a TypeError)."""
+    from peaksMCP.discovery.signatures import _check_contract_inputs
+
+    for name, entry in _manifest_document()["apis"].items():
+        declared = entry["inputs"]
+        assert isinstance(declared, list) and declared
+        for item in declared:
+            assert set(item) <= {"name", "type", "required", "default", "note"}, (name, item)
+            assert item["name"].isidentifier(), (name, item)
+            assert isinstance(item["type"], str) and item["type"].strip(), (name, item)
+        module_name, _, attr = entry["export"].rpartition(".")
+        obj = getattr(importlib.import_module(module_name), attr)
+        signature = inspect.signature(obj)
+        ok, issues, undocumented = _check_contract_inputs(name, signature, declared)
+        assert ok, f"{name}: {issues}"
+        assert undocumented == [], f"{name} 契约漏声明可选参数: {undocumented}"
+        # required-ness must match the signature exactly
+        declared_required = {item["name"] for item in declared if item.get("required")}
+        real_required = {
+            parameter.name
+            for parameter in signature.parameters.values()
+            if parameter.default is inspect.Parameter.empty
+            and parameter.kind
+            in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        }
+        assert declared_required == real_required, name
+
+
+def test_contract_input_check_catches_renamed_and_missing_parameters():
+    """The historical drifts: ``inspect_experiment`` declared only ``scans:``
+    although the real first parameter (``experiment``) is required, and
+    ``plot_batch`` declared ``items:`` although the real parameter is ``data``."""
+    from peaksMCP.discovery.signatures import _check_contract_inputs
+    from peaksMCP.overrides import inspect_experiment, plot_batch
+
+    ok, issues, _ = _check_contract_inputs(
+        "inspect_experiment",
+        inspect.signature(inspect_experiment),
+        [{"name": "scans", "type": "LoadedScans"}],  # the old free-text contract
+    )
+    assert not ok
+    assert issues == ["required parameter 'experiment' is missing from the declared inputs"]
+
+    ok, issues, _ = _check_contract_inputs(
+        "plot_batch",
+        inspect.signature(plot_batch),
+        [{"name": "items", "type": "sequence of DataArray", "required": True}],
+    )
+    assert not ok
+    assert any("'items' is not a parameter of plot_batch()" in issue for issue in issues)
+    assert any("'data'" in issue and "missing" in issue for issue in issues)
+
+    ok, issues, _ = _check_contract_inputs("inspect_experiment", None, [])
+    assert ok is False
+    assert issues == ["inputs are not a non-empty list"]

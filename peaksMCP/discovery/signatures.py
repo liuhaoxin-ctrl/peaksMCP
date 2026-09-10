@@ -128,8 +128,60 @@ def _bound(signature: str | None, name: str, scope: str) -> str | None:
     return f"{name}({', '.join(parts)})"
 
 
+def _check_contract_inputs(
+    name: str,
+    signature: inspect.Signature | None,
+    inputs: Any,
+) -> tuple[bool, list[str], list[str]]:
+    """Compare a manifest v5 ``inputs`` list with the real signature.
+
+    Returns ``(ok, issues, undocumented)``.  ``issues`` are contract defects
+    that must block ``get``: a declared parameter that does not exist (typo or
+    rename) or a required real parameter the contract forgot to declare.
+    ``undocumented`` lists optional real parameters the contract omits —
+    informational, since parameter names are what the model calls.
+    """
+    if not isinstance(inputs, list) or not inputs:
+        return False, ["inputs are not a non-empty list"], []
+    if signature is None:
+        return False, ["signature could not be resolved"], []
+    declared = [
+        str(item.get("name")) for item in inputs if isinstance(item, dict) and item.get("name")
+    ]
+    parameters = signature.parameters.values()
+    named = {
+        parameter.name
+        for parameter in parameters
+        if parameter.kind
+        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
+    variadic = {
+        parameter.name
+        for parameter in parameters
+        if parameter.kind in (inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL)
+    }
+    required = {
+        parameter.name
+        for parameter in parameters
+        if parameter.default is inspect.Parameter.empty
+        and parameter.kind
+        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
+    issues = [
+        f"declared input {parameter_name!r} is not a parameter of {name}()"
+        for parameter_name in declared
+        if parameter_name not in named | variadic
+    ]
+    issues += [
+        f"required parameter {parameter_name!r} is missing from the declared inputs"
+        for parameter_name in sorted(required - set(declared))
+    ]
+    undocumented = sorted(named - set(declared))
+    return not issues, issues, undocumented
+
+
 def _describe_contract_api(entry: dict[str, Any]) -> dict[str, Any]:
-    """Describe a manifest (v4) project API from its contract, not its source.
+    """Describe a manifest (v5) project API from its contract, not its source.
 
     The export (``peaksMCP.overrides.<name>``) is imported and the signature
     read via :func:`inspect.signature` — the declared surface is runtime-
@@ -144,6 +196,7 @@ def _describe_contract_api(entry: dict[str, Any]) -> dict[str, Any]:
     name = str(entry.get("name") or "")
     export = str(entry.get("export") or f"{entry.get('module')}.{name}")
     signature: str | None = None
+    signature_object: inspect.Signature | None = None
     resolved = False
     module_name, _, attr = export.rpartition(".")
     if attr and module_name.startswith(_ALLOWED_MODULE_PREFIXES):
@@ -151,10 +204,14 @@ def _describe_contract_api(entry: dict[str, Any]) -> dict[str, Any]:
             module = importlib.import_module(module_name)
             obj = getattr(module, attr)
             if callable(obj):
-                signature = f"{name}{inspect.signature(obj)}"
+                signature_object = inspect.signature(obj)
+                signature = f"{name}{signature_object}"
                 resolved = True
         except Exception:
             resolved = False
+    inputs_ok, input_issues, undocumented = _check_contract_inputs(
+        name, signature_object, (entry.get("contract") or {}).get("inputs")
+    )
     scope = str(entry.get("scope") or "module")
     return {
         "id": str(entry.get("id") or ""),
@@ -168,6 +225,11 @@ def _describe_contract_api(entry: dict[str, Any]) -> dict[str, Any]:
         "signature": signature,
         "signature_resolved": resolved,
         "signature_bound": _bound(signature, name, scope) if signature else None,
+        # v5: the declared inputs are checked against the real signature, so a
+        # typo'd or renamed parameter can never reach the model as a contract.
+        "contract_inputs_ok": inputs_ok,
+        "contract_input_issues": input_issues,
+        "contract_undocumented_params": undocumented,
         "contract": dict(entry.get("contract") or {}),
         "project_added": True,
     }
@@ -176,7 +238,7 @@ def _describe_contract_api(entry: dict[str, Any]) -> dict[str, Any]:
 def describe_api(entry: dict[str, Any], package_dir: str | None = None) -> dict[str, Any]:
     """Return detailed, source-backed metadata for an indexed API.
 
-    Project (manifest v4) entries take the contract path: signature verified
+    Project (manifest v5) entries take the contract path: signature verified
     by importing the declared ``export`` plus the structured contract.  Native
     entries keep the source-first extraction with runtime fallback.
 

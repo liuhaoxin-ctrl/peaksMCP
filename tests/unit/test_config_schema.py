@@ -25,13 +25,23 @@ def _native(**overrides):
 
 def _override(**overrides):
     doc = {
-        "version": 4,
+        "version": 5,
         "apis": {
             "load_data": {
                 "export": "peaksMCP.overrides.load_data",
                 "exposure": "facade",
                 "summary": "Load ARPES scans into one experiment object.",
                 "aliases": ["load scans", "加载"],
+                # v5: declared parameters are structured, never free text.
+                "inputs": [
+                    {"name": "source", "type": "str | Path", "required": True},
+                    {"name": "lazy", "type": "bool", "required": False, "default": False},
+                ],
+                "returns": "peaks DataArray or LoadedScans",
+                "preconditions": "the path exists",
+                "side_effects": "prints one line; writes nothing",
+                "errors": "missing path",
+                "example": 'load_data("data/")',
             }
         },
     }
@@ -133,3 +143,55 @@ def test_default_loader_falls_back_to_legacy_single_file(monkeypatch, tmp_path):
     # Both new catalogs absent AND no legacy file -> empty (same as before).
     (tmp_path / "manifest.yaml").unlink()
     assert index_module.load_overrides() == {}
+
+
+def test_override_manifest_requires_structured_inputs():
+    """v5: ``inputs`` is a list of {name, type, required} entries - free text let
+    the contract name parameters that do not exist."""
+    assert validate_override_manifest(_override()) == []
+
+    doc = _override()
+    doc["apis"]["load_data"]["inputs"] = "source: a file or folder"
+    errors = validate_override_manifest(doc)
+    assert any("inputs must be a non-empty list" in error for error in errors)
+
+    doc = _override()
+    doc["apis"]["load_data"]["inputs"] = []
+    assert any(
+        "inputs must be a non-empty list" in error
+        for error in validate_override_manifest(doc)
+    )
+
+    doc = _override()
+    doc["apis"]["load_data"]["inputs"][0]["sneaky"] = 1
+    assert any(
+        "has unknown key(s)" in error for error in validate_override_manifest(doc)
+    )
+
+    doc = _override()
+    doc["apis"]["load_data"]["inputs"][0]["name"] = "source path"
+    assert any(
+        "needs an identifier name" in error for error in validate_override_manifest(doc)
+    )
+
+    doc = _override()
+    doc["apis"]["load_data"]["inputs"][0]["type"] = "  "
+    assert any(
+        "needs a non-empty type declaration" in error
+        for error in validate_override_manifest(doc)
+    )
+
+    doc = _override()
+    doc["apis"]["load_data"]["inputs"][0]["required"] = "yes"
+    assert any(
+        "required must be a boolean" in error for error in validate_override_manifest(doc)
+    )
+
+    doc = _override()
+    doc["apis"]["load_data"]["inputs"] = [
+        {"name": "source", "type": "str", "required": False},
+    ]
+    assert any(
+        "must mark at least one parameter required" in error
+        for error in validate_override_manifest(doc)
+    )

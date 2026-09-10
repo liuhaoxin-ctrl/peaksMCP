@@ -35,7 +35,7 @@ _ADAPTER_SOURCES = (
 )
 #: Curated presentation documents: ``native_catalog.yaml`` (v1) carries
 #: upstream aliases/notes for the native tier; ``override_manifest.yaml``
-#: (v4, breaking) is the single manifest of public project APIs — one row per
+#: (v5, breaking) is the single manifest of public project APIs — one row per
 #: verb with ``export`` plus the full structured contract.  Project rows are
 #: recognised by their ``export`` key; native rows never carry one, so the two
 #: catalogs cannot be confused inside the merged view.  The retired single-file
@@ -412,7 +412,7 @@ def load_overrides(path: str | os.PathLike[str] | None = None) -> dict[str, Any]
     Two catalogs share one key space but are distinguishable per row:
     ``config/native_catalog.yaml`` (v1) holds native-tier presentation
     (aliases/notes for upstream peaks names — no ``export`` key), while
-    ``config/override_manifest.yaml`` (v4, breaking) holds one row per public
+    ``config/override_manifest.yaml`` (v5, breaking) holds one row per public
     project API (``export`` + full contract).  Rows are identified by the
     presence of ``export``; native rows never carry one.
 
@@ -429,7 +429,7 @@ def load_overrides(path: str | os.PathLike[str] | None = None) -> dict[str, Any]
     -------
     dict
         Merged document with ``version`` and ``apis`` (native rows merged
-        with project rows; a name collision resolves to the v4 project row).
+        with project rows; a name collision resolves to the v5 project row).
 
     Raises
     ------
@@ -464,7 +464,7 @@ def load_overrides(path: str | os.PathLike[str] | None = None) -> dict[str, Any]
 def load_api_overrides(path: str | os.PathLike[str] | None = None) -> dict[str, dict[str, Any]]:
     """Return the per-API presentation entries, keyed by API name.
 
-    Project rows (from the v4 manifest) carry ``export`` plus the structured
+    Project rows (from the v5 manifest) carry ``export`` plus the structured
     contract (``summary``/``inputs``/``returns``/``preconditions``/
     ``side_effects``/``errors``/``example``).  Native rows carry only
     presentation keys (``aliases``/notes).  Callers distinguish the two by
@@ -494,7 +494,7 @@ def load_project_added(path: str | os.PathLike[str] | None = None) -> set[str]:
     """Return the canonical ids this project adds to the API.
 
     Derived from the ``export`` key in ``config/override_manifest.yaml``
-    (v4): every row whose export is ``peaksMCP.overrides.<name>`` is exposed
+    (v5): every row whose export is ``peaksMCP.overrides.<name>`` is exposed
     under exactly ``module:peaksMCP.overrides:<name>``.  The audited exposure
     record therefore cannot drift from the contract that sits next to it.
     :func:`build_index` marks every matching entry with ``project_added=True``
@@ -559,13 +559,13 @@ def build_index() -> ApiIndex:
     # scanned source (runtime descriptors + AST over the peaks package).
     entries = _merge_duplicates([*scan_runtime(), *scan_modules(package_dir)])
 
-    # Project tier: the curated manifest (v4) is the single source.  Every
+    # Project tier: the curated manifest (v5) is the single source.  Every
     # public adapter is constructed statically - no AST scan of peaksMCP, no
     # canonical projection, no legacy ids.  The full structured contract
     # rides on the entry so get can render it without source access.
     project_entries: list[dict[str, Any]] = []
     for name, config in load_api_overrides().items():
-        # Only v4 manifest rows (carrying ``export``) become project entries;
+        # Only v5 manifest rows (carrying ``export``) become project entries;
         # native-catalog presentation rows are injected below instead.
         if not config.get("export"):
             continue
