@@ -177,20 +177,20 @@ def test_inspect_experiment_classifies_records_and_dimensionality(tmp_path):
 
     assert summary.gold == [20]
     # A 3-D cube labelled sweep is a mapping-shaped conflict, not a cut.
-    assert set(summary.mappings) >= {7, 26}
+    assert 26 in summary.cuts and set(summary.mappings) >= {7}
     assert 5 in summary.cuts
     assert summary.energy_windows_eV == [(2.2, 2.7), (2.2, 5.0)]
     assert summary.notes == ["Cut theta_offset=1.5"]
     rec26 = next(r for r in summary.records if r.index == 26)
     assert rec26.ndim == 3 and rec26.dims == ["eV", "deflector_perp", "theta_par"]
-    assert rec26.kind.value == "mapping"
+    # The declared Data format decides the kind; the extra axis is reduced.
+    assert rec26.kind.value == "cut"
     conflict = next(c for c in summary.conflicts if c.index == 26)
-    # The conflict states the rule that keeps the record in the work: real
-    # beamtime data carries such metadata errors, and the array that was
-    # actually loaded decides the classification.
-    assert "disagree" in conflict.issue
-    assert "Keep the record" in conflict.issue
-    assert "3-D cube is a mapping" in conflict.issue
+    # The conflict states the rule that keeps the record in the work: the
+    # declared Data format says cut, the extra axis is a detector axis, so the
+    # record still yields its own (reduced) product.
+    assert "cut target" in conflict.issue
+    assert "Reduce" in conflict.issue
     rec20 = next(r for r in summary.records if r.index == 20)
     assert rec20.is_gold is True
 

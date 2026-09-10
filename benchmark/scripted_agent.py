@@ -161,6 +161,14 @@ def main() -> int:
         cell(
             f"level+zero {cut_stem}",
             f"cut = scans[{cut_stem!r}]\n"
+            # A record declared sweep may carry a detector axis (the L112
+            # deflector): integrate it out - the human product is the ordinary
+            # (eV, kx) cut - and keep the attributes the metadata layer needs.
+            "extra = [d for d in cut.dims if d not in ('eV', 'theta_par')]\n"
+            "if extra:\n"
+            "    attrs = dict(cut.attrs)\n"
+            "    cut = cut.sum(extra)\n"
+            "    cut.attrs = attrs\n"
             "cut.metadata.set_EF_correction(ef)\n"
             "shifted = cut.assign_coords(theta_par=cut.theta_par - theta_offset)",
             api_ids=[SET_EF],

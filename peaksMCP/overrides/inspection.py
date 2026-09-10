@@ -67,6 +67,13 @@ class ScanSummary(BaseModel):
     polarisation: str | None = None
 
 
+class UnsupportedTarget(BaseModel):
+    """One cut-like record that cannot be processed, with the exact reason."""
+
+    index: int | str
+    reason: str
+
+
 class ExperimentSummary(BaseModel):
     """JSON-safe structured view of one experiment metadata document."""
 
@@ -75,6 +82,7 @@ class ExperimentSummary(BaseModel):
     cuts: list[int | str] = Field(default_factory=list)
     mappings: list[int | str] = Field(default_factory=list)
     conflicts: list[ExperimentConflict] = Field(default_factory=list)
+    unsupported: list[UnsupportedTarget] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
     energy_windows_eV: list[tuple[float, float]] = Field(default_factory=list)
 
@@ -92,6 +100,8 @@ class ExperimentSummary(BaseModel):
         tail = ""
         if self.conflicts:
             tail += f"; conflicts={len(self.conflicts)}"
+        if self.unsupported:
+            tail += f"; unsupported={len(self.unsupported)}"
         if self.notes:
             tail += f"; notes={len(self.notes)}"
         return (head + tail)[:200]
@@ -106,10 +116,15 @@ def _scan_kind(
 
     Rules (heuristic, conservative — anything unverifiable is ``unknown``):
     - gold records are always ``gold``;
-    - a 3-D cube labelled ``sweep`` is really a (low-energy) mapping — the
-      caller is expected to treat it as a mapping scan;
-    - 1-D -> spectrum, 2-D -> cut, 3-D -> mapping, unless dimension names
-      clearly say ``hv`` (hv scan) or spatial ``x``/``y`` (spatial map).
+    - the declared ``Data format`` decides what the record IS: a record declared
+      ``sweep`` stays a cut even when the file carries extra dimensions.  On
+      this beamtime the extra axis is the deflector axis of a deflector-resolved
+      sweep (``(eV, theta_par, deflector_perp)``) and the human product is the
+      ordinary ``(eV, kx)`` cut obtained by integrating over it, so the shape
+      describes the REDUCTION, not the record kind;
+    - 1-D -> spectrum, 2-D -> cut, 3-D -> mapping, unless declared ``sweep``
+      (cut, see above) or dimension names clearly say ``hv`` (hv scan) or
+      spatial ``x``/``y`` (spatial map).
     """
     if is_gold or format_kind == "gold":
         return ScanKind.GOLD
@@ -129,8 +144,11 @@ def _scan_kind(
         return ScanKind.SPATIAL_MAP
     if len(dims) == 2:
         return ScanKind.CUT if format_kind != "mapping" else ScanKind.MAPPING
-    # 3+ dims: mapping shapes unless declared as a sweep (conflict raised
-    # separately by the caller).
+    # 3+ dims: mapping shapes, except a record the datasheet declares as a
+    # sweep — a deflector-resolved (or otherwise extra-dimension) cut whose
+    # extra axis is a detector axis to reduce, not a second scanned coordinate.
+    if format_kind == "sweep":
+        return ScanKind.CUT
     return ScanKind.MAPPING
 
 
@@ -150,14 +168,14 @@ def _conflict_for(
             data_format=data_format,
             dims=dims,
             issue=(
-                f"3-D record labelled 'sweep' (dims {dims}): the declared Data "
-                "format and the real shape disagree (a known real-beamtime "
-                "artifact). Keep the record and classify it by the array that "
-                "was actually loaded - a 3-D cube is a mapping - so it still "
-                "produces its result; then state the mismatch in your summary. "
-                "Do not drop the record and do not force 2-D cut geometry onto "
-                "it. The declared format is authoritative only for gold "
-                "selection, where the contract says so"
+                f"record declared 'sweep' carries extra dimensions {dims}: it "
+                "is still a cut target - the extra axis is a detector axis (the "
+                "deflector on this beamtime), not a second scanned coordinate. "
+                "Reduce it (integrate over the axis that is neither eV nor "
+                "theta_par), then run the normal cut chain and state the "
+                "reduction in your summary. Do not drop the record and do not "
+                "treat it as a mapping: the declared Data format decides what "
+                "the record is"
             ),
         )
     if len(dims) == 2 and format_kind == "mapping" and not ({"x", "y"} <= names):
@@ -263,6 +281,7 @@ def _summarize_rows(
     cuts: list[int | str] = []
     mappings: list[int | str] = []
     conflicts: list[ExperimentConflict] = []
+    unsupported: list[UnsupportedTarget] = []
     windows: set[tuple[float, float]] = set()
     seen_keys: set[int | str] = set()
     for raw_index, fields, kind, dims in rows:
@@ -301,7 +320,24 @@ def _summarize_rows(
         if kind == ScanKind.GOLD:
             gold.append(index)
         elif kind in {ScanKind.CUT, ScanKind.SPECTRUM, ScanKind.SPATIAL_MAP, ScanKind.HV_SCAN}:
-            cuts.append(index)
+            # A cut target is processable only with its own metadata row: the
+            # contract derives the record's Data format and angular offset from
+            # the experiment metadata, so a record the document does not mention
+            # at all cannot be classified or processed.  It is reported with the
+            # reason instead of silently producing (or missing) a product.
+            if not str(fields["data_format"]).strip():
+                unsupported.append(
+                    UnsupportedTarget(
+                        index=index,
+                        reason=(
+                            "no metadata entry for this record (no declared Data "
+                            "format, no angular offset); the contract derives both "
+                            "from the experiment metadata - not processed"
+                        ),
+                    )
+                )
+            else:
+                cuts.append(index)
         elif kind == ScanKind.MAPPING:
             mappings.append(index)
     summaries.sort(key=lambda row: str(row.index))
@@ -311,6 +347,7 @@ def _summarize_rows(
         cuts=cuts,
         mappings=mappings,
         conflicts=conflicts,
+        unsupported=unsupported,
         energy_windows_eV=sorted(windows),
     )
 
