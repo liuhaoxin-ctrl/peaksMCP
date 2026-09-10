@@ -678,49 +678,120 @@ def _blocks_with(ctx: Ctx, token: str) -> list[str]:
     return [b for b in ctx.code if token in b]
 
 
-def _fit_gold_receiver_indices(blocks: list[str]) -> tuple[set[int], bool]:
-    """Resolve which experiment index each fit_gold call actually uses.
+def _fit_gold_receiver_indices(
+    blocks: list[str],
+    gold_indices: set[int] | frozenset[int] = frozenset(),
+    context: str = "",
+) -> tuple[set[int], bool]:
+    """Resolve which experiment index each ``fit_gold`` call actually uses.
 
-    Looks ONLY at the receiver of ``*.fit_gold(...)``:
+    The check exists to answer "did the agent fit the RIGHT record?", so it has
+    to follow the selection the code performs instead of demanding one literal
+    spelling.  Resolved forms, in one fixed-point data-flow pass over the cells:
 
-    - chained literal:  ``scans['BP_0020'].fit_gold()`` / ``scans["BP_0020"]...``
-    - bound variable:   ``gold = scans['BP_0020']`` followed by ``gold.fit_gold()``
-      (binding may live anywhere earlier in the same block, incl. an alias var)
-    - alias rename:     ``g = scans[...]; gold = g`` etc. (single hop)
+    - chained literal:  ``scans['BP_0020'].fit_gold()``
+    - integer literal:  ``scans[20]`` / ``scans["20"]``
+    - bound variable:   ``gold = scans['BP_0020']`` then ``gold.fit_gold()``
+    - stem formatting:  ``gold_stem = f"BP_{idx:04d}"`` then ``scans[gold_stem]``
+    - classified gold:  ``idx = next(i for i in summary.gold ...)`` /
+      ``for i in summary.gold:`` / ``summary.gold[0]`` -> the gold index set the
+      task itself defines (``gold_indices``); the classification that produces
+      ``summary.gold`` is graded separately (C2/S1), so delegating the choice to
+      it and fitting what it returns is a correct selection, not a missing one.
+    - aliases:          ``g = gold`` / ``stem = gold_stem``
 
-    Numbers elsewhere in the block (e.g. a ``cuts = [...]`` list literal in the
-    same cell) are deliberately IGNORED - scanning the whole block would flag
-    correct code as wrong.  Returns ``(indices, unresolved)`` where
-    ``unresolved=True`` when a fit call exists whose receiver cannot be
-    traced to a literal index (e.g. a loop over ``summary.gold``).
+    Bindings are read from ``context`` (the whole notebook) plus ``blocks``: the
+    natural workflow classifies and binds in one cell and fits in the next, so
+    looking only at the fitting cell cannot see where the object came from.
+
+    Numbers elsewhere in a cell (a ``cuts = [...]`` list literal, for instance)
+    are deliberately IGNORED: scanning whole blocks flagged correct code as
+    wrong.  Returns ``(indices, unresolved)`` where ``unresolved=True`` when a
+    fit call exists whose receiver cannot be traced at all.
     """
+    lines = [
+        line
+        for block in [*( [context] if context else []), *blocks]
+        for line in (block or "").splitlines()
+    ]
+    gold = {int(value) for value in gold_indices}
+    #: variable -> experiment indices it holds (bare ints, stems, index numbers)
+    index_vars: dict[str, set[int]] = {}
+    #: variable -> indices of the loaded data object it holds
+    data_vars: dict[str, set[int]] = {}
+
+    def literal_indices(text: str) -> set[int]:
+        """Index literals in ``text``; f-string format specs are not numbers."""
+        cleaned = re.sub(r":\s*\d*[dsf]", "", text)
+        found = {int(value) for value in re.findall(r"BP_?0*(\d{1,4})(?!\d)", cleaned)}
+        if found:
+            return found
+        return {
+            int(value)
+            for value in re.findall(r"(?<![\w.:])(\d{1,4})(?![\w.])", cleaned)
+        }
+
+    def resolve_expr(text: str) -> set[int]:
+        """Indices an expression can denote: classified gold, known vars, literals."""
+        if "summary.gold" in text:
+            return set(gold)
+        values: set[int] = set()
+        for var, known in index_vars.items():
+            if re.search(rf"(?<![\w.]){re.escape(var)}(?![\w])", text):
+                values |= known
+        return values or literal_indices(text)
+
+    def note(mapping: dict[str, set[int]], name: str, values: set[int]) -> bool:
+        if not values:
+            return False
+        before = len(mapping.get(name, ()))
+        mapping.setdefault(name, set()).update(values)
+        return len(mapping[name]) != before
+
+    changed = True
+    while changed:  # fixed point: a binding may appear after the line using it
+        changed = False
+        for line in lines:
+            loop = re.search(r"for\s+([A-Za-z_]\w*)\s+in\s+(.+?):", line)
+            if loop:
+                changed |= note(index_vars, loop.group(1), resolve_expr(loop.group(2)))
+            assign = re.match(r"\s*([A-Za-z_]\w*)\s*=\s*(.+)$", line)
+            if not assign:
+                continue
+            name, rhs = assign.group(1), assign.group(2)
+            subscript = re.search(r"\b([A-Za-z_]\w*)\s*\[\s*([^\]]+?)\s*\]", rhs)
+            if subscript and note(data_vars, name, resolve_expr(subscript.group(2))):
+                changed = True
+                continue
+            if note(index_vars, name, resolve_expr(rhs)):
+                changed = True
+                continue
+            alias = re.match(r"([A-Za-z_]\w*)$", rhs.strip())
+            if alias:
+                changed |= note(data_vars, name, set(data_vars.get(alias.group(1), ())))
+
     indices: set[int] = set()
     unresolved = False
-    for block in blocks:
-        lines = (block or "").splitlines()
-        for line in lines:
-            if "fit_gold" not in line:
-                continue
-            direct = re.findall(r"BP_0*(\d{1,4})", line)
-            if direct:
-                indices.update(int(value) for value in direct)
-                continue
-            match = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*fit_gold\s*\(", line)
-            if not match:
-                continue
-            receiver = match.group(1)
-            found_here = False
-            for other in lines:
-                binding = re.search(
-                    rf"\b{re.escape(receiver)}\s*=\s*(?:[^;]*?)scans\s*\[\s*['\"]?BP_?0*(\d+)['\"]?\s*\]",
-                    other,
-                )
-                if binding:
-                    indices.add(int(binding.group(1)))
-                    found_here = True
-                    break
-            if not found_here:
-                unresolved = True
+    for line in lines:
+        stripped = line.strip()
+        if "fit_gold" not in stripped or stripped.startswith("#"):
+            continue
+        chained = re.findall(r"scans\s*\[\s*[^\]]*?BP_?0*(\d{1,4})[^\]]*?\]", line)
+        if chained:
+            indices.update(int(value) for value in chained)
+            continue
+        method = re.search(r"([A-Za-z_]\w*)\s*\.\s*fit_gold\s*\(", line)
+        receiver = method.group(1) if method else None
+        if receiver is None:
+            bare = re.search(r"\bfit_gold\s*\(\s*([A-Za-z_]\w*)", line)
+            receiver = bare.group(1) if bare else None
+        values = set(data_vars.get(receiver, ())) if receiver else set()
+        if not values and receiver:
+            values = set(index_vars.get(receiver, ()))
+        if values:
+            indices.update(values)
+        else:
+            unresolved = True
     return indices, unresolved
 
 
@@ -772,13 +843,14 @@ def check_contract(ctx: Ctx) -> list[Result]:
     # gold 索引：只解析 fit_gold 的 receiver（链式字面量 / 变量绑定 / 单跳别名），
     # 绝不扫描整块里的 BP 编号 —— 同 cell 的 cuts 列表字面量会误伤正确代码。
     gold_blocks = _blocks_with(ctx, "fit_gold")
-    found, unresolved = _fit_gold_receiver_indices(gold_blocks)
     wanted = set(ctx.key["gold_indices"])
+    found, unresolved = _fit_gold_receiver_indices(gold_blocks, wanted, context=corpus)
     if not gold_blocks:
         out.append(Result("C3_gold_index_correct", False, "没有出现 fit_gold，无法判断 gold 选择"))
     elif unresolved and not found:
         out.append(Result("C3_gold_index_correct", None,
-                          "fit_gold 的 receiver 无法回溯到字面索引（如遍历 summary.gold），跳过"))
+                          "fit_gold 的 receiver 无法回溯到任何实验索引（既不是字面量、"
+                          "也不是经 summary.gold / 变量绑定得到的索引），跳过"))
     else:
         ok = bool(found) and found == wanted
         out.append(Result("C3_gold_index_correct", ok,

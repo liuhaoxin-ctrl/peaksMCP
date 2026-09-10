@@ -85,8 +85,24 @@ def test_c3_wrong_gold_fails():
     assert result.passed is False
 
 
-def test_c3_unresolved_loop_is_skipped_not_failed():
+def test_c3_loop_over_the_classified_gold_is_resolved_and_passes():
+    """A loop over ``summary.gold`` is a correct selection, not a blind spot.
+
+    This used to be skipped (``passed is None``), which made the natural
+    pattern - delegate the choice to the system's own classification, then fit
+    what it returns - impossible to pass.  See
+    ``tests/unit/test_benchmark_gold_selection.py`` for the rest of the
+    resolution matrix.
+    """
     code = ["for i in summary.gold:\n    g = scans[f'BP_{i:04d}']\n    g.fit_gold()\n"]
+    result = _by_name(check_contract(_ctx(code)))["C3_gold_index_correct"]
+    assert result.passed is True
+    assert "[20]" in result.detail
+
+
+def test_c3_untraceable_receiver_is_skipped_not_failed():
+    """Only a receiver that resolves to no experiment index at all is skipped."""
+    code = ["g = load_something()\ng.fit_gold()\n"]
     result = _by_name(check_contract(_ctx(code)))["C3_gold_index_correct"]
     assert result.passed is None
 
