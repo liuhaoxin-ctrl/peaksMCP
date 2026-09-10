@@ -1,5 +1,47 @@
 # Changelog
 
+## [Unreleased] — 2026-09-10
+
+### E2E is now the real-data human-simulation suite (BREAKING for the suite)
+
+`tests/e2e/test_e2e_live.py` (8 mechanism-only cases) is replaced by
+`tests/e2e/test_e2e_realdata_live.py`: a real JupyterLab + kernel + Google
+Chrome session driving the notebook exclusively through the model-facing tools
+in ONE persistent MCP session (ids proven with `get`, declared per cell via
+`api_ids`). Three scenarios on the L112 BP260623 data:
+
+- cut preprocessing: index → gold `fit_gold` → Fermi leveling → high-symmetry
+  zeroing → `k_convert` → validation figure;
+- mapping preprocessing: full 3-D cube (never a centre slice) → `k_convert` →
+  the mapping's binding-energy slices;
+- dashboard: component state, five-tool surface via `/healthz`, console MCP
+  restart (namespace survives), Comm reconnect after a notebook reload.
+
+Raw data stays read-only (`PEAKSMCP_REALDATA_PXT`, default the local BP260623
+folder); the suite skips without it and never writes beside the source.
+
+### Managed JupyterLab pins comms to the main shell
+
+`app/runtime.py` writes `kernels-settings.jupyterlab-settings`
+(`commsOverSubshells=disabled`) next to `page_config.json` in the isolated
+Jupyter config: JupyterLab 4.6+ routes Comm traffic over ipykernel subshells by
+default, which races around kernel restarts (shell-channel drops flood the
+kernel log and stalled `restart all` past its readiness window).
+
+### Findings not yet fixed (found while building the real-data E2E)
+
+- `load_data(..., lazy=True)` (the adapter default) returns an array that
+  native `fit_gold` cannot fit (`'float' object has no attribute 'astype'`);
+  the suite loads with `lazy=False`.
+- `inspect_notebook(target="variables")` crashes when the namespace holds an
+  xarray `Dataset` (`fit_gold` returns one) — `'Dataset' object has no
+  attribute 'dtype'`; the Array case returns text-only content for
+  `target="variable"` previews although the tool declares an output schema.
+- A folder holding both `<stem>.pxt` and `<stem>.nc` indexes two entries per
+  stem and `scans[stem]` can pick the raw PXT (no L112 geometry), so a later
+  `k_convert` fails with a confusing metadata error; `load_data` gives no
+  warning. Converting into the sibling `<folder>_netcdf/` avoids it.
+
 ## [Unreleased] — 2026-09-08
 
 ### API surface: catalog keeps only model-facing verbs (BREAKING)

@@ -137,8 +137,22 @@ explicit e2e acceptance:
 ```
 
 - Unit/integration tests are mocked and must stay fast and hardware-free.
-- E2E tests launch a real JupyterLab + kernel + browser (Playwright chromium) and are
-  marked `pytest.mark.e2e`; CI runs `pytest -m 'not e2e'`.
+- E2E is the **real-data human-simulation suite**
+  (`tests/e2e/test_e2e_realdata_live.py`, `pytest.mark.e2e`), run in the live
+  environment only, never in CI. It launches a real JupyterLab + kernel, opens
+  the notebook in real Google Chrome (Playwright `channel="chrome"`) so the
+  Comm bridge is alive, and drives the notebook exclusively through the
+  model-facing tools (`search` / `get` / `run_cell`) in ONE persistent MCP
+  session (canonical ids proven with `get`, declared per cell through
+  `api_ids`). Its three scenarios: cut preprocessing (gold `fit_gold` → Fermi
+  leveling → high-symmetry zeroing → k-space + validation figure), mapping
+  preprocessing (full cube, never a centre slice, then the binding-energy
+  slices) and the dashboard (component state, five-tool surface via `/healthz`,
+  console MCP restart, Comm reconnect). The raw beamtime folder is read-only
+  (`PEAKSMCP_REALDATA_PXT`, default the L112 BP260623 dataset) and the suite
+  skips without it; copies are converted inside the test home, never beside
+  the source.
+- CI runs `pytest -m 'not e2e'`.
 - When changing API discovery, run the full name-coverage and natural-language ranking
   tests (`tests/unit/test_discovery.py`).
 - When adding a tool, the exact tool-list tests must be updated
