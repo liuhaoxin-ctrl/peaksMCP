@@ -643,7 +643,7 @@ def test_batch_ticket_denied_cleans_everything(tmp_path):
     targets = [tmp_path / f"BP_00{i}.nc" for i in (5, 6)]
     _approval(False)
     outcome = save_module._run_staged(
-        "preprocess_batch", [(_array(), t, False) for t in targets], "pre 2"
+        "staged_batch", [(_array(), t, False) for t in targets], "pre 2"
     )
     assert outcome["status"] == "denied"
     assert not any(target.exists() for target in targets)

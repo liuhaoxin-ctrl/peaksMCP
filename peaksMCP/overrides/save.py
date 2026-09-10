@@ -24,7 +24,7 @@ Ownership and lifecycle:
   ``start()``, cleared on ``stop()``); a lock serialises all registry
   operations; expired tickets are scavenged on every gateway touch and on
   installation, and staging failures clean up in ``try/finally``.
-- worker processes (preprocess_batch) stage their own items with the same
+- worker processes (batch staging) stage their own items with the same
   stateless helpers; the ticket only collects the items.
 - consent is a runtime object, never a parameter: code cannot authorise a
   write at any layer, and no code-level approve exists.
@@ -588,7 +588,7 @@ def _variable_preview(value: Any, path: Path, variable_name: str) -> tuple[dict[
 
 #: Process-wide gateway.  The MCP server owns an instance and installs it on
 #: start (cleared on stop); cell-level code (convert_experiment /
-#: preprocess_batch) routes through the installed gateway.  Before a server
+#: batch staging) routes through the installed gateway.  Before a server
 #: exists a fresh default gateway is used (fail-closed: no channel).
 _GATEWAY: SaveGateway | None = None
 _GATEWAY_LOCK = threading.Lock()

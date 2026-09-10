@@ -103,8 +103,8 @@ Claude Desktop <-> STDIO proxy <-> HTTP MCP <-> Jupyter kernel <-> JupyterLab Co
   `plot_batch` / `plot_validation_pair` / `show_mapping_slice`) plus contract
   types.  Persistence is the `save_with_consent` MCP tool, NOT a Python
   function; the save gateway lives in `overrides/save.py`; old task facades
-  (`fit_gold_reference`, `preprocess_cut`/`mapping`/`batch`) are internal
-  modules, never exported.
+  (`fit_gold_reference`, `preprocess_cut`/`mapping`/`batch`) were deleted —
+  the model composes those workflows from native peaks APIs in the notebook.
 - `peaksMCP/pxt_utils/` — PXT→NetCDF conversion: `loader.py`, `converter.py`
   (atomic batch), `csv_translator.py`, `models.py`
 - `peaksMCP/batch/` — CPU-budgeted process pool (`executor.py`, `resource_budget.py`)

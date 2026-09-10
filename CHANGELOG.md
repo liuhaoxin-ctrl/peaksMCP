@@ -100,6 +100,21 @@ agent already knew its name.
   improves from Top-1 0.890 / MRR 0.9406 to **Top-1 0.918 / MRR 0.9566**
   (Top-3 1.000 in both).
 
+### Removed: 824 lines of dead task facades; agent guidance names the entry chain
+
+- `overrides/preprocess.py` (327), `overrides/calibration.py` (156) and
+  `overrides/batch_preprocess.py` (341) are deleted, together with the 26 tests
+  that only served them.  They had zero production importers: the model
+  composes cut/mapping preprocessing from native peaks APIs in the notebook
+  (gold `fit_gold` → `set_EF_correction` → high-symmetry shift → `k_convert`),
+  which the real-data E2E exercises.  The docstrings/comments that referenced
+  them are updated instead of leaving stale pointers.
+- `config/prompts.yaml` `server_instructions` now names the curated entry chain
+  (`load_data` → `inspect_experiment` classify before composing), lists the
+  `kernel` inspect target and the `stdout_lines`/`stdout_head` signal, and
+  points a timed-out cell at `inspect_notebook(target='kernel')` — the runtime
+  prompt now matches the tools it describes.
+
 ## [Unreleased] — 2026-09-10 (earlier)
 
 ### E2E is now the real-data human-simulation suite (BREAKING for the suite)

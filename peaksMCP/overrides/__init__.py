@@ -31,11 +31,11 @@ Surface invariants (enforced by tests):
 
 Low-level metadata helpers (``read_meta`` / ``classify_data_format`` /
 ``is_gold_format`` / ``theta_offset_deg``) live in ``pxt_utils.metadata`` as
-private implementation detail and are NOT re-exported here.  Earlier task
+private implementation detail and are NOT re-exported here.  The earlier task
 facades (fit_gold_reference, preprocess_cut, preprocess_mapping,
-preprocess_batch) were demoted out of the model surface: they fixed a
-workflow that the model should compose from native peaks APIs; their code
-remains importable in the internal modules for in-process/tests only.
+preprocess_batch) were demoted out of the model surface - they fixed a
+workflow the model composes from native peaks APIs - and have since been
+deleted outright: they had zero production importers (only their own tests).
 """
 
 from __future__ import annotations
