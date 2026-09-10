@@ -6,8 +6,10 @@
 with a :class:`ScanKind`, the energy window, theta offset, polarisation and
 the actual dimensions (from the header sizes each entry carries — no data is
 materialised).  Records whose declared ``Data format`` disagrees with their
-shape (e.g. a 3-D cube labelled ``sweep``) are reported as classification
-conflicts so the caller never feeds a mapping into a cut-only workflow.
+shape (e.g. a 3-D cube labelled ``sweep`` - this happens in real beamtime
+data) are reported as classification conflicts that name the rule to follow:
+classify the record by the array that was actually loaded, keep it in the
+work, and surface the mismatch in the summary instead of dropping it.
 
 This facade is the ONLY classification owner: ``load_data`` deliberately
 indexes identity only (representation + sizes + provenance), and nothing
@@ -149,10 +151,13 @@ def _conflict_for(
             dims=dims,
             issue=(
                 f"3-D record labelled 'sweep' (dims {dims}): the declared Data "
-                "format and the real shape disagree. Report the conflict and "
-                "decide from the declared format (the task contract) - the data "
-                "format is authoritative, comments are not. Do not drop the "
-                "record silently, and do not assume 2-D cut geometry for it"
+                "format and the real shape disagree (a known real-beamtime "
+                "artifact). Keep the record and classify it by the array that "
+                "was actually loaded - a 3-D cube is a mapping - so it still "
+                "produces its result; then state the mismatch in your summary. "
+                "Do not drop the record and do not force 2-D cut geometry onto "
+                "it. The declared format is authoritative only for gold "
+                "selection, where the contract says so"
             ),
         )
     if len(dims) == 2 and format_kind == "mapping" and not ({"x", "y"} <= names):

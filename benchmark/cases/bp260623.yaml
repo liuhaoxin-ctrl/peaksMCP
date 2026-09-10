@@ -33,3 +33,8 @@ scientific_contract:
 known_challenge: >-
   Record 19 mentions Au in its comment but is a sweep. Record 20 is the actual gold reference
   because its Data format is Au sweep. This tests metadata-based classification.
+  Record 26 is a real-beamtime metadata error: its Data format column says sweep while the file
+  holds a 3-D cube, and the human reference did process it. The declared format identifies the
+  gold reference only; every record that actually holds a cut/mapping array must still yield its
+  product, so 26 is expected in the output. The conflict must be surfaced, never silently
+  resolved by dropping the record.

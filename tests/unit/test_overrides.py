@@ -795,6 +795,9 @@ def test_inspect_experiment_reports_a_three_d_record_labelled_sweep_as_mapping_c
     conflict = summary.conflicts[0]
     assert conflict.index == 26
     issue = conflict.issue.lower()
-    assert "disagree" in issue and "declared format" in issue
-    assert "do not drop" in issue          # the record must not be silently skipped
+    assert "disagree" in issue
+    # The rule must keep the record in the work: real data has such metadata
+    # errors, and dropping the record silently loses a required product.
+    assert "keep the record" in issue and "do not drop" in issue
+    assert "3-d cube is a mapping" in issue
     assert 26 in summary.mappings and 26 not in summary.cuts

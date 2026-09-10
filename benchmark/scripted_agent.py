@@ -121,12 +121,29 @@ def main() -> int:
         "theta_offset = next(r.theta_offset_deg for r in summary.records if r.index == cut_index)\n"
         "assert theta_offset, 'angular offset missing from the metadata'",
     )
-    inventory_cell = cell(
+    cell(
         "inventory",
         "import json\n"
         "print(json.dumps({'gold': gold_stem, 'cuts': cut_stems, 'theta': theta_offset}))",
     )
-    inventory = json.loads(str(inventory_cell.get("stdout_head") or "{}").strip())
+    # The printed inventory is ARCHIVED, not echoed: run_cell's stdout_head is a
+    # deliberately short "there was long output" signal (first 80 chars).  Read
+    # the cell back through the designed path - inspect_notebook with
+    # with_text_outputs - exactly as the model has to.
+    archive = client.call(
+        "inspect_notebook",
+        {"target": "active_cell", "detail": "preview", "with_text_outputs": True},
+    )
+    text = ""
+    if isinstance(archive, dict):
+        text = str(archive.get("text_outputs") or "")
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        raise SystemExit(
+            "inventory not recoverable from the notebook archive: "
+            + json.dumps(archive, ensure_ascii=False)[:600]
+        )
+    inventory = json.loads(text[start : end + 1])
     cut_stems = list(inventory["cuts"])
     print(f"[scripted-agent] processing {len(cut_stems)} cut(s): {cut_stems[:4]}...", flush=True)
 
