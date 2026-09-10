@@ -314,6 +314,33 @@ def test_notebook_is_append_only_no_delete_or_reorder():
     assert "position" not in inspect.signature(notebook.add_cell).parameters
 
 
+def test_network_cell_asks_for_consent_with_the_master_switch_off(tmp_path):
+    """NET001 always needs approval, and the default master switch must not
+    crash that path (``require_consent=False`` used to evaluate ``issue.id`` on
+    a dataclass that only has ``rule_id`` -> AttributeError instead of a card)."""
+    from unittest.mock import Mock
+
+    from peaksMCP.server.jupyter_peaks.backend import (
+        SharedState,
+        UnsafeNotebookBackend,
+    )
+
+    state = SharedState(Mock(user_ns={}))
+    state.require_consent = False
+    state.bridge = Mock()
+    state.bridge.request.return_value = {"ok": True}
+    consent, audit = Mock(), Mock()
+    consent.request.return_value = False  # the human declines the card
+    notebook = UnsafeNotebookBackend(state, consent, audit)
+
+    with pytest.raises(PermissionError):
+        notebook.execute_code("import requests\nrequests.post('https://example.com')")
+
+    # The consent card WAS requested: the guard asked, the human said no.
+    consent.request.assert_called_once()
+    assert consent.request.call_args.args[0] == "run_cell"
+
+
 def test_execute_code_requires_explicit_consent_for_network_when_consent_enabled():
     """Explicit-consent findings are never bypassed while consent is enabled."""
     from unittest.mock import Mock

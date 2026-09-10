@@ -85,7 +85,7 @@ class UnsafeNotebookBackend:
         #    explicit user approval in the notebook, regardless of the switch.
         requires_consent = self.state.require_consent or bool(
             scan
-            and any(issue.id == "NET001" for issue in scan.requires_explicit_consent)
+            and any(issue.rule_id == "NET001" for issue in scan.requires_explicit_consent)
         )
         if requires_consent:
             details: dict[str, Any] = {"code": code[:4000], "scan": scan.to_dict() if scan else None}

@@ -76,6 +76,24 @@ class ExperimentSummary(BaseModel):
     notes: list[str] = Field(default_factory=list)
     energy_windows_eV: list[tuple[float, float]] = Field(default_factory=list)
 
+    def summary_line(self) -> str:
+        """One bounded line for the notebook: the decision lists at a glance.
+
+        The gold reference index is printed in full (usually one scan) because
+        everything downstream depends on it; cut/mapping lists are summarised by
+        count — the full lists stay in the returned variable.
+        """
+        head = (
+            f"inspect_experiment: {len(self.records)} record(s); "
+            f"gold={self.gold}; cuts={len(self.cuts)}; mappings={len(self.mappings)}"
+        )
+        tail = ""
+        if self.conflicts:
+            tail += f"; conflicts={len(self.conflicts)}"
+        if self.notes:
+            tail += f"; notes={len(self.notes)}"
+        return (head + tail)[:200]
+
 
 def _scan_kind(
     format_kind: str | None,
@@ -323,9 +341,18 @@ def inspect_experiment(
     [20]
     """
     loaded = _loaded_scans_index(experiment)
-    if loaded is not None:
-        return _inspect_loaded(loaded)
-    return _inspect_document(experiment, scans=scans)
+    summary = (
+        _inspect_loaded(loaded)
+        if loaded is not None
+        else _inspect_document(experiment, scans=scans)
+    )
+    # Classification is the entry point of the preprocessing chain: the agent
+    # must see which scan is gold and how many cuts/mappings exist.  A bare
+    # returned object would land as a text/plain repr, which the run_cell
+    # normaliser deliberately drops, leaving the agent with an empty reply and
+    # the load_data hint "classify with inspect_experiment(scans)" unanswered.
+    print(summary.summary_line())
+    return summary
 
 
 def _inspect_loaded(loaded: Any) -> ExperimentSummary:

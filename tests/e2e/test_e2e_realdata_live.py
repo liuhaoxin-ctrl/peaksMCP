@@ -384,11 +384,20 @@ def test_cut_preprocessing_on_real_data(live):
     index_cell = stack.cell(
         "index the converted folder",
         "from peaksMCP.overrides import load_data, inspect_experiment\n"
-        "scans = load_data('data_netcdf')\n"
-        "summary = inspect_experiment(scans)",
+        "scans = load_data('data_netcdf')",
     )
     assert index_cell["stdout_lines"] >= 1
     assert "load_data:" in str(index_cell.get("stdout_head"))
+
+    # The classification is the agent's entry point into the chain: it must be
+    # readable from the run_cell reply, never swallowed as a text/plain repr.
+    classify_cell = stack.cell(
+        "classify the experiment",
+        "summary = inspect_experiment(scans)",
+    )
+    classification = str(classify_cell.get("stdout_head"))
+    assert "inspect_experiment:" in classification, classify_cell
+    assert "gold=[" in classification and "cuts=" in classification, classify_cell
 
     stack.cell(
         "bind the three scans",

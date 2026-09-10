@@ -2,6 +2,30 @@
 
 ## [Unreleased] — 2026-09-10
 
+### Fixed: P0 review findings (classification visibility, NET001 consent path)
+
+Two defects confirmed by the 2026-09-10 requirement review, both reproduced
+live before the fix:
+
+- **`inspect_experiment` results are visible now.** Classification is the entry
+  point of the preprocessing chain, but the function returned a bare
+  `ExperimentSummary`: the cell produced a `text/plain` repr, which the
+  `run_cell` normaliser deliberately drops, so the agent got an empty reply
+  right after `load_data` told it to "classify with inspect_experiment(scans)".
+  `ExperimentSummary.summary_line()` (gold index in full, cut/mapping/conflict
+  counts) is printed by the facade, exactly like `load_data`'s report line; the
+  real-data E2E asserts the line arrives in the cell's `stdout_head`.
+- **NET001 consent no longer crashes.** `backend/notebook_unsafe.py` tested
+  `issue.id`, but `SecurityIssue` is a slots dataclass whose field is
+  `rule_id`; with the default `require_consent=False` the `or` did not
+  short-circuit, so any cell matching an explicit-consent rule (typically
+  network egress) raised `AttributeError` — no consent card, no actionable
+  message, and the documented "network egress always needs approval" guarantee
+  was dead code. Fixed to `rule_id`, with a regression test that asserts the
+  card is requested (and declined) with the master switch off.
+
+## [Unreleased] — 2026-09-10 (earlier)
+
 ### E2E is now the real-data human-simulation suite (BREAKING for the suite)
 
 `tests/e2e/test_e2e_live.py` (8 mechanism-only cases) is replaced by

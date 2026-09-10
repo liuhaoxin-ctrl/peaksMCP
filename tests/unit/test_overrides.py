@@ -702,3 +702,25 @@ def test_load_data_is_eager_by_default():
     import inspect
 
     assert inspect.signature(load_data).parameters["lazy"].default is False
+
+
+def test_inspect_experiment_prints_the_classification_line(tmp_path, capsys):
+    """The classification result must be visible to the agent: run_cell only
+    echoes stdout (a bare returned object is dropped as a text/plain repr)."""
+    from peaksMCP.overrides.inspection import ExperimentSummary, inspect_experiment
+
+    document = {
+        "records": {
+            "5": {"index": 5, "experiment": {"data_format": "sweep"}},
+            "20": {"index": 20, "is_gold_reference": True, "experiment": {"data_format": "sweep"}},
+        }
+    }
+    capsys.readouterr()
+    summary = inspect_experiment(document)
+    out = capsys.readouterr().out
+    assert "inspect_experiment:" in out
+    assert "gold=[20]" in out
+    assert "cuts=1" in out
+    # The line is the same one the model would read back from the cell.
+    assert summary.summary_line() in out
+    assert isinstance(summary, ExperimentSummary)
