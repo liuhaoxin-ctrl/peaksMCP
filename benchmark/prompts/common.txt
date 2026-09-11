@@ -7,8 +7,10 @@ Notebook: {NOTEBOOK_PATH}
 
 Goal
 
-Process the complete experiment from the supplied input, producing one scientifically valid,
-reviewable momentum-space NetCDF product for every cut and for no other record.
+Process the complete experiment from the supplied input so that the notebook contains one
+scientifically valid, reviewable momentum-space result for every cut and for no other record.
+The notebook is the deliverable: a trial is complete when every cut's processed output is IN
+the notebook, not merely when files have been saved.
 
 Completion requirements
 
@@ -20,9 +22,13 @@ Completion requirements
 3. Derive each cut's high-symmetry angular offset from the experiment metadata associated with that
    record. Do not guess it or substitute an unrelated metadata value.
 4. Apply the Fermi correction, angular zeroing, and momentum conversion to every cut. Each final
-   product must contain the full processed cut in momentum space, not a preview or centre slice.
-5. Persist exactly one product per cut at:
-   {OUTPUT_DIR}/<original-stem>_processed.nc
+   result must contain the full processed cut in momentum space, not a preview or centre slice -
+   for a record whose file carries a scanned axis, select the plane rather than integrating it.
+5. Leave every cut's processed result in the notebook: each cut must be produced by an
+   executed cell that carries out the momentum conversion, and its result must be visible as
+   a notebook output.  Persisting is a separate, consent-gated step - when a product should be
+   kept on disk, save it with the persistence tool to
+   {OUTPUT_DIR}/<original-stem>_processed.nc.
 6. Leave at least one clear before/after validation figure in the notebook and inspect the processed
    structures before declaring success.
 7. At the end, append one Markdown cell containing the selected gold and evidence, fitted Fermi
