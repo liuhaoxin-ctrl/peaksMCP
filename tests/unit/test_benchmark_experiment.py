@@ -64,6 +64,30 @@ def _by_name(results):
 # C3: fit_gold receiver resolution                                            #
 # --------------------------------------------------------------------------- #
 
+def test_r1_accepts_notebook_output_without_persisted_files():
+    """Completion is the notebook containing the output; a file on disk is not
+    required.  Two targets are produced in executed cells, the third is not."""
+    code = [
+        "cut = scans['BP_0005']\ncut.metadata.set_EF_correction(ef)\nkcut = cut.k_convert(quiet=True)\n",
+        "cut = scans['BP_0006']\nkcut = cut.k_convert(quiet=True)\n",
+        "print('BP_0009 is a mapping, skipped')\n",
+    ]
+    result = _by_name(check_run(_ctx(code)))["R1_all_targets_processed"]
+    assert result.passed is False
+    assert "BP_0009" in result.detail
+    assert "BP_0005" not in result.detail and "BP_0006" not in result.detail
+
+
+def test_r1_is_satisfied_when_every_target_is_processed_in_the_notebook():
+    """A full notebook with no saved files still counts as done."""
+    stems = ["BP_0005", "BP_0006", "BP_0009"]
+    code = [
+        f"cut = scans['{stem}']\nkcut = cut.k_convert(quiet=True)\n" for stem in stems
+    ]
+    result = _by_name(check_run(_ctx(code)))["R1_all_targets_processed"]
+    assert result.passed is True, result.detail
+
+
 def test_c3_bound_variable_with_same_cell_cut_list_passes():
     code = [
         "cuts = ['BP_0005','BP_0009','BP_0020']\n"
