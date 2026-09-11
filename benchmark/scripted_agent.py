@@ -24,9 +24,11 @@ from pathlib import Path
 FIT_GOLD = "dataarray:peaks.core.fitting.fit:fit_gold"
 K_CONVERT = "dataarray:peaks.core.process.k_conversion:k_convert"
 SET_EF = "metadata:peaks.core.metadata.metadata_methods:set_EF_correction"
+VALIDATION = "module:peaksMCP.overrides:plot_validation_pair"
 FACADES = (
     "module:peaksMCP.overrides:load_data",
     "module:peaksMCP.overrides:inspect_experiment",
+    VALIDATION,
 )
 
 
@@ -93,10 +95,17 @@ def main() -> int:
     input_dir = args.input or str(Path(args.trial) / "workspace" / "input")
     client = Client(args.endpoint or _endpoint())
 
-    def cell(label: str, code: str, api_ids=None, timeout: float = 300.0) -> dict:
-        result = client.call(
-            "run_cell", {"code": code, "timeout": timeout, "api_ids": api_ids or []}
-        )
+    def cell(
+        label: str,
+        code: str,
+        api_ids=None,
+        timeout: float = 300.0,
+        cell_type: str = "code",
+    ) -> dict:
+        arguments: dict = {"code": code, "timeout": timeout, "cell_type": cell_type}
+        if cell_type == "code":
+            arguments["api_ids"] = api_ids or []
+        result = client.call("run_cell", arguments)
         if result.get("blocked") or result.get("execution_success") is not True:
             raise SystemExit(f"{label} failed: {json.dumps(result, ensure_ascii=False)[:600]}")
         print(f"[scripted-agent] {label}: ok", flush=True)
@@ -145,6 +154,8 @@ def main() -> int:
         )
     inventory = json.loads(text[start : end + 1])
     cut_stems = list(inventory["cuts"])
+    first_cut: str | None = None
+    saved_names: list[str] = []
     print(f"[scripted-agent] processing {len(cut_stems)} cut(s): {cut_stems[:4]}...", flush=True)
 
     # One gold fit, reused for every cut (the contract the grader checks).
@@ -152,10 +163,28 @@ def main() -> int:
         "fit gold once",
         "gold = scans[gold_stem]\n"
         "fit = gold.fit_gold(plot=False, show=False)\n"
+        "import json\n"
         "ef = dict(fit.attrs['EF_correction'])\n"
-        "assert 'c0' in ef, ef",
+        "assert 'c0' in ef, ef\n"
+        "print('EF_JSON ' + json.dumps({k: float(v) for k, v in ef.items()}))",
         api_ids=[FIT_GOLD],
     )
+
+    # Read the fitted correction back out of the archive (the same designed
+    # path as the inventory) so the closing summary names the real values.
+    ef_archive = client.call(
+        "inspect_notebook",
+        {"target": "active_cell", "detail": "preview", "with_text_outputs": True},
+    )
+    ef_text = "fitted during this trial"
+    if isinstance(ef_archive, dict):
+        for line in str(ef_archive.get("text_outputs") or "").splitlines():
+            if line.startswith("EF_JSON "):
+                ef_text = ", ".join(
+                    f"{key}={value}"
+                    for key, value in sorted(json.loads(line[len("EF_JSON "):]).items())
+                )
+                break
 
     for cut_stem in cut_stems:
         cell(
@@ -180,6 +209,17 @@ def main() -> int:
             "assert abs(float(kcut.kx.min()) + float(kcut.kx.max())) <= 0.05",
             api_ids=[K_CONVERT],
         )
+        if first_cut is None:
+            # S2: at least one before/after validation figure, drawn with the
+            # curated facade rather than hand-written matplotlib.
+            first_cut = cut_stem
+            cell(
+                "validation figure",
+                f"raw_cut = scans[{cut_stem!r}]\n"
+                "from peaksMCP.overrides import plot_validation_pair\n"
+                "fig = plot_validation_pair(raw_cut, kcut, shared_scale='auto')",
+                api_ids=[VALIDATION],
+            )
         # Consent-gated persistence: the benchmark harness answers each card.
         target = output_dir / f"{cut_stem}_processed.nc"
         receipt = client.call(
@@ -187,7 +227,25 @@ def main() -> int:
         )
         if receipt.get("status") != "saved":
             raise SystemExit(f"save {cut_stem} did not complete: {receipt}")
+        saved_names.append(target.name)
         print(f"[scripted-agent] saved {target.name}", flush=True)
+    # S4: the task asks for one closing Markdown cell - the notebook is the
+    # execution record, so the summary is appended, never written over it.
+    cell(
+        "closing summary",
+        "## Cut preprocessing summary\n\n"
+        f"- gold reference: {inventory['gold']} (classified by inspect_experiment)\n"
+        f"- Fermi-level correction: {ef_text}\n"
+        f"- angular offset: {inventory['theta']} deg, from the record's metadata\n"
+        f"- cuts processed: {len(saved_names)}\n"
+        + "".join(f"- {name}\n" for name in saved_names)
+        + "- unprocessed targets: none (record 3 has no metadata entry; "
+        "record 26 was reduced to its centre deflector plane)\n"
+        "- validation: one before/after k-space figure above; every product "
+        "persisted through the consent card",
+        cell_type="markdown",
+    )
+    print(f"[scripted-agent] summary written for {len(saved_names)} product(s)", flush=True)
     return 0
 
 
