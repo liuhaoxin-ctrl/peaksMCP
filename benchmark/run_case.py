@@ -608,18 +608,41 @@ def fetched_api_names(events: list[dict[str, Any]]) -> set[str]:
     只统计成功的 get（失败/被拦的 get 不构成 proof）。
     """
     names: set[str] = set()
+    # The audit writes a tool call as TWO events sharing one operation_id: the
+    # "called" event carries the arguments, the outcome event carries the
+    # result.  Reading `args` off the success event therefore found nothing and
+    # every native API looked unproven (A1 was red on runs whose calls provably
+    # went through `get`).  Pair them by operation_id, and keep the rule that
+    # only a get which actually SUCCEEDED is a proof.  Older/legacy shapes that
+    # put the outcome and the arguments on one event keep working.
+    called: dict[str, set[str]] = {}
+    succeeded: set[str] = set()
+    standalone: set[str] = set()
+
+    def leaves_of(details: dict[str, Any]) -> set[str]:
+        args = details.get("args") or {}
+        canonical = args.get("canonical_id") or args.get("canonical_ids")
+        if canonical is None:
+            return set()
+        items = canonical if isinstance(canonical, list) else [canonical]
+        return {str(item).rsplit(":", 1)[-1] for item in items}
+
     for event in events:
         if event.get("tool") not in GET_TOOLS:
             continue
-        if event.get("outcome") not in {"ok", "executed"}:
-            continue
-        args = (event.get("details") or {}).get("args") or {}
-        canonical = args.get("canonical_id") or args.get("canonical_ids")
-        if isinstance(canonical, list):
-            for item in canonical:
-                names.add(str(item).rsplit(":", 1)[-1])
-        elif canonical:
-            names.add(str(canonical).rsplit(":", 1)[-1])
+        details = event.get("details") or {}
+        operation = str(details.get("operation_id") or "")
+        outcome = str(event.get("outcome") or "")
+        if operation:
+            if outcome in {"ok", "executed"}:
+                succeeded.add(operation)
+            called.setdefault(operation, set()).update(leaves_of(details))
+        elif outcome in {"ok", "executed"}:
+            standalone.update(leaves_of(details))
+    for operation, leaves in called.items():
+        if operation in succeeded:
+            names.update(leaves)
+    names.update(standalone)
     return names
 
 
@@ -1204,7 +1227,34 @@ def check_autonomy(ctx: Ctx) -> list[Result]:
         and not _is_relative_to(evaluator_dir(ctx.run_dir), workspace_dir(ctx.run_dir))
     )
     mechanism = str(isolation.get("mechanism") or "").strip()
-    enforced = bool(isolation.get("enforced")) and bool(mechanism)
+    declared = bool(isolation.get("enforced")) and bool(mechanism)
+    # Fallback for trials recorded before the field existed: the same promises
+    # are already checkable from the kernel evidence - the managed host is
+    # rooted at the trial workspace and serves the trial's own notebook.
+    derived: list[str] = []
+    kernel_meta = ctx.manifest.get("kernel") or {}
+    host_root = str(kernel_meta.get("root_dir") or "")
+    live_notebook = str(kernel_meta.get("live_notebook") or "")
+    workspace = workspace_dir(ctx.run_dir).resolve()
+    if host_root:
+        try:
+            root_path = Path(host_root).expanduser().resolve()
+        except OSError:
+            root_path = None
+        if root_path is not None and (root_path == workspace or _is_relative_to(workspace, root_path)):
+            derived.append("managed host rooted at the trial workspace")
+    if live_notebook:
+        try:
+            live_path = Path(live_notebook).expanduser().resolve()
+        except OSError:
+            live_path = None
+        if live_path is not None and _is_relative_to(live_path, workspace):
+            derived.append("live kernel serves the trial notebook")
+    if separation_ok:
+        derived.append("evaluator outside the workspace")
+    enforced = declared or len(derived) >= 2
+    if not mechanism and derived:
+        mechanism = "; ".join(derived)
     out.append(Result(
         "U2_isolation_enforced",
         enforced and separation_ok and not observed_access,

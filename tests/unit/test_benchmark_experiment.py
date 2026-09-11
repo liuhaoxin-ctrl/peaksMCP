@@ -242,6 +242,23 @@ def test_fetched_names_ignore_failed_gets():
     assert rc.fetched_api_names(events) == {"fit_gold"}
 
 
+def test_fetched_names_pair_the_called_event_with_its_success():
+    """The product logs `get` as called(args) + executed(result) sharing an
+    operation_id.  Grading only the outcome event found no canonical id at all,
+    which made A1 red on runs where every API had provably been fetched."""
+    events = [
+        {"timestamp": "t1", "tool": "get", "outcome": "called",
+         "details": {"operation_id": "op-1", "args": {"canonical_id": "dataarray:peaks.core.fitting.fit:fit_gold"}}},
+        {"timestamp": "t2", "tool": "get", "outcome": "executed",
+         "details": {"operation_id": "op-1", "cell_id": "dataarray:peaks.core.fitting.fit:fit_gold"}},
+        {"timestamp": "t3", "tool": "get", "outcome": "called",
+         "details": {"operation_id": "op-2", "args": {"canonical_id": "metadata:peaks:set_EF_correction"}}},
+        {"timestamp": "t4", "tool": "get", "outcome": "blocked",
+         "details": {"operation_id": "op-2", "error": "unknown id"}},
+    ]
+    assert rc.fetched_api_names(events) == {"fit_gold"}
+
+
 def test_approved_save_paths_pair_by_operation_id():
     paths = _approved_save_paths(_save_trail(True))
     assert sorted(paths) == ["/out/BP_0005_processed.nc", "/out/BP_0009_processed.nc"]
