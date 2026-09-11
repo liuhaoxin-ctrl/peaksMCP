@@ -12,6 +12,21 @@ scientifically valid, reviewable momentum-space result for every cut and for no 
 The notebook is the deliverable: a trial is complete when every cut's processed output is IN
 the notebook, not merely when files have been saved.
 
+Definition of done
+
+The task is DONE only when every cut's momentum-space result exists as a notebook output.
+Exploration, planning, or reading the datasheet without producing those outputs does not
+complete the task.  Saving files is a separate, optional step and does not change whether the
+task is done.
+
+Work in two phases
+
+1. Phase 1 - produce: for every cut, run the momentum conversion in an executed cell and leave
+   the result visible as a notebook output, with one validation figure and one closing summary.
+2. Phase 2 - persist: save the products with the consent-gated persistence tool when they
+   should be kept on disk.
+Do not stop before phase 1 is complete.
+
 Completion requirements
 
 1. Build a complete inventory of the available records. Identify the gold reference, every cut,
