@@ -1709,12 +1709,26 @@ def score(results: list[Result], rubric: dict[str, dict[str, Any]]) -> dict[str,
     }
 
 
+#: A trial that executed fewer code cells than this never engaged with the task
+#: (observed: two campaign trials ran a single cell each and were still counted
+#: as valid samples, which flatters nothing but corrupts the statistics).
+MIN_EXECUTED_CELLS = 3
+
+
 def assess_validity(
     run_dir: Path,
     manifest: dict[str, Any],
     notebook_path: Path | None,
+    *,
+    events: list[dict[str, Any]] | None = None,
+    executed_cells: int | None = None,
 ) -> dict[str, Any]:
-    """Evaluate whether this trial can support the strict endpoint."""
+    """Evaluate whether this trial can support the strict endpoint.
+
+    ``events`` and ``executed_cells`` turn the two "did anything happen at all"
+    promises into checks: a trial with an empty audit window or a single
+    executed cell cannot support any endpoint, however clean its paths are.
+    """
     checks: list[dict[str, Any]] = []
 
     def record(name: str, passed: bool, detail: str) -> None:
@@ -1772,6 +1786,19 @@ def assess_validity(
             "kernel_serves_trial_notebook",
             scoped,
             f"live={live}; expected={expected_notebook}",
+        )
+
+    if events is not None:
+        record(
+            "agent_activity",
+            len(events) > 0,
+            f"audit events inside the trial window: {len(events)}",
+        )
+    if executed_cells is not None:
+        record(
+            "executed_cells",
+            executed_cells >= MIN_EXECUTED_CELLS,
+            f"executed code cells: {executed_cells} (minimum {MIN_EXECUTED_CELLS})",
         )
 
     answer_key = manifest.get("answer_key") or {}
@@ -2155,7 +2182,18 @@ def cmd_grade(args: argparse.Namespace) -> int:
 
     rubric = load_rubric()
     scorecard = score(results, rubric)
-    validity = assess_validity(run_dir, manifest, notebook_path)
+    executed_cells = sum(
+        1
+        for cell in (notebook or {}).get("cells", [])
+        if cell.get("cell_type") == "code" and cell.get("execution_count") is not None
+    )
+    validity = assess_validity(
+        run_dir,
+        manifest,
+        notebook_path,
+        events=events,
+        executed_cells=executed_cells,
+    )
     result_map = {result.check: result.passed for result in results}
     strict_checks = list(_rubric_document().get("strict_checks") or [])
     if _q4_oracle() is None:

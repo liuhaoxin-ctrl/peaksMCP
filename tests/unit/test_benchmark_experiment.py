@@ -630,6 +630,73 @@ def test_validity_rejects_a_kernel_serving_another_notebook(tmp_path):
     assert rc.assess_validity(run_dir, manifest, notebook)["valid"] is True
 
 
+def test_validity_rejects_a_trial_that_did_nothing(tmp_path):
+    """A clean-looking trial that executed one cell and logged no events cannot
+    support any endpoint.  Two campaign trials looked like this and were still
+    counted as valid samples until these two gates existed."""
+    run_dir = tmp_path / "r002-p1"
+    workspace = run_dir / "workspace"
+    workspace.mkdir(parents=True)
+    (run_dir / "evaluator").mkdir()
+    notebook = workspace / "work.ipynb"
+    notebook.write_text("{}", encoding="utf-8")
+    prompt = workspace / "prompt.txt"
+    prompt.write_text("prompt", encoding="utf-8")
+    manifest = {
+        "schema_version": 2,
+        "condition": "p1",
+        "prompt": {"path": str(prompt), "rendered_sha256": rc.sha256_file(prompt)},
+        "audit": {"start_offset": 0, "end_offset": 0},
+        "session": {"fresh": True, "evidence": "fresh"},
+        "kernel": {"fresh": True, "evidence": "managed host; kernel_id=k1"},
+        "answer_key": {"generated_after_execution": True},
+    }
+
+    empty = rc.assess_validity(run_dir, manifest, notebook, events=[], executed_cells=1)
+    assert empty["valid"] is False
+    checks = {item["check"]: item for item in empty["checks"]}
+    assert checks["agent_activity"]["passed"] is False
+    assert "0" in checks["agent_activity"]["detail"]
+    assert checks["executed_cells"]["passed"] is False
+    assert str(rc.MIN_EXECUTED_CELLS) in checks["executed_cells"]["detail"]
+
+    # The same paths with real activity stay valid: the gate measures work, not
+    # artefacts.
+    busy = rc.assess_validity(
+        run_dir,
+        manifest,
+        notebook,
+        events=[{"tool": "run_cell"}],
+        executed_cells=rc.MIN_EXECUTED_CELLS,
+    )
+    assert busy["valid"] is True
+
+
+def test_validity_leaves_the_activity_gates_out_when_not_measured(tmp_path):
+    """Backwards compatibility: callers that cannot supply activity evidence
+    (older manifests, unit fixtures) are not silently marked invalid."""
+    run_dir = tmp_path / "r003-p1"
+    workspace = run_dir / "workspace"
+    workspace.mkdir(parents=True)
+    (run_dir / "evaluator").mkdir()
+    notebook = workspace / "work.ipynb"
+    notebook.write_text("{}", encoding="utf-8")
+    prompt = workspace / "prompt.txt"
+    prompt.write_text("prompt", encoding="utf-8")
+    manifest = {
+        "schema_version": 2,
+        "condition": "p1",
+        "prompt": {"path": str(prompt), "rendered_sha256": rc.sha256_file(prompt)},
+        "audit": {"start_offset": 0, "end_offset": 1},
+        "session": {"fresh": True, "evidence": "fresh"},
+        "kernel": {"fresh": True, "evidence": "managed host; kernel_id=k1"},
+        "answer_key": {"generated_after_execution": True},
+    }
+    validity = rc.assess_validity(run_dir, manifest, notebook)
+    names = {item["check"] for item in validity["checks"]}
+    assert "agent_activity" not in names and "executed_cells" not in names
+
+
 def test_validity_accepts_a_relative_live_notebook_under_the_kernel_root(tmp_path):
     """Positive case: the managed host reports "work.ipynb" relative to the
     trial workspace, which is exactly what a correct isolated run looks like."""
