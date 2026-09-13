@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from peaksMCP.overrides import load_data
+from peaksMCP.overrides.load import load_data
 from peaksMCP.overrides.save import SaveReceipt, _save_result
 
 
@@ -231,45 +231,33 @@ def test_stage_never_accepts_a_code_level_approve():
 
 # ---------- ③ manifest file parses ----------
 
-def test_override_manifest_v5_exists_and_registers_public_facades():
+def test_single_catalog_registers_no_project_facades():
     from pathlib import Path
 
     import yaml
 
     raw = yaml.safe_load(
-        Path("peaksMCP/config/override_manifest.yaml").read_text(encoding="utf-8")
+        Path("peaksMCP/config/api_catalog.yaml").read_text(encoding="utf-8")
     )
-    assert raw["version"] == 5
-    # v5 is a single manifest: one row per public adapter, keyed by name, each
-    # carrying the full structured contract (v5: `inputs` is a list of declared
-    # parameters, checked against the real signature).  No project-seeds block.
-    assert "project" not in raw
-    names = set(raw["apis"])
-    assert {"load_data", "convert_experiment", "inspect_experiment"} <= names
-    for name, entry in raw["apis"].items():
-        assert entry["export"] == f"peaksMCP.overrides.{name}"
-        assert entry["exposure"] == "facade"
-        assert entry["summary"] and entry["returns"]
-        assert isinstance(entry["inputs"], list) and entry["inputs"]
-        assert all(set(item) <= {"name", "type", "required", "default", "note"} for item in entry["inputs"])
-        assert "docstring_note" not in entry
-    # Not registered: the internal/legacy verbs are not model-facing.
-    assert not ({"save_result", "read_meta"} & names)
+    assert raw["version"] == 1
+    assert all(entry["kind"] == "native" for entry in raw["apis"].values())
+    assert not any(str(api_id).startswith("module:peaksMCP") for api_id in raw["apis"])
 
 
-def test_native_catalog_v1_exists_and_holds_only_upstream_entries():
+def test_api_catalog_uses_canonical_ids_for_upstream_entries():
     from pathlib import Path
 
     import yaml
 
     raw = yaml.safe_load(
-        Path("peaksMCP/config/native_catalog.yaml").read_text(encoding="utf-8")
+        Path("peaksMCP/config/api_catalog.yaml").read_text(encoding="utf-8")
     )
     assert raw["version"] == 1
     apis = raw["apis"]
     assert apis and len(apis) >= 25  # upstream presentation stays complete
     assert all(not (config or {}).get("project") for config in apis.values())
-    assert "k_convert" in apis and "fit_gold" in apis
+    assert "dataarray:peaks.core.process.k_conversion:k_convert" in apis
+    assert "dataarray:peaks.core.fitting.fit:fit_gold" in apis
 
 
 def test_load_data_folder_returns_index_with_datasheet(monkeypatch, tmp_path, capsys):
@@ -277,8 +265,8 @@ def test_load_data_folder_returns_index_with_datasheet(monkeypatch, tmp_path, ca
     datasheet becomes the index's metadata document and classification stays
     with inspect_experiment."""
     from peaksMCP import pxt_utils
-    from peaksMCP.overrides import LoadedScans
     from peaksMCP.overrides.inspection import inspect_experiment
+    from peaksMCP.overrides.load import LoadedScans
 
     folder = tmp_path / "data"
     folder.mkdir()
@@ -350,7 +338,7 @@ def test_load_data_index_never_reads_but_data_layer_fails_per_file(monkeypatch, 
     """Indexing a folder reads nothing; a corrupt file only fails when its
     data layer is accessed, and other stems keep working."""
     from peaksMCP import pxt_utils
-    from peaksMCP.overrides import LoadedScans
+    from peaksMCP.overrides.load import LoadedScans
 
     folder = tmp_path / "data"
     folder.mkdir()
@@ -377,9 +365,9 @@ def test_load_data_index_uses_embedded_netcdf_metadata(monkeypatch, tmp_path, ca
     inspect_experiment, which sees the header sizes as real shapes."""
     import json as _json
 
-    from peaksMCP.overrides import LoadedScans
     from peaksMCP.overrides import load as load_module
     from peaksMCP.overrides.inspection import inspect_experiment
+    from peaksMCP.overrides.load import LoadedScans
 
     folder = tmp_path / "data_netcdf"
     folder.mkdir()
@@ -434,7 +422,7 @@ def test_load_data_index_reports_pxt_dims_from_header(tmp_path, capsys):
     (no data materialised) - identical to what load_pxt reports."""
     from pathlib import Path as _Path
 
-    from peaksMCP.overrides import LoadedScans, load_data
+    from peaksMCP.overrides.load import LoadedScans, load_data
     from peaksMCP.pxt_utils.loader import load_pxt
 
     fixture = _Path(__file__).parents[1] / "fixtures" / "pxt" / "synthetic_2d_nested.pxt"
@@ -457,9 +445,9 @@ def test_load_data_index_tags_processed_netcdf_entries(tmp_path, capsys):
     the raw converted NetCDF (never the processed product's dims)."""
     import json as _json
 
-    from peaksMCP.overrides import LoadedScans, load_data
     from peaksMCP.overrides import load as load_module
     from peaksMCP.overrides.inspection import inspect_experiment
+    from peaksMCP.overrides.load import LoadedScans, load_data
 
     folder = tmp_path / "data_netcdf"
     folder.mkdir()
@@ -521,9 +509,9 @@ def test_load_data_accepts_experiment_root_with_subfolders(monkeypatch, tmp_path
     the raw PXT for the same stem, and inspect_experiment classifies."""
     import json as _json
 
-    from peaksMCP.overrides import LoadedScans, load_data
     from peaksMCP.overrides import load as load_module
     from peaksMCP.overrides.inspection import inspect_experiment
+    from peaksMCP.overrides.load import LoadedScans, load_data
 
     root = tmp_path / "BP260623"
     data_dir = root / "data"

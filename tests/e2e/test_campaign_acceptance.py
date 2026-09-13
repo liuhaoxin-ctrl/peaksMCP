@@ -1,17 +1,16 @@
 """Campaign acceptance: the benchmark runner driven by a deterministic agent.
 
-Finding 3 of the 2026-09-10 review: the real-data E2E exercises the product path
-(MCP/Jupyter/Comm/consent) but never the *benchmark runner* - prompt delivery,
+Finding 3 of the 2026-09-10 review: the real-data E2E exercises the user path
+(Dashboard/MCP/Jupyter/Comm) but never the *benchmark runner* - prompt delivery,
 trial isolation, the managed stack, the approval harness, the audit window and
 the grader.  This test closes that gap without a model: `run_campaign.py` is run
 with ``--runner command`` and the scripted agent in ``benchmark/scripted_agent.py``,
 which performs the golden cut-preprocessing chain through the five MCP tools.
 
 Asserted: the campaign exits 0, the trial is graded and VALID, the deterministic
-checks pass (products in place, consent trail complete, k-space/EF/θ alignment),
-and the product file exists in the trial workspace.  Whether the model-facing
-*strict* bundle passes is measured by real campaigns, not here - the scripted
-agent deliberately leaves out the model-authored final summary.
+checks pass (one PXT conversion, no final-product persistence, compact inline figures,
+k-space/EF/theta alignment), and all scientific arrays remain in the live
+namespace rather than processed files.
 """
 
 from __future__ import annotations
@@ -24,7 +23,13 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = [pytest.mark.e2e]
+pytestmark = [
+    pytest.mark.e2e,
+    pytest.mark.realdata,
+    pytest.mark.campaign,
+    pytest.mark.browser,
+    pytest.mark.slow,
+]
 
 ROOT = Path(__file__).resolve().parents[2]
 RAW_PXT_DIR = Path(
@@ -33,8 +38,7 @@ RAW_PXT_DIR = Path(
 )
 CASE = "bp260623"
 
-#: Deterministic subset: everything the scripted agent can guarantee.  The
-#: remaining strict checks (figure, model-authored summary) are behavioural.
+#: Deterministic subset: everything the scripted agent explicitly guarantees.
 EXPECTED_GREEN = {
     "C1_blackbox_load",
     "C2_blackbox_inspect",
@@ -44,11 +48,18 @@ EXPECTED_GREEN = {
     "R1_all_targets_processed",
     "R2_one_gold_fit",
     "R4_execution_success",
-    "V1_outputs_in_place",
-    "V3_consent_trail_complete",
+    "R5_no_unexpected_outputs",
+    "R6_no_redundant_scientific_execution",
+    "S2_validation_figure",
+    "S4_final_summary",
+    "S5_notebook_readable",
+    "V2_no_direct_disk_write",
+    "V5_raw_inputs_immutable",
+    "V6_pxt_cache_reused",
     "Q1_kspace_dims",
     "Q2_ef_zeroed",
     "Q3_theta_zeroed",
+    "Q4_matches_human_reference",
 }
 
 
@@ -156,6 +167,36 @@ def test_campaign_runs_end_to_end_with_a_deterministic_agent(tmp_path):
     failed = sorted(name for name in EXPECTED_GREEN if checks.get(name) is not True)
     assert not failed, (failed, {name: checks.get(name) for name in failed})
 
-    # The product the agent saved through the consent card is really there.
+    trial_path = Path(trial["path"])
+    live = json.loads(
+        (trial_path / "evaluator" / "live_evidence.json").read_text(encoding="utf-8")
+    )
+    assert live["status"] == "ok", live
+    assert len(live["processed_stems"]) == 14, live["processed_stems"]
+    assert len(live["conversion_reports"]) == 1
+    assert sum(item["converted"] for item in live["conversion_reports"]) > 0
+
+    # The Notebook and conversion cache are durable; final arrays and figures
+    # are deliberately not separate disk products.
+    notebook = json.loads(
+        (trial_path / "workspace" / "work.ipynb").read_text(encoding="utf-8")
+    )
+    outputs = [
+        output
+        for cell in notebook["cells"]
+        for output in cell.get("outputs", [])
+    ]
+    image_count = sum(
+        any(mime in (output.get("data") or {}) for mime in ("image/png", "image/jpeg", "image/svg+xml"))
+        for output in outputs
+    )
+    widget_count = sum(
+        "application/vnd.jupyter.widget-view+json" in (output.get("data") or {})
+        for output in outputs
+    )
+    assert image_count == 3
+    assert widget_count == 0
     products = sorted(Path(trial["path"]).glob("workspace/output/*_processed.nc"))
-    assert products, "no processed product in the trial output directory"
+    assert not products, f"unexpected processed products: {products}"
+    caches = sorted(trial_path.glob("workspace/input_netcdf/*.nc"))
+    assert caches, "pxt2nc did not create its conversion cache"

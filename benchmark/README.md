@@ -1,10 +1,13 @@
 # Agent-Agnostic ARPES Preprocessing Benchmark
 
-This benchmark measures whether an AI agent can autonomously discover, execute, verify, and
-persist a complete ARPES cut-preprocessing workflow through peaksMCP.
+This benchmark measures whether an AI agent can autonomously discover, execute, and verify a
+complete ARPES cut-preprocessing workflow through peaksMCP. Processed results remain in live
+Notebook variables and inline figures; the PXT conversion cache is the only automatic disk output.
 
-The evaluator never grades agent prose. Evidence comes only from durable artifacts: the notebook,
-MCP audit window, saved products, trial manifest, approval log, and intervention log.
+The evaluator never grades agent conversation prose. Structured Pi `toolCall`/`toolResult` failures
+are execution evidence, including client-side schema errors that occur before the MCP audit hook.
+Other evidence comes from the live kernel snapshot, Notebook, MCP audit window, PXT cache, trial
+manifest, and intervention log.
 
 ## Quick Start
 
@@ -22,16 +25,16 @@ $PY benchmark/run_campaign.py create \
   --name baseline-001 \
   --case bp260623 \
   --repetitions 3 \
-  --provider openrouter \
-  --model <model-id> \
-  --thinking high
+  --provider deepseek \
+  --model deepseek-v4-flash \
+  --thinking low
 
-# 3. Run pi-agent with a fresh managed kernel and deterministic save approvals.
+# 3. Run the real Pi TUI with a fresh managed kernel and browser-backed JupyterLab.
 $PY benchmark/run_campaign.py run benchmark/campaigns/baseline-001 \
-  --runner pi \
-  --provider openrouter \
-  --model <model-id> \
-  --thinking high \
+  --runner pi-tui \
+  --provider deepseek \
+  --model deepseek-v4-flash \
+  --thinking low \
   --manage-stack \
   --approval-mode harness_allowlist
 ```
@@ -64,7 +67,7 @@ Interpret paired strict outcomes:
 ```text
 trial/
   workspace/                 agent-visible working area
-    input/                     staged, preconverted NetCDF input
+    input/                     copied case input (.pxt or .nc) and datasheet
     output/
     work.ipynb
     prompt.txt               exactly one condition
@@ -72,6 +75,7 @@ trial/
     manifest.json
     env.json
     answer_key.json          generated only after execution ends
+    live_evidence.json       bounded snapshot captured before the kernel stops
     result.json
     report.md
   agent/
@@ -85,13 +89,26 @@ trial/
     approvals.jsonl
 ```
 
-The answer key is independently derived from the datasheet, never from peaksMCP's
-`inspect_experiment`. This prevents the system under test from grading itself.
+The answer key is independently derived from the datasheet and hidden reference data, never from
+`peaks.load_experiment`. This prevents the system under test from grading itself.
 
-Inputs are copied into each trial rather than symlinked. Case definitions should point to
-preconverted NetCDF scans and exclude any `*_processed.nc` reference products. This keeps raw
-beamtime data and human references outside the agent's writable workspace and avoids making
-conversion approval part of a preprocessing-capability measurement.
+`u1` is a standalone natural-user observation condition. Unlike `p1` and `p2`, it does not append
+the detailed common recipe, and it is not used for paired promotion. Use it with a preconverted
+case such as `bp260623_warm` to test a genuine second-pass request where calling `pxt2nc` again is
+redundant:
+
+```bash
+$PY benchmark/run_campaign.py create --name natural-u1-r1 --case bp260623_warm \
+  --conditions u1 --repetitions 1 --provider deepseek --model deepseek-v4-flash --thinking low
+```
+
+Inputs are copied into each trial rather than symlinked, always with the datasheet and never with
+`*_processed.nc` reference products. The cold `bp260623` case stages raw `.pxt` scans: the agent
+must call `load_experiment` once, call `peaks.pxt2nc` once after observing that conversion is
+needed, and then call `load_experiment` exactly once more on the converted destination. The
+second-pass `bp260623_warm` case instead stages 28 existing `.nc` inputs, so it requires one
+`load_experiment` call and no `pxt2nc` call or reload. Hidden human references remain outside the
+agent's writable workspace.
 
 ## Universal Agent Adapter
 
@@ -160,12 +177,10 @@ executed code for direct evaluator/reference access markers.
 
 ## Approval Harness
 
-`benchmark/approval_harness.py` keeps the trial notebook active, preserving the JupyterLab Comm
-bridge. It approves a save only when the card displays exactly one expected filename under the
-exact trial output directory. Unexpected targets and every non-save consent dialog are denied.
-Every decision is logged.
-
-This mode makes persistence repeatable. It does not count as human scientific review.
+`benchmark/approval_harness.py` opens the managed Notebook from the Dashboard and keeps the
+JupyterLab Comm bridge active. This experiment expects no analysis-result save: every unexpected
+persistence dialog is denied with an empty save allowlist. The harness does not count as human
+scientific review.
 
 ## Endpoints
 
@@ -173,9 +188,12 @@ The primary endpoint is `strict_success`. It requires:
 
 - a valid isolated trial with immutable prompt and exact audit byte window;
 - all strict rubric checks passing, including no skipped strict checks;
-- every expected product, no unexpected or misplaced products, and correct numerical results;
-- a validation figure and complete final Markdown summary;
-- append-only execution and consent-gated persistence;
+- every expected cut represented by a scientifically correct named live variable;
+- exactly three non-duplicated static figures (gold diagnostic, all-cut grid,
+  representative before/after), no progress widgets, and a final Markdown summary;
+- append-only execution, immutable raw PXT inputs, and scenario-correct conversion-cache handling;
+- no processed NetCDF or image files;
+- no redundant API discovery, immediate cell rereads, Pi tool errors, or failed `run_cell` attempts;
 - complete evidence, fresh session/kernel, and no assistive intervention.
 
 The weighted score is diagnostic only. Reports expose:

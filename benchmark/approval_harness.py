@@ -2,9 +2,9 @@
 """Deterministic JupyterLab consent harness for benchmark trials.
 
 The harness keeps the trial notebook active so the peaksMCP Comm bridge stays
-connected. It approves only a single expected final product whose resolved
-parent is the trial output directory. Every other consent dialog is denied and
-every decision is appended to an operator JSONL log.
+connected. An empty expected-file allowlist denies every persistence dialog,
+as required by the current Notebook-only benchmark. Every decision is appended
+to an operator JSONL log.
 """
 
 from __future__ import annotations
@@ -94,11 +94,26 @@ def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
         stream.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
+def open_notebook_from_dashboard(page: Any, timeout_ms: int) -> Any:
+    """Open JupyterLab from the dashboard, or return an existing Lab page."""
+    open_lab = page.locator("#open-lab")
+    if not open_lab.count():
+        return page
+
+    page.locator("#open-lab[href]:not([href=''])").wait_for(
+        state="attached",
+        timeout=timeout_ms,
+    )
+    with page.expect_popup(timeout=timeout_ms) as opened:
+        open_lab.click()
+    return opened.value
+
+
 def run_harness(args: argparse.Namespace) -> int:
     from playwright.sync_api import sync_playwright
 
     output_dir = Path(args.output_dir).expanduser().resolve()
-    expected_names = set(args.expected_file)
+    expected_names = set(args.expected_file or ())
     log_path = Path(args.log).expanduser().resolve()
     ready_file = Path(args.ready_file).expanduser().resolve()
     stop_file = Path(args.stop_file).expanduser().resolve()
@@ -118,6 +133,7 @@ def run_harness(args: argparse.Namespace) -> int:
         page = browser.new_page()
         try:
             page.goto(args.notebook_url, wait_until="domcontentloaded", timeout=args.timeout * 1000)
+            page = open_notebook_from_dashboard(page, args.timeout * 1000)
             page.wait_for_selector(".jp-Notebook", timeout=args.timeout * 1000)
             ready_file.write_text(
                 json.dumps(
@@ -198,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--notebook-url", required=True)
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--expected-file", action="append", required=True)
+    parser.add_argument("--expected-file", action="append", default=[])
     parser.add_argument("--log", required=True)
     parser.add_argument("--ready-file", required=True)
     parser.add_argument("--stop-file", required=True)

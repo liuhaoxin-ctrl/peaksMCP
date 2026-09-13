@@ -24,3 +24,6 @@ benchmark/runs/
 benchmark/campaigns/
 .pi/
 .workbuddy-ai/
+
+# Local pi agent session dumps (large, machine-specific)
+.pi_sessions/

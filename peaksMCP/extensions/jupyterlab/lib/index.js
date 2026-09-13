@@ -430,8 +430,11 @@ async function handle(panel, comm, data) {
                 // and never overwrite an existing cell.
                 notebook.activeCellIndex = notebook.widgets.length - 1;
                 NotebookActions.insertBelow(notebook);
+                if (notebook.activeCell?.model.type !== 'code') {
+                    NotebookActions.changeCellType(notebook, 'code');
+                }
                 const executed = notebook.activeCell; // the cell we are about to run
-                if (!executed) {
+                if (!executed || executed.model.type !== 'code') {
                     throw new Error('could not create a code cell');
                 }
                 executed.model.sharedModel.setSource(data.code ?? '');

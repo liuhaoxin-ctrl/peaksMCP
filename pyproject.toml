@@ -72,11 +72,15 @@ namespaces = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = ["--strict-config", "--strict-markers", "-m", "not e2e"]
+addopts = ["--strict-config", "--strict-markers", "-m", "not e2e and not slow"]
 markers = [
-  "integration: integration tests",
-  "e2e: browser or live-kernel tests",
-  "slow: long-running tests",
+  "integration: crosses two or more peaksMCP components without the full product stack",
+  "realdata: requires the local ARPES reference dataset",
+  "live_kernel: starts a real Jupyter kernel",
+  "browser: drives a real browser",
+  "campaign: exercises the benchmark campaign runner and managed stack",
+  "e2e: exercises the complete Dashboard-Jupyter-MCP product path",
+  "slow: excluded from the default fast test gate",
 ]
 
 [tool.ruff]

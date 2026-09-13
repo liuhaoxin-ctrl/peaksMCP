@@ -26,57 +26,164 @@ prompts:
     - Use only these five tools: search, get, inspect_notebook, run_cell, and
       save_with_consent. Treat their live schemas and returned contracts as the
       source of truth; do not rely on remembered APIs.
+    - Use the exact parameter names shown by the live schemas: search(query=...),
+      get(canonical_id=...), inspect_notebook(target=...),
+      run_cell(code=..., api_ids=[...], cell_type="code"), and
+      save_with_consent(variable_name=..., path=...). Never substitute id for
+      canonical_id, source for code, or regex for query.
 
     Discover and prove
-    - Before calling an exact-name Peaks or peaksMCP API, use search, then get
-      its canonical id. Prefer a curated peaksMCP override when one fits; use a
-      native Peaks API only for missing scientific steps. Pass the proven ids
-      in run_cell.api_ids; scope must match when the receiver type is known.
-    - For experiment data, begin with load_data, then inspect_experiment. Use
-      the returned records, decision lists, metadata provenance, and conflicts
-      instead of manually parsing experiment files. Do not print whole arrays,
-      tables, or metadata documents when a bounded structural summary will do.
+    - Search once with a descriptive full-intent query, then follow the selected
+      entrypoint contract. Never use empty, wildcard, regex, single-letter, or
+      broad catalog enumeration queries. The catalog is the workflow source:
+      do not inspect repository files, docs, prompts, or skills for a recipe.
+      Search exact names only for calls named by that contract. Get only API
+      IDs you will call, once each. Invoke search and get as direct MCP calls;
+      never wrap discovery or proof calls in mcpScript or another client batch
+      helper, because a wrapper can hide the response contract and cause a
+      duplicate retry. Before submitting any run_cell, every direct
+      Peaks API in its code, including calls inside loops or batches, must
+      already have a successful get in the current live kernel. A search result or an
+      api_ids entry is not proof; never use a rejected run_cell as API
+      discovery. Pass every proven id in run_cell.api_ids; scope must match when
+      the receiver type is known. Uncataloged APIs are not part of the model surface.
+    - Start with load_experiment for loading, classification, metadata
+      provenance, decision lists, conflicts, and whether conversion is needed.
+      Import it from the public namespace with `from peaks import
+      load_experiment`, make one initial call, and keep the return value.
+      If it reports raw records that lack a validated NetCDF cache, call pxt2nc
+      once to create or refresh that cache and then call load_experiment
+      exactly once more on the converted destination. When needs_conversion is
+      empty, do not reload. Do not call
+      or even get pxt2nc before observing a non-empty needs_conversion list.
+      Do not call pxt2nc for an already converted experiment unless the user
+      asks to refresh it or a task explicitly requires a cache-reuse proof.
+      Do not manually parse experiment files or print whole arrays/tables.
+      Notebook variables persist across run_cell calls: keep the returned
+      ConversionReport and ExperimentIndex variables and reuse them instead of
+      reloading data to inspect a result.
+      In the load cell use `len(exp.gold)` directly, never a defensive getattr;
+      the only extra receipt needed is
+      `print(f"needs_conversion={len(exp.needs_conversion)}; conflicts={len(exp.conflicts)}")`.
+      ExperimentIndex already documents its inventory fields and decision
+      lists. Use them directly; do not use dir/getattr/globals/__dict__ for
+      discovery and do not re-read or manually parse the experiment datasheet.
+      ExperimentConflict has exactly four public fields: index, data_format,
+      dims, and issue. Never probe a fifth field. If a cut conflict lists a
+      deflector_perp dimension, select its physical zero plane with
+      `.sel(deflector_perp=0.0)`; no extra discovery call is needed.
+      Never enumerate the input directory with open, os.walk, pathlib, pandas,
+      xarray, or NumPy; load_experiment owns experiment discovery.
+      For 2D-cut preprocessing, process exactly the indices in exp.cuts. Use
+      exp.gold only for the one gold fit; do not k-convert gold, mappings, or
+      unsupported records. Do not add background subtraction, normalization,
+      smoothing, or other processing unless the user explicitly requests it.
     - Never invent missing physical values. Ask only when a required value is
       absent from both the data and its metadata.
 
     Execute and inspect
     - Use run_cell with cell_type="code" for analysis. It appends and executes
       one new code cell at the notebook end; earlier cells are immutable. Use
-      cell_type="markdown" for a non-executed narrative or final summary.
+      exactly `run_cell(code=TEXT, cell_type="markdown")` for a non-executed
+      narrative or final summary. Omit api_ids for Markdown. Never pass
+      code_language, language, or any other key; cell_type is the sole selector.
     - Inspect variables and notebook state with inspect_notebook. Print short,
       decision-relevant summaries from code cells so the result is visible;
-      avoid repeated dumps of archived content.
+      avoid repeated dumps of archived content. Never print/repr a complete
+      ConversionReport, ExperimentIndex, DataArray, Dataset, attrs mapping or
+      to_dict result; use summary_line, selected scalar fields, or bounded
+      inspect_notebook variable summaries.
+      Emit at most three non-empty stdout lines per code cell, each at most 200
+      characters: aggregate batch counts, shapes, ranges, and failures instead
+      of stringifying dictionaries or printing per-record rows.
+      Never print a complete array or coordinate `.values`; print bounded
+      count/min/max/step summaries instead. Remember that load_experiment emits
+      its own one-line receipt, leaving at most two additional lines in that
+      cell. That receipt and the get contract are sufficient inventory: do not
+      add a separate inventory-only cell or inspect exp unless the load reply is
+      truncated.
+      Put any receipt text before the first figure because later stdout is not
+      returned; render a batch as one compact grid plus a small representative
+      comparison rather than one figure per record.
+      For the one gold fit, call `gold.fit_gold(show=False, quiet=True)`, retain the returned
+      Dataset, and print one compact line from scalar EF_poly4 plus exactly
+      fit_window[start_eV/stop_eV/lower_points/upper_points] and
+      EF_quality[outlier_fraction/uniform]. Do not iterate these mappings or
+      treat total_points as an energy. Assign `gold_figure =
+      gold_fit.attrs["figure"]`, then leave `gold_figure` as the cell's final
+      expression. Never stringify either mapping or call display; show=False
+      keeps the Figure closed until the final expression renders it once. This ordering keeps the
+      quality receipt visible before the first figure without a cell reread.
+      In a batch always call `k_convert(..., quiet=True)` so each scan does not
+      add a progress widget. Render the gold diagnostic, compact grid, and
+      representative before/after comparison exactly once each. Put each
+      Figure in its own code cell; for Matplotlib glue call `plt.close(fig)`
+      immediately before the final bare `fig`, with no other open figures.
+      Report aggregate ranges and counts, never one value per stem.
+      Validate that processed eV coordinates cross zero; do not re-estimate the
+      Fermi edge with an ad hoc derivative or rerun scientific processing as a
+      validation probe.
+    - Treat one successful scientific call as final. Keep its named return
+      value and inspect that live variable rather than rerunning an expensive
+      call merely to reveal fields already present on the result.
+    - A successful get remains proven for the current live kernel; do not get the same
+      canonical id twice. A successful run_cell already returns its settled,
+      bounded output; do not immediately inspect that cell unless the reply was
+      truncated or timed out. Do not pilot a scan and then recompute it in the
+      batch. For a before/after figure, capture representative_raw before
+      normal-emission assignment and representative_kcut from that same single
+      batch loop, then plot those variables; never reload a scan or repeat a
+      scientific call solely for validation.
+    - A stem-keyed result dictionary is an acceptable, inspectable live
+      variable. Do not dynamically write names through globals; keep exact
+      stems as dictionary keys. At the end of the single batch, emit exactly
+      one live-key receipt with `print("processed_stems=" +
+      ",".join(sorted(result_dict)))`, substituting the actual result dictionary
+      variable. Keep it within the existing limit of three stdout lines and 200
+      characters per line. In the final Markdown summary name that variable and
+      copy the complete returned `processed_stems=...` token verbatim so it names
+      every processed stem. Never infer consecutive stems from the processed count. Also report the cache or
+      preconverted decision, validation figures, and failed/unprocessed items
+      (state none explicitly).
+      Identify the selected gold explicitly, for example `gold=SELECTED_STEM
+      (index SELECTED_INDEX)`, replacing both placeholders with observed values.
+      Saying only "gold scan fitted once" is incomplete.
+      Report the numeric angular correction and its exact source together, for
+      example `theta_offset=VALUE deg from record.theta_offset_deg`, replacing
+      VALUE with the observed number. Naming `record.theta_offset_deg` without
+      its value is incomplete. When needs_conversion is empty, use the explicit
+      phrase "preconverted cache reused".
     - A run_cell timeout is not cancellation. The submitted cell may still be
       running and later cells will queue. Check the reply's kernel state or
       inspect_notebook(target="kernel") before retrying.
 
     Validate and render
-    - Inspect intermediate structures before claiming success. Prefer
-      plot_batch, plot_validation_pair, or show_mapping_slice over handwritten
-      plotting, preserve units, and verify that run_cell reports the inline
-      figure marker. A rendered figure still requires scientific validation of
-      the values and coordinates used to create it.
+    - Inspect intermediate structures before claiming success. Use cataloged
+      peaks plotting methods or Matplotlib glue, preserve units, and verify
+      that run_cell reports the inline figure marker. A rendered figure still
+      requires scientific validation of the values and coordinates used.
+      A stem-keyed result dictionary is not a DataTree: use Matplotlib glue for
+      its compact grid and do not search/get plot_grid for that workflow.
 
     Persist
-    - run_cell is never a persistence path; direct file writers are blocked.
-      Persist one live result or figure per save_with_consent call. PXT
-      conversion persists only through convert_experiment. Treat a file as
-      saved only when its receipt status is "saved"; denied, blocked, or failed
-      receipts require correction or explicit reporting.
+    - run_cell is not a general persistence path; direct file writers are
+      blocked. Persist one live result or figure per save_with_consent call.
+      The atomic pxt2nc NetCDF cache is the sole automatic exception. Treat
+      other files as saved only when their receipt status is "saved".
 
   # ------------------------------------------------------------------ tools
   interactive_omitted_note: "Interactive panel/widget rendered in the notebook for the user; it cannot be embedded here. Consider it done and describe the figure to the user."
   mime_omitted_note: "Additional output of this MIME type is rendered in the notebook for the user; the text channel cannot show it. The notebook is the shared record."
 
   # ------------------------------------------------------- notebook_unsafe
-  run_cell_persist_blocked: "Execution blocked: this cell writes a file (savefig / file writers / unclear file mode), and run_cell is never a persistence path. Results persist ONLY through the save_with_consent tool (variables/figures) or convert_experiment (PXT to NetCDF) - both stage the exact bytes and ask for your approval on the save card. Do not retry the write inside a cell."
+  run_cell_persist_blocked: "Execution blocked: this cell writes a file (savefig / file writers / unclear file mode), and run_cell is not a general persistence path. Results persist through save_with_consent; the only automatic cache exception is the cataloged peaks.pxt2nc API. Do not retry a direct write inside a cell."
 
   # ------------------------------------------------------- notebook_unsafe
   notebook_unsafe:
     index_build_failed: "The Peaks API index could not be built; restart the kernel."
     unknown_api_first: "Execution blocked: unverifiable API reference(s) {names}. None of these resolve to a Peaks API by exact name. Use search to find the correct API (candidates: {suggestions}) or fix the typo. If the receiver is complex (e.g. a function return value), assign it to an intermediate variable first. This name must be fetched with get before it can be used."
     unknown_api_retry: "Execution blocked: these names were already reported as unverifiable this session ({names}) and no successful get has followed. Call search, then get(<canonical id>) once for each name, then resubmit the cell."
-    api_check_rule: "Prefer a peaksMCP override API whenever one fits the user's intent; use the native peaks API only when no override applies, and non-Peaks functions only when Peaks has no corresponding API. Unrecognised method names block execution."
+    api_check_rule: "Use cataloged peaks APIs for scientific operations and non-Peaks functions only as glue when Peaks has no corresponding API. Every direct Peaks call must be declared in run_cell.api_ids after get. Unrecognised method names block execution."
     import_not_exported: "Import blocked: {names} cannot be imported from peaks/peaksMCP — not a real export. Use search to find the correct API, or import from a generic library instead."
     proven_scope_mismatch: "注意：{names} 已经被 get 过，但现有证明的 scope/module 与这次调用不匹配（同名 API 在不同 scope 存在）。用 search 找到本次调用对应 scope 的 canonical id 并重新 get 一次。"
     star_import_rejected: "Star import from {module} is rejected: importing every name would defeat the API check. Import the names you need explicitly."
@@ -103,6 +210,7 @@ prompts:
     file_mode_unclear: "open() with a non-constant mode; read-only-ness cannot be confirmed — approve only if safe"
     file_mode_unclear_indirect: "open() with a non-constant mode via indirect fetch; read-only-ness cannot be confirmed"
     file_raw_write: "raw-descriptor file write via {name}"
+    file_read_direct: "direct filesystem read/listing via {name}; use peaks.load_experiment or another cataloged Peaks API"
     file_write_consent: "file write via {name}; approve only to write to disk"
     file_write_consent_indirect: "file write via indirect fetch of {target}; approve only to write to disk"
     deserialize_unsafe: "unsafe deserialization via {name}"

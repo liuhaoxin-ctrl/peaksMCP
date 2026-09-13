@@ -181,9 +181,9 @@ def _check_contract_inputs(
 
 
 def _describe_contract_api(entry: dict[str, Any]) -> dict[str, Any]:
-    """Describe a manifest (v5) project API from its contract, not its source.
+    """Describe a cataloged facade from its contract, not its source.
 
-    The export (``peaksMCP.overrides.<name>``) is imported and the signature
+    The declared ``peaksMCP`` export is imported and the signature
     read via :func:`inspect.signature` — the declared surface is runtime-
     verified against the real object on every detail call.  Failure to import
     or resolve the export is reported as ``signature_resolved: false`` (the
@@ -238,7 +238,7 @@ def _describe_contract_api(entry: dict[str, Any]) -> dict[str, Any]:
 def describe_api(entry: dict[str, Any], package_dir: str | None = None) -> dict[str, Any]:
     """Return detailed, source-backed metadata for an indexed API.
 
-    Project (manifest v5) entries take the contract path: signature verified
+    Facade entries take the contract path: signature verified
     by importing the declared ``export`` plus the structured contract.  Native
     entries keep the source-first extraction with runtime fallback.
 

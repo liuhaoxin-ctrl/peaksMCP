@@ -1,0 +1,8 @@
+Use the available tools to preprocess all 2D data in {INPUT_DIR}.
+
+The runtime check and peaksMCP instructions are already complete, and the fresh notebook is ready.
+Begin the data task directly; do not repeat status or initial notebook checks.
+Do not inspect or list input files; the public experiment loader owns the input inventory.
+
+Work in the already-open notebook {NOTEBOOK_PATH}. Keep completed analysis results in named live
+variables, render every result inline for review, and do not save processed data or figures.

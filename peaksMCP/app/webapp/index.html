@@ -49,7 +49,7 @@
       <h3>Actions</h3>
       <div class="actions-group">
         <a id="open-lab" class="button primary" target="_blank" rel="noopener" style="opacity:.35;pointer-events:none">
-          <span class="btn-icon">↗</span> Open Notebook
+          <span class="btn-icon">↗</span> <span id="open-lab-label">Open Notebook</span>
         </a>
         <button id="snapshot-button" class="button">
           <span class="btn-icon">↓</span> Snapshot
@@ -63,6 +63,9 @@
         <button id="stop-jupyter" class="button danger" disabled style="opacity:.4">
           <span class="btn-icon">■</span> Stop Jupyter
         </button>
+        <button id="restart-kernel" class="button" disabled style="opacity:.4">
+          <span class="btn-icon">↻</span> Restart Kernel
+        </button>
       </div>
       <div class="actions-divider"></div>
       <div class="actions-group">
@@ -71,6 +74,9 @@
         </button>
         <button id="stop-mcp" class="button" disabled style="opacity:.4">
           <span class="btn-icon">■</span> Stop MCP
+        </button>
+        <button id="restart-mcp" class="button" disabled style="opacity:.4">
+          <span class="btn-icon">↻</span> Restart MCP
         </button>
       </div>
     </section>

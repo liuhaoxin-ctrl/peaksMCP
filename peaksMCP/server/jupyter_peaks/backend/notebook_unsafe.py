@@ -17,8 +17,8 @@ _PROMPTS = _load_prompts().get("notebook_unsafe") or {}
 #: Persistence-policy block text (top-level prompt key, single source).
 _RUN_CELL_PERSIST_BLOCKED = (
     _load_prompts().get("run_cell_persist_blocked")
-    or "Execution blocked: this cell writes a file; results persist only "
-    "through save_with_consent / convert_experiment."
+    or "Execution blocked: this cell writes a file; results persist through "
+    "save_with_consent; only peaks.pxt2nc may create its managed cache."
 )
 
 
@@ -60,8 +60,9 @@ class UnsafeNotebookBackend:
         # Persistence policy: run_cell is the analysis execution entry point,
         # NEVER a persistence path.  File-write intents (SAVE001 savefig,
         # SAVE002 file writers, FILE002 unclear file mode) are hard-blocked:
-        # results persist exclusively through save_with_consent (results) and
-        # convert_experiment (PXT -> NetCDF), both of which stage + consent.
+        # results persist through save_with_consent. peaks.pxt2nc is safe here
+        # because this scanner sees only the public call, while pxt2nc itself
+        # owns and audits the sole atomic NetCDF cache exception.
         # Notebook autosave (frontend save_notebook) is Run provenance, not
         # analysis-result persistence, and is not affected.
         if operation in {"run_cell", "add_cell"} and scan:
@@ -161,7 +162,7 @@ class UnsafeNotebookBackend:
         }
         indexed_modules = {entry["module"] for entry in index.entries}
         # ``qualified`` is ``<module>.<original export>``, so renames
-        # (``from ... import load_data as ld``) still check the real export.
+        # (``from ... import load_experiment as ld``) still check the export.
         missing = sorted(
             qualified.rsplit(".", 1)[-1]
             for name, qualified in project_imports.items()
@@ -405,16 +406,48 @@ class UnsafeNotebookBackend:
             else:
                 unknown.append({"name": target.leaf, "suggested": [str(m.get("id")) for m in matches]})
 
-        # Canonical proof resolution: unlock ONLY through ledger ids whose
-        # name matches AND whose scope is compatible with the call site.
+        # Canonical proof resolution: every direct Peaks call needs one
+        # scope-compatible id that is both in the get ledger and explicitly
+        # declared by THIS cell. Generic-only cells may omit api_ids.
+        declared_ids = set(api_ids or [])
+        missing_api_ids: set[str] = set()
         for candidate in needs_proof:
             leaf = candidate["name"]
             call_scope = candidate["scope"]
             proven_ids = self._proven_ids(leaf, call_scope)
-            if proven_ids:
-                verified.append({"name": leaf, "matches": proven_ids})
+            declared_proven = sorted(declared_ids & set(proven_ids))
+            if declared_proven:
+                verified.append({"name": leaf, "matches": declared_proven})
+            elif proven_ids:
+                missing_api_ids.update(proven_ids)
             else:
                 unknown.append({"name": leaf, "suggested": candidate["candidates"]})
+
+        if missing_api_ids:
+            missing = sorted(missing_api_ids)
+            self.audit.write(
+                "run_cell",
+                "blocked",
+                {"missing_api_ids": missing, "reason": "api_ids_incomplete"},
+            )
+            return {
+                "success": False,
+                "executed": False,
+                "blocked": True,
+                "missing_api_ids": missing,
+                "message": (
+                    "run_cell: api_ids must declare every direct Peaks API used "
+                    "by this cell. Add the already-proven canonical id(s): "
+                    + ", ".join(missing)
+                ),
+                "api_check": {
+                    "verified_peaks_apis": verified,
+                    "generic_refs": generic,
+                    "unknown_refs": [],
+                    "suggestions": {},
+                    "rule": _PROMPTS["api_check_rule"],
+                },
+            }
 
         if unknown:
             # Escalation: an unverifiable name must be proven with a successful

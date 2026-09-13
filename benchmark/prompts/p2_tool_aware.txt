@@ -6,24 +6,41 @@ resolve tools by their descriptions. The server's model-facing surface has five 
 - inspect_notebook: inspect bounded variables, cells, and live kernel state;
 - run_cell: append API-checked code cells, or append a non-executed Markdown cell with
   cell_type="markdown";
-- save_with_consent: stage and request approval for one live variable or figure.
+- save_with_consent: an available persistence tool that this experiment must not use.
 
 Use the following checkpoints without skipping ahead:
 
-1. Inspect the notebook, then resolve and prove load_data and inspect_experiment. Use them to build
-   the complete inventory; do not manually parse the datasheet or dump metadata files.
+1. Ask for the peaksMCP runtime status, inspect the notebook, then resolve and prove
+   `peaks.pxt2nc` and `peaks.load_experiment`. Keep the first and second ConversionReport in
+   separate variables; use ExperimentIndex to build the inventory without manually parsing CSV.
 2. Before starting the batch, search and get the exact contracts needed for gold fitting, applying
    its correction, momentum conversion, and validation plotting. Pass those canonical ids in each
    code cell's api_ids.
-3. Read the selected cut indices and theta_offset_deg values from ExperimentSummary records. Fit the
+3. Read the selected cut indices and theta_offset_deg values from ExperimentIndex records. Fit the
    selected gold once, retain the correction in a named variable, and reuse it for all cuts.
-4. Process every classified cut, inspect each result's dimensions and coordinates, and keep a named
-   validation figure. Use short printed checkpoints rather than large representations.
-5. Call save_with_consent once per final cut using the exact required filename. Treat only
-   status="saved" as success; diagnose and correct denied, blocked, or failed receipts before
-   claiming completion.
+   Notebook variables persist across calls: never reload the ExperimentIndex or refit the gold to
+   inspect a return value; use inspect_notebook on the named variable instead.
+   `gold`, `cuts` and `mappings` are index lists: join them through
+   `{record.index: record for record in experiment.records}`. Do not rediscover fields by reflection
+   or re-parse the datasheet. For every cut, call `assign_normal_emission` with that record's
+   `theta_offset_deg` before calling `k_convert` with the retained gold fit.
+4. Process every classified cut, keep each result in a stem-identifiable variable, inspect dimensions
+   and coordinates, and render each result plus the requested validation and mapping figures. End
+   the single batch with exactly one `processed_stems=` receipt built by joining the sorted live
+   result-dictionary keys; keep total stdout within three stdout lines of at most 200 characters each.
+   For cataloged `plot_grid`, build the documented hollow DataTree and call
+   `tree.plot_grid(...)`; do not call an undefined bare `plot_grid(...)` name.
+5. Do not call save_with_consent. Converted cache files are expected; processed NetCDF and image
+   files are forbidden for this experiment.
 6. Append the required final Markdown summary through run_cell with cell_type="markdown" after the
-   save receipts and validation result are known.
+   cache recheck and visual validation are known. Identify the selected gold as
+   `gold=SELECTED_STEM (index SELECTED_INDEX)`, replacing both placeholders with observed values;
+   "gold scan fitted once" alone is incomplete. Include the observed numeric angular correction
+   and its source field together: `theta_offset=VALUE deg from record.theta_offset_deg`, replacing
+   VALUE with the observed number. Copy the complete batch `processed_stems=...` token verbatim;
+   never infer consecutive scan numbers from the processed count.
+7. Keep the notebook human-readable: do not print full reports, indexes, xarray objects, attrs or
+   metadata documents, and do not create exploratory code cells for API introspection.
 
-Prefer curated peaksMCP adapters when they cover the intent. Use native Peaks APIs only for the
-scientific steps that the adapter surface does not provide, and trust live contracts over memory.
+Use the two public Peaks workflow entries for conversion/loading and compose the remaining native
+Peaks APIs for scientific processing. Trust live contracts over memory.

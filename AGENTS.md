@@ -13,9 +13,9 @@ conventions used by instrMCP (Claude Desktop ↔ Jupyter MCP bridges).
 ## 1. Boundaries
 
 - Work only inside this repository unless the user explicitly requests otherwise.
-- Treat the installed `peaks` package as an **external dependency**; do not edit
-  site-packages. The editable checkout lives at `/Users/haoxin/peaks_dev` (0.5.3) and is
-  consumed read-only.
+- Never edit site-packages. The editable upstream checkout lives at
+  `/Users/haoxin/peaks_dev`; public workflow fixes belong there when the user has
+  placed both repositories in scope.
 - Keep the **MCP server inside the Jupyter kernel** and the **supervisor outside it**
   (see Architecture). The kernel is the only place that executes user code.
 - Preserve raw PXT inputs. Conversion writes new NetCDF files **atomically**
@@ -91,20 +91,13 @@ Claude Desktop <-> STDIO proxy <-> HTTP MCP <-> Jupyter kernel <-> JupyterLab Co
 - `peaksMCP/app/` — external supervisor: `runtime.py` (process chain + dashboard),
   `kernel.py` (kernelspec), `profiles.py` (pydantic config), `api.py` + `webapp/`
   (dashboard)
-- `peaksMCP/discovery/` — API index: `index.py` (AST scan + fingerprint + search),
-  `signatures.py` (signature/docstring extraction). Every project API is
-  exposed under exactly one canonical id, `module:peaksMCP.overrides:<name>`;
-  implementation modules stay importable but never surface in search. The
-  full-index fallback is reported as `searched_namespace="mixed"` (never
-  "native").
-- `peaksMCP/overrides/` — curated black-box adapters: the single canonical
-  import surface (`peaksMCP.overrides`) exporting exactly the six manifest
-  verbs (`load_data` / `convert_experiment` / `inspect_experiment` /
-  `plot_batch` / `plot_validation_pair` / `show_mapping_slice`) plus contract
-  types.  Persistence is the `save_with_consent` MCP tool, NOT a Python
-  function; the save gateway lives in `overrides/save.py`; old task facades
-  (`fit_gold_reference`, `preprocess_cut`/`mapping`/`batch`) were deleted —
-  the model composes those workflows from native peaks APIs in the notebook.
+- `peaksMCP/discovery/` — API index built from the unified
+  `config/api_catalog.yaml`. Canonical IDs identify public Peaks callables;
+  hidden implementation helpers never surface in search/get/run_cell.
+- `peaksMCP/overrides/` — internal compatibility and persistence machinery,
+  not a model-facing facade package. The initial public facade count is zero.
+  Models use `peaks.pxt2nc`, `peaks.load_experiment`, then compose the remaining
+  documented Peaks APIs in the notebook.
 - `peaksMCP/pxt_utils/` — PXT→NetCDF conversion: `loader.py`, `converter.py`
   (atomic batch), `csv_translator.py`, `models.py`
 - `peaksMCP/batch/` — CPU-budgeted process pool (`executor.py`, `resource_budget.py`)
@@ -113,34 +106,35 @@ Claude Desktop <-> STDIO proxy <-> HTTP MCP <-> Jupyter kernel <-> JupyterLab Co
 - `peaksMCP/config/metadata_baseline.yaml` — tool presentation metadata (single source)
 - `peaksMCP/config/prompts.yaml` — runtime prompt text (interactive/guidance copy,
   `notebook_unsafe` hard-block replies, code/ipython scanner issue descriptions)
-- `peaksMCP/config/native_catalog.yaml` — upstream peaks presentation
-  (aliases + docstring notes; fixed native tier; strict v1 schema)
-- `peaksMCP/config/override_manifest.yaml` — the single manifest of public
-  project APIs (strict v5 schema: one row per adapter with the FULL contract
-  - export/exposure/aliases/summary/returns/preconditions/side_effects/
-  errors/example, and a STRUCTURED `inputs` list of
-  `{name, type, required, default?, note?}` entries; no seeds block).  The
-  declared input names are checked against the real signature at runtime
-  (`discovery/signatures.py`): a typo, rename or omitted required parameter
-  fails `tests/unit/test_manifest_invariants.py` and the `get` call
-- `peaksMCP/config/schema.py` — strict validation for both catalogs (duplicate
-  keys, unknown fields, enum values, ghost references); a damaged default
-  configuration fails the index build loudly
+- `peaksMCP/config/api_catalog.yaml` — one strict catalog for public native APIs
+  and any evidence-backed future facade. Entries carry exposure
+  (`core`/`advanced`/`hidden`), aliases and the callable contract; signature
+  drift fails validation and `get`.
+- `peaksMCP/config/schema.py` — strict catalog validation (duplicate keys,
+  unknown fields, enum values, ghost references); a damaged default catalog
+  fails index construction loudly.
 - `claude_plugin/` — Claude Desktop plugin (`.mcp.json`, skills)
 
 ---
 
 ## 4. Testing
 
-Run fast by default (e2e excluded); only bring up live kernels/browsers for the
-explicit e2e acceptance:
+Use the named test runner so agents do not conflate deterministic tests, live
+product-path checks, and autonomous-model experiments:
 
 ```bash
-/opt/homebrew/Caskroom/miniforge/base/envs/peaks/bin/python -m pytest            # unit + integration
-/opt/homebrew/Caskroom/miniforge/base/envs/peaks/bin/python -m pytest -m e2e     # live-kernel + browser
+PY=/opt/homebrew/Caskroom/miniforge/base/envs/peaks/bin/python
+$PY tools/test.py --list
+$PY tools/test.py quick       # default offline gate
+$PY tools/test.py benchmark   # grader regressions + golden/poison selftest
+$PY tools/test.py e2e         # real Dashboard/Jupyter/MCP/Chrome path
 ```
 
-- Unit/integration tests are mocked and must stay fast and hardware-free.
+- `quick` contains unit tests and mocked component integration. Plain `pytest`
+  uses the same `not e2e and not slow` selection.
+- Tests under `tests/integration` must carry `integration`; local-data tests
+  additionally carry `realdata` and `slow`, and a real kernel adds
+  `live_kernel`.
 - E2E is the **real-data human-simulation suite**
   (`tests/e2e/test_e2e_realdata_live.py`, `pytest.mark.e2e`), run in the live
   environment only, never in CI. It launches a real JupyterLab + kernel, opens
@@ -156,7 +150,16 @@ explicit e2e acceptance:
   (`PEAKSMCP_REALDATA_PXT`, default the L112 BP260623 dataset) and the suite
   skips without it; copies are converted inside the test home, never beside
   the source.
-- CI runs `pytest -m 'not e2e'`.
+- `tests/e2e/test_campaign_acceptance.py` is a separate deterministic scripted-
+  agent campaign (`acceptance` suite). Autonomous Pi behavior is evaluated only
+  by a fresh `benchmark/run_campaign.py` campaign; it is not a pytest layer.
+- Live pi trials against the managed stack (fresh notebook + fresh kernel per
+  trial, fixed prompt, locked figure format, deterministic verification) are
+  encoded end-to-end in `tools/trial.py` (`status` / `run` / `verify` /
+  `restore`); use it instead of hand-orchestrating stack switches, pi
+  invocations, or figure checks.
+- CI runs the `quick` selection. The complete suite map and change-to-test
+  routing table live in `tests/README.md`.
 - When changing API discovery, run the full name-coverage and natural-language ranking
   tests (`tests/unit/test_discovery.py`).
 - When adding a tool, the exact tool-list tests must be updated
@@ -187,7 +190,7 @@ When adding, removing or renaming an MCP tool, update **all** of these:
       `tests/unit/test_extension_and_package.py`
 - [ ] Claude plugin skills under `claude_plugin/skills/` if user-facing
 - [ ] `README.md` CLI/tool reference and `docs/ARCHITECTURE.md`
-- [ ] Run `ruff check peaksMCP tests tools` and the unit tests
+- [ ] Run `python tools/test.py check`
 
 Tool metadata lives in YAML, not hardcoded in Python. `config/metadata.py` loads
 `metadata_baseline.yaml` (exactly 5 tools: search / get / inspect_notebook /
@@ -206,14 +209,16 @@ independent layers:
 - **Plain execution** follows the single `require_consent` master switch: when
   it is off (default) ordinary analysis cells run without a prompt (the AST
   scanner still hard-blocks dangerous code and every call is audit-logged);
-- **run_cell is never a persistence path**: file-write intents (scanner
+- **run_cell is never an analysis-result persistence path**: file-write intents (scanner
   findings `SAVE001` savefig, `SAVE002` file writers, `FILE002` unclear file
   mode) are hard-blocked with a pointer to `save_with_consent` /
-  `convert_experiment` — there is no in-cell write that a prompt could unlock;
-- **staged persistence**: `save_with_consent` (and conversion) stage the exact
+  `peaks.pxt2nc` — there is no in-cell result write that a prompt could unlock;
+- **staged persistence**: `save_with_consent` stages the exact
   bytes in a server-owned gateway (strict TTL) and only an affirmative
   decision on the frontend save card publishes them; network egress
-  (`NET001`) keeps the explicit-consent gate.
+  (`NET001`) keeps the explicit-consent gate. `peaks.pxt2nc` is the sole
+  automatic-persistence exception: it writes only an atomic, fingerprinted
+  conversion cache and never modifies raw PXT.
 
 There is no security mode.
 
@@ -228,10 +233,10 @@ The consent master switch is `mcp.require_consent` in the active profile
 (default **false**; the supervisor also exposes `PEAKSMCP_REQUIRE_CONSENT`).
 With consent **disabled** (the default) plain execution shows no frontend
 prompt: the AST code scanner (always-on hard block) and the audit log are the
-only guards for ordinary cells. Persistence is never unlocked by a prompt on a
-write cell (run_cell blocks in-cell writes outright): it happens only through
-the staged `save_with_consent` / conversion cards, so there is no way to
-persist a result without the user approving the card. There is no mode that
+only guards for ordinary cells. Analysis-result persistence is never unlocked
+by a prompt on a write cell (run_cell blocks in-cell writes outright): it
+happens only through staged `save_with_consent`. `pxt2nc` may maintain its
+conversion cache without consent. There is no mode that
 relaxes this policy.
 
 The scanner (`security/code_scanner.py`) is AST-semantic (alias-aware,
@@ -275,8 +280,8 @@ dashboard conversion endpoint: every data operation runs as a notebook cell
 written through `run_cell`, so the code scanner, the API proof check and the
 persistence policy always apply.
 
-- `convert_pxt` (single file) / `convert_path` (directory) — the CLI and console
-  equivalents were removed; the semantics below still hold.
+- `peaks.pxt2nc` is the public single-file/folder conversion entry; the CLI and
+  console equivalents are deliberately absent.
 - A **folder** conversion defaults to a **sibling `<folder>_netcdf/`** directory
   (created on demand); an explicit output path is honoured as-is.
 - A **single file** defaults to `<stem>.nc` next to the source.
@@ -290,7 +295,7 @@ persistence policy always apply.
 
 ## 9. CI/CD
 
-- `.github/workflows/ci.yml` — `ruff check` + `pytest -m 'not e2e'` on Python 3.11/3.12/3.13
+- `.github/workflows/ci.yml` — `ruff check` + the `quick` selection on Python 3.11/3.12/3.13
   (ubuntu-latest).
 - `.github/workflows/release.yml` — build `python -m build` and upload `dist/`.
 - Version is managed in `peaksMCP/__init__.py` (`__version__`); keep it in sync with
@@ -342,26 +347,28 @@ Requirements:
 3. Output is normalized: calling an existing function shows that function's own
    standard output; model-generated results use the canonical minimal summary.
    Nothing is added to reduce human review cost — noise is removed instead.
-4. Nothing is persisted unless the user explicitly consents, and consent is only
-   asked after the exact result to be saved has been shown to the user.
+4. Analysis results are not persisted unless the user explicitly consents, and
+   consent is only asked after the exact result is shown. The only automatic
+   persistence exception is the fingerprinted PXT→NC conversion cache.
 
 Minimal subsystem map (single responsibility each):
 
 | Subsystem | Responsibility | Model sees |
 |---|---|---|
-| Contract (manifest) | One curated registry per callable task: name, params, returns, preconditions, side effects, errors, example, tier (facade vs native passthrough) | curated contract only |
-| Access (search/get) | Searchable index built only from the manifest + native catalog | contracts, never implementation |
+| Contract (catalog) | One registry for public native APIs and evidence-backed facade entries | curated contract only |
+| Access (search/get) | Searchable index built only from the unified catalog | contracts, never implementation |
 | Run (notebook) | Single append-and-run entry with AST/API/consent gates; functions compose here | executes in notebook |
 | Show (output normalization) | By task id: existing function -> its standard output verbatim; model-authored result -> canonical terse summary; strip progress/duplicate reprs | normalized text + rendered figures |
 | Save (persist) | One write primitive: render full preview of what will be written -> user consent -> atomic write; default off | preview + consent |
 | Observability | Minimal host/kernel/audit state for the human | dashboard/logs |
 
 House rules while developing:
-- New analysis verbs land in the curated surface with a manifest entry; anything
-  under the surface that does not earn a facade stays native and passes through.
-- Single canonical source per contract/prompt/output format: manifest, prompts
+- Prefer the existing Peaks API. A facade may be added only when the same glue
+  failure recurs in at least 2 of 3 valid TUI trials and a named rubric check
+  improves in a paired rerun without regressions; otherwise keep zero facades.
+- Single canonical source per contract/prompt/output format: catalog, prompts
   YAML and the Show formatter respectively — no duplicated instruction text.
-- Any new file-write path must route through the Save gateway (preview ->
-  consent), never write by itself; run_cell never persists.
-- Results are typed models (ExperimentSummary / ConversionReport /
+- Any new analysis-result write path must route through the Save gateway
+  (preview -> consent). Do not broaden the one pxt2nc cache exception.
+- Results are typed models (ExperimentIndex / ConversionReport /
   SaveReceipt); there is deliberately no generic Report layer.

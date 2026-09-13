@@ -29,5 +29,9 @@ scientific_contract:
   theta_offset_source: State the metadata field containing the angular offset.
   expected_gold_indices: []
   expected_theta_offset_deg: null
+  expected_call_counts:
+    pxt2nc: 0
+    load_experiment: 1
+    fit_gold: 1
 
 known_challenge: Describe edge cases without revealing them to the agent prompt.

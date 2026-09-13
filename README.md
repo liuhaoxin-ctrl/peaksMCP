@@ -104,9 +104,11 @@ rejected. Control APIs require the same credential and reject cross-origin reque
 In the console you can start / stop **Jupyter** (service + kernel) and **MCP**
 (in-kernel) as groups and open the managed Notebook. Stopping the
 dashboard host (`peaksMCP stop`) also gracefully tears down the Jupyter/MCP tree
-it manages. The console has no data-processing endpoints: loading, translation,
-conversion, analysis, plotting, and persistence all run through notebook cells and
-the consent-gated MCP surface.
+it manages. The console has no data-processing endpoints: loading, conversion,
+analysis and plotting all run through notebook cells and the MCP surface.
+Processed arrays stay in live notebook variables and figures stay as inline
+notebook output. The fingerprinted NetCDF cache maintained by `peaks.pxt2nc` is
+the only automatic disk persistence.
 
 ### CLI reference
 
@@ -143,18 +145,38 @@ peaksMCP profiles path [NAME]                           # print the profile file
 terminal `Ctrl+C` does **not** stop it — use `peaksMCP stop`.
 
 > **Data operations are deliberately not CLI commands.** Data access,
-> conversion, translation and saving run as **notebook cells** through the MCP
-> tools, composing the adapter surface of `peaksMCP.overrides` (`load_data` /
-> `inspect_experiment` / `convert_experiment` plus plotting conventions) with
-> native peaks steps obtained via `search` / `get`, so the
-> code scanner, the API check and the consent gate always apply; every
-> persisted file goes through the staged-consent card (the `save_with_consent`
-> MCP tool for results, the conversion consent card for converted NetCDF). The
-> CLI and the operator console only control processes (Jupyter, kernel, MCP)
-> and snapshots.
+> conversion and analysis run as **notebook cells** through the MCP tools. The
+> public experiment entry points are `peaks.pxt2nc` and the combined
+> `peaks.load_experiment`; the latter loads metadata, indexes files and
+> classifies gold/cut/mapping records. All remaining processing and plotting
+> steps are existing Peaks APIs resolved through `search` / `get` from the
+> unified `peaksMCP/config/api_catalog.yaml`. There are initially no public
+> peaksMCP facade functions: `peaksMCP.overrides` is internal compatibility
+> machinery. The code scanner and API proof check apply to every executed cell.
+> Normal analysis leaves processed arrays in live variables and images inline
+> in the Notebook, without writing result or image files. `peaks.pxt2nc` alone
+> may automatically create or refresh its atomic, fingerprinted NetCDF cache
+> and metadata sidecar. It refuses to overwrite files without its owner/schema
+> marker. The CLI and operator console only control processes
+> (Jupyter, kernel, MCP) and snapshots.
 
 `run_cell` keeps the notebook append-only: `cell_type="code"` executes one
 API-checked analysis cell, while `cell_type="markdown"` appends a non-executed
 narrative or final summary. Neither form can edit or delete earlier cells.
 
 See `docs/ARCHITECTURE.md` for the compact architecture map.
+
+### Development tests
+
+Use the named suites instead of guessing marker expressions:
+
+```bash
+python tools/test.py --list
+python tools/test.py quick
+python tools/test.py check
+```
+
+`quick` is the deterministic offline feedback loop. `check` adds lint and the
+grader's golden/poisoned self-test. Real-data, browser, managed campaign, and
+autonomous Pi experiments are deliberately separate; see `tests/README.md` for
+the suite matrix and the focused command for each changed subsystem.

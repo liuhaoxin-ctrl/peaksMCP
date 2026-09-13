@@ -118,16 +118,45 @@ async def status_payload(supervisor: RuntimeSupervisor) -> dict[str, Any]:
             extension = await asyncio.to_thread(supervisor.extension_status)
     except Exception:
         pass  # kernel is still coming up; report extension as unavailable
+    jupyter_error = base.get("last_error")
+    mcp_error = mcp.get("error") if not mcp.get("ok") else None
+    extension_error = (
+        extension["detail"]
+        if not extension["loaded"]
+        and str(extension["detail"]).startswith("extension probe failed:")
+        else None
+    )
     components = {
-        "supervisor": {"state": "ready", "detail": f"PID {base['pid']}"},
-        "jupyter": {"state": jupyter_ui, "detail": supervisor.jupyter_url},
-        "kernel": {"state": "ready" if kernel_ready else "degraded", "detail": kernel_state},
+        "supervisor": {
+            "state": "ready",
+            "detail": f"PID {base['pid']}",
+            "last_error": None,
+        },
+        "jupyter": {
+            "state": jupyter_ui,
+            "detail": supervisor.jupyter_url,
+            "last_error": jupyter_error,
+        },
+        "kernel": {
+            "state": "ready" if kernel_ready else "degraded",
+            "detail": kernel_state,
+            "last_error": None,
+        },
         "extension": {
             "state": "ready" if extension["loaded"] else "degraded",
             "detail": extension["detail"],
+            "last_error": extension_error,
         },
-        "comm": {"state": "ready" if mcp_status.get("comm_connected") else "degraded", "detail": "JupyterLab connected" if mcp_status.get("comm_connected") else "Open the managed notebook"},
-        "mcp": {"state": "ready" if mcp.get("ok") else "error", "detail": f"{mcp.get('tool_count', 0)} tools · {base['mcp_url']}"},
+        "comm": {
+            "state": "ready" if mcp_status.get("comm_connected") else "degraded",
+            "detail": "JupyterLab connected" if mcp_status.get("comm_connected") else "Open the managed notebook",
+            "last_error": None,
+        },
+        "mcp": {
+            "state": "ready" if mcp.get("ok") else "error",
+            "detail": f"{mcp.get('tool_count', 0)} tools · {base['mcp_url']}",
+            "last_error": mcp_error,
+        },
     }
     states = {item["state"] for item in components.values()}
     aggregate = (

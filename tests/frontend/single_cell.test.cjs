@@ -8,16 +8,27 @@ const vm = require('node:vm');
 const extension = path.resolve(__dirname, '../../peaksMCP/extensions/jupyterlab');
 const ts = require(path.join(extension, 'node_modules/typescript'));
 const source = fs.readFileSync(path.join(extension, 'src/index.ts'), 'utf8');
+const outputStyle = fs.readFileSync(path.join(extension, 'style/index.css'), 'utf8');
 const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
 }).outputText;
 
-function makeCell(id, source = 'print(1)', deletable = true) {
+test('verbose text outputs scroll without constraining inline figures', () => {
+  assert.match(outputStyle, /data-mime-type='text\/plain'/);
+  assert.match(outputStyle, /data-mime-type='application\/vnd\.jupyter\.stdout'/);
+  assert.match(outputStyle, /data-mime-type='application\/vnd\.jupyter\.stderr'/);
+  assert.match(outputStyle, /max-height:\s*min\(16rem, 36vh\)/);
+  assert.match(outputStyle, /overflow-y:\s*auto/);
+  assert.doesNotMatch(outputStyle, /image\/(?:png|jpeg|svg\+xml)/);
+  assert.doesNotMatch(outputStyle, /jp-RenderedImage/);
+});
+
+function makeCell(id, source = 'print(1)', deletable = true, type = 'code') {
   let outputJSON = [{ output_type: 'stream', text: 'done' }];
   const outputListeners = new Set();
   return {
     model: {
-      id, type: 'code',
+      id, type,
       getMetadata: key => key === 'deletable' ? deletable : undefined,
       sharedModel: { getSource: () => source, setSource: value => { source = value; } },
       outputs: {
@@ -33,7 +44,11 @@ function makeCell(id, source = 'print(1)', deletable = true) {
   };
 }
 
-function harness({ moveCursorDuringRun = false, executionSuccess = true } = {}) {
+function harness({
+  moveCursorDuringRun = false,
+  executionSuccess = true,
+  insertedCellType = 'code',
+} = {}) {
   const selected = new Set(['a', 'b']);
   const notebook = {
     widgets: [makeCell('a'), makeCell('b'), makeCell('c')],
@@ -42,6 +57,7 @@ function harness({ moveCursorDuringRun = false, executionSuccess = true } = {}) 
     deselectAll() { selected.clear(); },
   };
   const runs = [], deleted = [], messages = [];
+  let outputSnapshots = 0;
   let saves = 0;
   const actions = {
     run() { throw new Error('selection-based execution is not a single-cell operation'); },
@@ -51,7 +67,10 @@ function harness({ moveCursorDuringRun = false, executionSuccess = true } = {}) 
       return executionSuccess;
     },
     insertBelow() {
-      notebook.widgets.splice(++notebook.activeCellIndex, 0, makeCell('inserted'));
+      const inserted = makeCell('inserted', 'print(1)', true, insertedCellType);
+      const toJSON = inserted.model.outputs.toJSON;
+      inserted.model.outputs.toJSON = () => { outputSnapshots++; return toJSON(); };
+      notebook.widgets.splice(++notebook.activeCellIndex, 0, inserted);
       // Keep the old selection to verify the handler explicitly pins execution.
     },
     deleteCells() {
@@ -63,6 +82,9 @@ function harness({ moveCursorDuringRun = false, executionSuccess = true } = {}) 
         }
         return true;
       });
+    },
+    changeCellType(_notebook, type) {
+      notebook.activeCell.model.type = type;
     },
   };
   const modules = {
@@ -89,6 +111,7 @@ function harness({ moveCursorDuringRun = false, executionSuccess = true } = {}) 
       return context.exports.testBoundedOutputs(outputs, perImageLimit, totalLimit);
     },
     get saves() { return saves; },
+    get outputSnapshots() { return outputSnapshots; },
     async request(operation, payload = {}) {
       await context.exports.testHandle(panel, { send: message => messages.push(message) }, {
         type: 'request', request_id: 'test', operation, ...payload,
@@ -107,6 +130,15 @@ test('execute_code runs only the newly inserted cell', async () => {
   assert.equal(h.saves, 1);
 });
 
+test('execute_code forces the appended cell to code when defaultCell is markdown', async () => {
+  const h = harness({ insertedCellType: 'markdown' });
+  const reply = await h.request('execute_code', { code: 'answer = 42' });
+  assert.equal(reply.ok, true);
+  assert.deepEqual(h.runs, ['inserted']);
+  assert.equal(reply.result.cell_type, 'code');
+  assert.equal(h.notebook.widgets.find(cell => cell.model.id === 'inserted').model.type, 'code');
+});
+
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 test('execution output is settled inside ONE reply, without Comm pushes', async () => {
@@ -116,7 +148,51 @@ test('execution output is settled inside ONE reply, without Comm pushes', async 
   assert.equal(pushes.length, 0);  // no repeated cell_output pushes any more
   assert.equal(reply.ok, true);
   assert.equal(reply.result.outputs[0].text, 'done');  // settled snapshot
+  assert.equal(h.outputSnapshots, 1);
   assert.equal(h.notebook.activeCell.model.id, 'inserted');
+});
+
+test('settled reply waits for 200ms of output quiet', async () => {
+  const h = harness();
+  const started = Date.now();
+  const reply = await h.request('execute_code', { code: 'print(1)' });
+  assert.equal(reply.ok, true);
+  assert.ok(Date.now() - started >= 180, 'reply returned before the 200ms quiet window');
+  assert.equal(h.outputSnapshots, 1);
+});
+
+test('settled reply is capped at 2s even while output keeps changing', async () => {
+  const h = harness();
+  const started = Date.now();
+  const pending = h.request('execute_code', { code: 'print(1)' });
+  const timer = setInterval(() => {
+    const executed = h.notebook.widgets.find(cell => cell.model.id === 'inserted');
+    executed?.model.outputs.changed.emit();
+  }, 80);
+  try {
+    const reply = await pending;
+    const elapsed = Date.now() - started;
+    assert.equal(reply.ok, true);
+    assert.ok(elapsed >= 1800, `reply ignored the 2s cap: ${elapsed}ms`);
+    assert.ok(elapsed < 2400, `reply exceeded the 2s cap: ${elapsed}ms`);
+    assert.equal(h.outputSnapshots, 1);
+  } finally {
+    clearInterval(timer);
+  }
+});
+
+test('output arriving after the settled reply is not pushed or resnapshotted', async () => {
+  const h = harness();
+  const reply = await h.request('execute_code', { code: 'print(1)' });
+  const executed = h.notebook.widgets.find(cell => cell.model.id === 'inserted');
+  executed.model.outputs.setJSON([
+    {output_type: 'display_data', data: {'image/png': 'TEFURQ=='}},
+  ]);
+  executed.model.outputs.changed.emit();
+  await sleep(40);
+  assert.equal(reply.result.outputs[0].text, 'done');
+  assert.equal(h.outputSnapshots, 1);
+  assert.equal(h.messages.filter(message => !message.request_id).length, 0);
 });
 
 test('an image landing inside the quiet window is part of the settled reply', async () => {

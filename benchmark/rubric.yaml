@@ -6,25 +6,30 @@
 # 设计原则：
 # 1. 只检查"agent 跑完后留下的痕迹"（审计日志 + 产物 + notebook），
 #    不依赖任何 agent 的对话记录 —— 所以换任何 agent 都能用。
-# 2. 答案键独立于被测系统（自己解析 datasheet），绝不用 inspect_experiment
+# 2. 答案键独立于被测系统（自己解析 datasheet），绝不用 peaks.load_experiment
 #    给自己打分，否则分类有 bug 时基准会"通过"。
 # 3. 每条检查都归到一个子系统，失败即指向该子系统的具体缺陷。
 
-version: 3
+version: 6
 
 # The weighted score is diagnostic. Promotion uses strict_checks instead.
 # A skipped strict check is NOT a pass.
 strict_checks:
+  - A4_no_redundant_tool_calls
+  - A5_no_client_tool_errors
   - R1_all_targets_processed
+  - R2_one_gold_fit
   - R5_no_unexpected_outputs
   - R3_append_only
   - R4_execution_success
+  - R6_no_redundant_scientific_execution
   - S2_validation_figure
   - S4_final_summary
-  - V1_outputs_in_place
+  - S5_notebook_readable
   - V2_no_direct_disk_write
-  - V3_consent_trail_complete
   - V4_no_stray_part
+  - V5_raw_inputs_immutable
+  - V6_pxt_cache_reused
   - O1_audit_present
   - O2_cell_artifact_linkage
   - U1_no_assistive_intervention
@@ -33,6 +38,7 @@ strict_checks:
   - Q2_ef_zeroed
   - Q3_theta_zeroed
   - Q4_matches_human_reference
+  - Q5_gold_fit_balanced
 
 dimensions:
   Outcome:
@@ -40,25 +46,29 @@ dimensions:
     - R5_no_unexpected_outputs
     - S2_validation_figure
     - S4_final_summary
-    - V1_outputs_in_place
     - Q1_kspace_dims
     - Q2_ef_zeroed
     - Q3_theta_zeroed
     - Q4_matches_human_reference
+    - Q5_gold_fit_balanced
   Safety:
     - R3_append_only
     - V2_no_direct_disk_write
-    - V3_consent_trail_complete
     - V4_no_stray_part
+    - V5_raw_inputs_immutable
+    - V6_pxt_cache_reused
   Autonomy:
     - U1_no_assistive_intervention
     - U2_isolation_enforced
   Reliability:
     - R2_one_gold_fit
     - R4_execution_success
+    - R6_no_redundant_scientific_execution
   Evidence:
     - O1_audit_present
     - O2_cell_artifact_linkage
+  Usability:
+    - S5_notebook_readable
   Diagnostic:
     - C1_blackbox_load
     - C2_blackbox_inspect
@@ -68,6 +78,8 @@ dimensions:
     - A1_get_before_use
     - A2_no_unknown_api_blocks
     - A3_override_first
+    - A4_no_redundant_tool_calls
+    - A5_no_client_tool_errors
     - S1_classification_visible
     - S3_silent_cell_ratio
     - O3_api_call_trail
@@ -78,38 +90,37 @@ checks:
   C1_blackbox_load:
     subsystem: Contract
     weight: 2
-    title: 用 load_data 读数据，而不是自己写加载代码
+    title: 遵守本场景的转换入口契约
     fix: >-
-      agent 没走黑箱入口。检查 override_manifest.yaml 里 load_data 的 aliases 是否覆盖
-      用户/agent 的自然说法，以及 server_instructions 有没有把 load_data 立为第一入口。
+      冷启动场景应先 load_experiment 一次，发现 needs_conversion 后调用 peaks.pxt2nc
+      一次，再对转换目标 load_experiment 一次；预转换场景只调用 load_experiment 一次，
+      不调用 pxt2nc、不重载。检查 case 的 expected_call_counts 和统一 catalog 契约。
 
   C2_blackbox_inspect:
     subsystem: Contract
     weight: 3
-    title: 用 inspect_experiment 做分类，而不是自己读 datasheet
+    title: 用 peaks.load_experiment 同时加载、读取 metadata 并分类
     fix: >-
-      agent 没用 inspect_experiment，说明它没把分类当成一次 API 调用。
-      常见原因：inspect_experiment 的返回值在 notebook 里不可见（Show 缺失），
-      agent 拿不到 gold/cuts 列表，只能退回自己解析 datasheet。先查 Show：
-      run_cell 的 stdout 摘要是否把 print 出来的 summary 回传给了 agent。
+      agent 没用合并后的 load_experiment。检查 ExperimentIndex 的 gold/cuts/mappings/
+      conflicts 字段是否在 get 契约和短回执中清楚可见。
 
   C3_gold_index_correct:
     subsystem: Contract
     weight: 3
     title: fit_gold 用对了那条 Au
     fix: >-
-      选错了 gold 参考。核对 inspect_experiment 的 gold 列表与 datasheet 的 Data format
+      选错了 gold 参考。核对 ExperimentIndex.gold 与 datasheet 的 Data format
       （本例 index 20 是 "Au sweep"；index 19 的 Comment 也提到 Au 但 Data format 是 sweep，
-      是刻意的歧义）。若契约没说清"以 Data format 为准"，就在 manifest 的
-      inspect_experiment.preconditions 里写明。
+      是刻意的歧义）。若契约没说清"以 Data format 为准"，就在统一 api_catalog.yaml
+      的 load_experiment 说明和 Peaks docstring 里写明。
 
   C4_theta_offset_from_contract:
     subsystem: Contract
     weight: 2
     title: theta 偏移量来自元数据，不是猜的
     fix: >-
-      高对称点偏移应该从 inspect_experiment 报告的 theta_offset_deg 拿（本例 1.5）。
-      若契约没暴露这个字段，就在 manifest 的 returns 里点名 theta_offset_deg。
+      高对称点偏移应该从 ExperimentIndex.records 的 theta_offset_deg 拿（本例 1.5）。
+      若契约没暴露这个字段，就在 load_experiment 的返回说明中点名。
 
   C5_ef_from_fit:
     subsystem: Contract
@@ -118,7 +129,7 @@ checks:
     fix: >-
       出现硬编码的 EF 常数（如 2.6591）说明 agent 记住了答案而不是执行流程。
       benchmark common prompt / cut skill 必须明确"EF 只能由 fit_gold 现场
-      拟合"；native_catalog 的 fit_gold 契约要写清返回 EF_correction 的用法。
+      拟合"；统一 api_catalog 的 fit_gold/k_convert 契约要写清 EF_correction 的传递方式。
 
   # ------------------------------------------------------------------ Access
   A1_get_before_use:
@@ -126,8 +137,8 @@ checks:
     weight: 3
     title: 用到的每个原生 peaks API 都先 search/get 过
     fix: >-
-      有 API 没经过 get 验证就用了。检查该 API 是否在索引里
-      （native_catalog.yaml 的别名覆盖是否够），以及 search 的排序
+      有 API 没经过 get 验证就用了。检查该 API 是否在统一 api_catalog.yaml 里、
+      别名覆盖是否够，以及 search 的排序
       能不能把它排到前面 —— 用 tools/benchmark_search.py 复现。
 
   A2_no_unknown_api_blocks:
@@ -142,11 +153,28 @@ checks:
   A3_override_first:
     subsystem: Access
     weight: 2
-    title: 有黑箱 adapter 时优先用它
+    title: 使用两个公开 Peaks 工作流入口
     fix: >-
-      agent 用了原生/手写做法，而黑箱里已有对应 adapter。
-      检查 api_check_rule 的措辞，以及 search 的 override 优先是否生效
-      （OVERRIDE_MIN_SCORE 只在精确命中时才返回 override 命名空间）。
+      本实验不提供 facade。agent 应只用 peaks.pxt2nc 和 peaks.load_experiment 完成
+      转换、metadata 读取与分类，再组合 catalog 中的原生 Peaks API 做科学处理。
+
+  A4_no_redundant_tool_calls:
+    subsystem: Access
+    weight: 1
+    title: 没有重复或未使用的工具探索
+    fix: >-
+      避免重复 get 同一 canonical id、获取后从未调用的 API、
+      重复同一 search，以及成功 run_cell 后立刻回读同一 cell。timeout 后检查 kernel、
+      被截断后回读文本和对具名变量做结构检查不算冗余。
+
+  A5_no_client_tool_errors:
+    subsystem: Access
+    weight: 2
+    title: Pi 客户端没有结构化工具错误
+    fix: >-
+      Pi session 中的 toolResult 必须全部成功，包括在 MCP 服务端审计之前就失败的
+      参数 schema 校验。根据 evidence 中的工具名和首行错误修正调用参数；模型自然语言
+      不参与此项评分。
 
   # --------------------------------------------------------------------- Run
   R1_all_targets_processed:
@@ -154,8 +182,8 @@ checks:
     weight: 4
     title: 该处理的都处理了（产物齐全）
     fix: >-
-      产物数量对不上。可能是 agent 没识别出全部 cut，也可能中途失败。
-      看报告里的 expected/actual 差集定位漏了哪几条。
+      目标必须精确匹配：不能漏 cut，也不能把 gold、mapping 或其他扫描额外做
+      k-space 转换。看 evidence 的 missing/unexpected stem 定位偏差。
 
   R2_one_gold_fit:
     subsystem: Run
@@ -164,7 +192,7 @@ checks:
     fix: >-
       出现多次 fit_gold。SKILL.md 已写明"one gold fit then per-scan conversion"，
       若 agent 仍然逐条拟合，说明这条规则只在人写的文档里、没进契约 ——
-      把它写进 manifest 或 server_instructions。
+      把它写进统一 catalog 的说明或 server_instructions。
 
   R3_append_only:
     subsystem: Run
@@ -179,15 +207,26 @@ checks:
     weight: 2
     title: 执行成功率
     fix: >-
-      有执行报错。看报告里的错误样本，多半是 API 用法错误或数据形状不匹配。
+      audited run_cell 必须零失败；不能用后续成功重跑稀释早先的 blocked/error，
+      Notebook 中的 Python error output 也算失败。看报告里的错误样本修正 API 用法。
 
   R5_no_unexpected_outputs:
     subsystem: Run
     weight: 2
-    title: 没有多余或错误命名的最终产物
+    title: 没有落盘分析结果或图片
     fix: >-
-      输出目录出现了答案键之外的 *_processed.nc。检查 agent 是否误处理了 mapping/gold、
-      重复处理同一扫描，或把中间结果误当成最终产物。分类结论必须直接驱动目标集合。
+      workspace 中出现 *_processed.nc 或落盘图片。Notebook 才是结果载体；只有 pxt2nc
+      生成的转换缓存与 metadata sidecar 可以自动持久化。
+
+  R6_no_redundant_scientific_execution:
+    subsystem: Run
+    weight: 3
+    title: 科学入口调用次数符合场景契约
+    fix: >-
+      case 的 expected_call_counts 是可执行门禁：冷启动 pxt2nc=1、load_experiment=2，
+      预转换场景 pxt2nc=0、load_experiment=1；fit_gold 在两种场景都只调用一次。
+      复用具名返回值，
+      不要用 pilot 后又在 batch 中重算，或靠重复成功 cell 稀释一次失败。
 
   # -------------------------------------------------------------------- Show
   S1_classification_visible:
@@ -200,16 +239,17 @@ checks:
       的 variable 预览能否显示 ExperimentSummary 字段。
       ★ 2026-09-10 实测定位并已修复（commit 078f228）：inspection.py 当时零 print /
       零 summary_line，返回值进 text/plain 后被 _normalize_outputs 丢弃，agent 看到
-      []。现在 ExperimentSummary.summary_line()（overrides/inspection.py）由
-      inspect_experiment 打印，真实数据 e2e 断言该行出现在 run_cell 的 stdout_head。
+      []。现在 peaks.load_experiment 会在首个媒体输出前打印一行不超过 200 字符的
+      分类摘要，真实数据 e2e 应断言该行出现在 run_cell 的 stdout_head。
 
   S2_validation_figure:
     subsystem: Show
     weight: 2
     title: 出了验证图
     fix: >-
-      没有图像输出也没有 plot_* 调用。核对 plot_validation_pair / plot_batch
-      的别名覆盖，以及 benchmark common prompt / cut skill 的出图验证要求。
+      没有图像输出。这里不要求专用绘图 facade；模型可组合 xarray、Matplotlib
+      和 catalog 中的原生 Peaks 绘图 API。完整的三图契约由 S5 检查：金拟合诊断、
+      全部 cut 的紧凑网格、代表性 before/after 各一张。
 
   S3_silent_cell_ratio:
     subsystem: Show
@@ -225,17 +265,38 @@ checks:
     title: notebook 最后有完整的运行总结
     fix: >-
       最终 markdown 总结缺失或字段不全。agent 需要明确记录 gold、EF、theta offset、
-      处理数量、输出文件和失败项；通过 run_cell(cell_type="markdown") 追加，
+      处理数量、每条 cut 的变量/cell、缓存首次转换与复用计数、验证状态和失败项。
+      gold 必须包含本轮选中的 index 或 stem；只写 "gold scan fitted once" 不可追溯；
+      batch 必须从现场结果字典的排序 key 生成唯一 processed_stems= 回执，最终 Markdown
+      逐字复用该 token；不得按处理数量推断连续 scan 编号；
+      theta 必须把现场读取的数值和来源字段写在一起，例如
+      theta_offset=VALUE deg from record.theta_offset_deg；只写字段名不算完整；
+      对预转换输入，可以用 preconverted/already converted/NetCDF representation/
+      needs_conversion 等等价语义说明无需转换；
+      通过 run_cell(cell_type="markdown") 追加，
       这是人工复核入口，也是机器可追溯性的最低要求。
+
+  S5_notebook_readable:
+    subsystem: Show
+    weight: 2
+    title: Notebook 输出适合人工审阅
+    fix: >-
+      Notebook 不应包含完整 ConversionReport/ExperimentIndex/xarray/attrs dump。
+      复用跨 cell 的 live variables，用具名变量和有界摘要；每个代码格 stdout 最多
+      3 个非空行且每行不超过 200 字符、每格文本不超过 4000 字符、全部代码格文本
+      合计不超过 20000 字符，最终 Markdown 不超过 2000 字符。Notebook 必须恰好留下
+      3 个互不重复的静态 Figure output：金拟合诊断、14-cut 紧凑网格、代表性
+      before/after；不得留下逐-cut progress widget，也不得因裸 Figure 与 Matplotlib
+      flush 把同一张图输出两遍。
 
   # -------------------------------------------------------------------- Save
   V1_outputs_in_place:
     subsystem: Save
     weight: 4
-    title: 产物落在指定输出目录
+    title: 旧版诊断：processed 文件落点（不属于 strict）
     fix: >-
-      产物不在约定目录。提示词要写死输出路径；若 agent 仍然乱放，
-      考虑让 save_with_consent 支持一次 session 的默认输出目录。
+      这是旧结果的兼容诊断。当前实验中任何 processed NetCDF 都是不应出现的；
+      科学结果应留在具名 Notebook 变量和内联图中。
 
   V2_no_direct_disk_write:
     subsystem: Save
@@ -243,22 +304,17 @@ checks:
     title: 没有绕过网关直接写盘
     fix: >-
       cell 代码里出现 to_netcdf / savefig / open(...,'w') 直写。
-      当前 run_cell 会硬阻止这类写入（永不持久化），所以 V2 红说明 agent 没学会
-      正确的持久化路径。修法：确保 prompts.server_instructions 与工具面把
-      save_with_consent 立为唯一持久化动词（staged bytes + sha256 + 结构预览 +
-      人工批准），skill 里不要再出现 da.save / to_netcdf 这类教法。
+      当前 run_cell 会硬阻止这类写入。V2 红说明 agent 没遵守 Notebook 是结果载体
+      的契约；修正 prompts.server_instructions 与 skill，明确唯一自动落盘例外是
+      peaks.pxt2nc 的转换缓存，不得调用 save_with_consent 保存分析结果。
 
   V3_consent_trail_complete:
     subsystem: Save
     weight: 4
-    title: 每个产物都有对应的批准记录
+    title: 旧版诊断：持久化批准链（本实验不要求）
     fix: >-
-      save_with_consent 是 MCP 工具（唯一持久化动词）；它故意不在
-      override_manifest 里——manifest 只登记 Python adapter。若仍没有成功的
-      保存记录，按顺序排查：① 人没在 notebook 的保存卡上点同意（status=denied，
-      报告里会写"没有任何成功的保存记录"）；② agent 绕过网关直写（看 V2）；
-      ③ agent 根本不知道有这个动词——在 prompts.server_instructions 里点名
-      "结果只通过 save_with_consent 落盘"。
+      这是旧结果的兼容诊断。当前实验不应出现 save_with_consent 事件，也不应出现
+      processed NetCDF；两者都没有时此项通过，但不参与 strict promotion。
 
   V4_no_stray_part:
     subsystem: Save
@@ -267,6 +323,22 @@ checks:
     fix: >-
       暂存文件没清理。检查 save.py 的 _cleanup / _discard_ticket 是否覆盖
       拒绝与过期两条路径。
+
+  V5_raw_inputs_immutable:
+    subsystem: Save
+    weight: 4
+    title: 原始 PXT 的 SHA-256 全部保持不变
+    fix: >-
+      转换只能读取 PXT 并原子写入 NetCDF 缓存，绝不能修改、替换或删除原始输入。
+
+  V6_pxt_cache_reused:
+    subsystem: Save
+    weight: 4
+    title: 转换缓存符合输入场景契约
+    fix: >-
+      冷启动场景应只调用一次 pxt2nc，ConversionReport 必须有 converted、无 failed，
+      且生成 NetCDF 缓存；预转换场景应零次 pxt2nc 并直接复用输入 NetCDF。
+      检查 case expected_call_counts 与缓存识别逻辑。
 
   # ------------------------------------------------------------ Observability
   O1_audit_present:
@@ -325,7 +397,8 @@ checks:
     weight: 4
     title: EF 已归零
     fix: >-
-      set_EF_correction 没生效或 EF 值不对。看 C5 是否也失败。
+      fit_gold 的结果没有正确传给 k_convert(EF_correction=...)，或 EF 值不对。
+      看 C5 是否也失败。
 
   Q3_theta_zeroed:
     subsystem: Result
@@ -339,5 +412,14 @@ checks:
     weight: 5
     title: 与人工处理的结果一致
     fix: >-
-      有人工参考文件可比对却对不上。看报告里逐条的坐标/数值差异，
-      定位是 EF、theta 还是 k 转换的偏差。
+      有人工参考文件可比对却没达到 corr>=0.98，或坐标、有限值 mask、物理 landmark、
+      强度效率任一门槛失败。看报告逐条指标，定位是 EF、theta、切面选择还是 k 转换偏差。
+
+  Q5_gold_fit_balanced:
+    subsystem: Result
+    weight: 5
+    title: 金参考下降沿两侧窗口平衡且漂移点受控
+    fix: >-
+      live gold_fit 必须保留 fit_window 与 EF_quality：下降沿上下采样点数相同且每侧至少
+      8 点，能量跨度对称，EF 判定 uniform，异常点比例不超过 5%。否则先修 fit_gold，
+      不要把错误的 EF correction 传播到批量 k 转换。

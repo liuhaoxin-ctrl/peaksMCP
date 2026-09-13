@@ -1,14 +1,13 @@
-"""Live-kernel (no browser) acceptance: the cut workflow renders an inline image.
+"""Live-kernel real-data integration: the cut workflow renders an inline image.
 
-This is option-1 verification: a real IPython kernel is started (same conda
-env), and the raw-PXT -> convert -> EF/offset -> k_convert -> figure session is
-executed *inside the kernel* with the inline matplotlib backend.  The test then
-applies the skill's figure-debug criterion: an ``image/png`` ``display_data``
-message means the figure really rendered (not just a ``<Figure>`` repr).
+This starts a real IPython kernel in the active environment and executes the
+raw-PXT -> convert -> EF/offset -> k_convert -> figure session inside it with
+the inline Matplotlib backend. An ``image/png`` ``display_data`` message proves
+that the figure rendered rather than returning only a ``<Figure>`` repr.
 
 Run explicitly (requires the L112 raw data folder too):
 
-    PEAKSMCP_LIVE_KERNEL=1 pytest tests/integration/test_kernel_inline_cut_figure.py -v
+    PEAKSMCP_LIVE_KERNEL=1 python tools/test.py realdata
 
 Without ``PEAKSMCP_LIVE_KERNEL=1`` (or without the raw data) the tests skip so
 the default fast suite never boots a kernel.
@@ -21,6 +20,13 @@ import sys
 from pathlib import Path
 
 import pytest
+
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.realdata,
+    pytest.mark.live_kernel,
+    pytest.mark.slow,
+]
 
 REPO_ROOT = Path(__file__).parents[2]
 RAW_PXT_DIR = Path(

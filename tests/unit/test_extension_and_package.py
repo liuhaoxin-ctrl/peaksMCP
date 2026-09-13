@@ -68,3 +68,16 @@ def test_dashboard_does_not_interpolate_server_strings_with_inner_html():
     source = root.joinpath("peaksMCP/app/webapp/app.js").read_text()
     assert "converted.map(item => `<option" not in source
     assert "<span>${message}</span>" not in source
+
+
+def test_dashboard_exposes_recovery_controls_and_component_errors():
+    root = Path(__file__).parents[2]
+    markup = root.joinpath("peaksMCP/app/webapp/index.html").read_text()
+    source = root.joinpath("peaksMCP/app/webapp/app.js").read_text()
+    assert 'id="restart-mcp"' in markup
+    assert 'id="restart-kernel"' in markup
+    assert 'id="open-lab-label"' in markup
+    assert "'/api/restart/mcp'" in source
+    assert "'/api/restart/kernel'" in source
+    assert "Reopen Notebook" in source
+    assert "c.last_error" in source

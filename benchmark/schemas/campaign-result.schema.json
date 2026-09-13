@@ -22,13 +22,15 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["run_id", "condition", "valid", "strict_success", "result"],
+        "required": ["run_id", "condition", "valid", "strict_success", "check_map", "primary_failure", "result"],
         "properties": {
           "run_id": {"type": "string"},
           "replicate": {"type": ["integer", "null"]},
-          "condition": {"enum": ["p1", "p2"]},
+          "condition": {"enum": ["p1", "p2", "u1"]},
           "valid": {"type": "boolean"},
           "strict_success": {"type": "boolean"},
+          "check_map": {"type": "object", "additionalProperties": {"type": ["boolean", "null"]}},
+          "primary_failure": {"type": ["object", "null"]},
           "result": {"type": "string"}
         }
       }

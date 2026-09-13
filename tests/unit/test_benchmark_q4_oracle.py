@@ -1,18 +1,12 @@
-"""Q4 gates on the criteria that were measured to discriminate.
-
-`benchmark/qualify_q4.py` measures the baseline against four negative controls.
-The measurement says which metrics can decide: the axis extent/centre separates
-a missing angular zeroing by 30x and a wrong scan by 3500x, the NaN-mask overlap
-separates a wrong EF, and the physical landmarks catch an uncalibrated axis -
-while correlation moves by 0.002 for a missing zeroing and a single detector
-plane of record 26 correlates 0.99999 with the reference.  Correlation is
-therefore recorded, not gating.
-"""
+"""Q4 gates on physical coordinates, finite masks, landmarks and correlation."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+
+import numpy as np
+import xarray as xr
 
 from benchmark import run_case as rc
 
@@ -23,7 +17,7 @@ def _metrics(**overrides):
         "same_dims": True,
         "resampled": False,
         "coord_delta": 9.4e-4,
-        "corr": 0.777,
+        "corr": 0.99995,
         "nrmse": 0.4,
         "shape": 0.02,
         "mask_overlap": 0.993,
@@ -42,6 +36,7 @@ THRESHOLDS = {
     "kx_landmark_max": 0.05,
     "efficiency_min": 0.5,
     "efficiency_max": 2.0,
+    "corr_min": 0.98,
 }
 
 
@@ -49,9 +44,8 @@ def test_the_baseline_passes_the_qualified_thresholds():
     assert rc._reference_matches(_metrics(), THRESHOLDS) is True
 
 
-def test_a_low_correlation_alone_does_not_fail_a_product():
-    """Correlation is recorded; it must not gate."""
-    assert rc._reference_matches(_metrics(corr=0.10), THRESHOLDS) is True
+def test_a_low_correlation_fails_a_product():
+    assert rc._reference_matches(_metrics(corr=0.97), THRESHOLDS) is False
 
 
 def test_a_missing_angular_zeroing_fails_on_the_axis_centre():
@@ -71,7 +65,7 @@ def test_integrating_the_scanned_deflector_axis_fails_on_the_intensity_scale():
     """Record 26: the human product is the centre plane along the scanned
     deflector axis.  Integrating it is 43.8x brighter at the same grids, mask
     and landmarks, so only the scale separates the two."""
-    integral = _metrics(name="BP_0026_processed.nc", efficiency=43.8, corr=0.777)
+    integral = _metrics(name="BP_0026_processed.nc", efficiency=43.8)
     assert rc._reference_matches(integral, THRESHOLDS) is False
     plane = _metrics(name="BP_0026_processed.nc", efficiency=1.0, corr=1.0)
     assert rc._reference_matches(plane, THRESHOLDS) is True
@@ -79,6 +73,22 @@ def test_integrating_the_scanned_deflector_axis_fails_on_the_intensity_scale():
 
 def test_dimension_mismatch_fails_regardless_of_metrics():
     assert rc._reference_matches(_metrics(same_dims=False), THRESHOLDS) is False
+
+
+def test_reference_metrics_aligns_dimension_order_before_comparing_values():
+    reference = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("eV", "kx"),
+        coords={"eV": [-0.1, 0.1], "kx": [-1.0, 0.0, 1.0]},
+    )
+    product = reference.transpose("kx", "eV")
+
+    metrics = rc._reference_metrics("BP_0010_processed.nc", product, reference, set(product.dims))
+
+    assert metrics["same_dims"] is True
+    assert metrics["mask_overlap"] == 1.0
+    assert metrics["corr"] == 1.0
+    assert metrics["efficiency"] == 1.0
 
 
 def test_an_unqualified_oracle_is_ignored_and_cannot_gate(monkeypatch, tmp_path):
@@ -106,9 +116,9 @@ def test_the_shipped_oracle_records_which_controls_it_cannot_detect():
         return
     document = json.loads(path.read_text(encoding="utf-8"))
     assert document["gating_metrics"] == [
-        "coord_delta", "mask_overlap", "ef_landmark", "kx_landmark", "efficiency",
+        "coord_delta", "mask_overlap", "ef_landmark", "kx_landmark", "efficiency", "corr",
     ]
-    assert "corr" in document["recorded_metrics"]
+    assert "corr" not in document["recorded_metrics"]
     assert set(document["required_controls"]) == {
         "wrong_ef", "no_zeroing", "wrong_angle", "wrong_scan", "deflector_integral",
     }

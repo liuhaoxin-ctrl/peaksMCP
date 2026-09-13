@@ -2,30 +2,52 @@ You are responsible for completing an ARPES cut-preprocessing task autonomously.
 
 Trial ID: {RUN_ID}
 Input directory: {INPUT_DIR}
-Output directory: {OUTPUT_DIR}
 Notebook: {NOTEBOOK_PATH}
 
 Goal
 
-Process the complete experiment from the supplied input so that the notebook contains one
-scientifically valid, reviewable momentum-space result for every cut and for no other record.
-The notebook is the deliverable: a trial is complete when every cut's processed output is IN
-the notebook, not merely when files have been saved.
+Process the complete raw-PXT experiment so that the notebook contains one scientifically valid,
+reviewable momentum-space result for every cut. Show every cut as a labeled panel in one compact
+grid rather than emitting one output per cut. The notebook is the deliverable. Converted NetCDF
+cache files are the only automatic disk artifacts permitted.
 
 Definition of done
 
-The task is DONE only when every cut's momentum-space result exists as a notebook output.
+The task is DONE only when every cut's momentum-space result exists in a named live variable and is
+rendered as an inline image in an executed notebook cell.
 Exploration, planning, or reading the datasheet without producing those outputs does not
-complete the task.  Saving files is a separate, optional step and does not change whether the
-task is done.
+complete the task. Do not save processed NetCDF files or figures.
 
 Work in two phases
 
-1. Phase 1 - produce: for every cut, run the momentum conversion in an executed cell and leave
-   the result visible as a notebook output, with one validation figure and one closing summary.
-2. Phase 2 - persist: save the products with the consent-gated persistence tool when they
-   should be kept on disk.
-Do not stop before phase 1 is complete.
+1. Phase 1 - prepare: load and classify the experiment through the package's public experiment
+   loader. If it reports missing validated NetCDF representations, convert the raw PXT input once
+   and reload the experiment. Do not repeat conversion merely to test its cache.
+2. Phase 2 - analyse: fit once, process every cut, render the results and append a closing summary.
+
+Notebook readability is part of correctness
+
+- Live variables persist across run_cell calls. Call `load_experiment` once initially. Only when its
+  `needs_conversion` list is non-empty, call `pxt2nc` once and then call `load_experiment` exactly
+  once more on the converted destination; otherwise do not reload. Call `fit_gold` exactly once and
+  reuse the final ExperimentIndex and fit in every later cell, including inspection and batch work.
+- Never print or leave as a bare final expression a complete ConversionReport, ExperimentIndex,
+  DataArray, Dataset, attrs mapping, metadata document, or `to_dict()` result. Use `summary_line()`,
+  selected scalar fields, and `inspect_notebook(target="variable")` for bounded inspection.
+- Use the documented ExperimentIndex records and decision lists directly. Do not re-read or parse
+  `datasheet.csv`, and do not probe objects with `dir`, `getattr`, `globals` or `__dict__`.
+- Keep batch products in a dictionary keyed by exact scan stem. This is a stem-identifiable live
+  variable; do not dynamically create globals for individual scans. End the single batch with
+  exactly one live-key receipt using `print("processed_stems=" +
+  ",".join(sorted(result_dict)))`, substituting the actual result-dictionary variable. Keep the
+  receipt within the existing maximum of three stdout lines and 200 characters per line.
+- Keep each code cell task-focused. Prefer one prepare/inventory cell, one gold-fit cell, one batch
+  cut cell, compact plotting cells, one cache-check cell, and the final Markdown summary. Do not use
+  executed notebook cells as API probes.
+- Suppress per-scan progress UI with the documented `quiet=True` option. Render exactly three
+  static figures: the gold diagnostic, one labeled grid containing every processed cut, and one
+  representative before/after comparison. Put each Figure in its own cell. Close a Matplotlib
+  glue Figure immediately before leaving it as the final bare expression so it renders once.
 
 Completion requirements
 
@@ -39,24 +61,37 @@ Completion requirements
 4. Apply the Fermi correction, angular zeroing, and momentum conversion to every cut. Each final
    result must contain the full processed cut in momentum space, not a preview or centre slice -
    for a record whose file carries a scanned axis, select the plane rather than integrating it.
-5. Leave every cut's processed result in the notebook: each cut must be produced by an
-   executed cell that carries out the momentum conversion, and its result must be visible as
-   a notebook output.  Persisting is a separate, consent-gated step - when a product should be
-   kept on disk, save it with the persistence tool to
-   {OUTPUT_DIR}/<original-stem>_processed.nc.
-6. Leave at least one clear before/after validation figure in the notebook and inspect the processed
-   structures before declaring success.
+   Applying angular zeroing means calling the documented metadata assignment with that record's
+   `theta_offset_deg` before `k_convert`; merely printing or mentioning the offset is not enough.
+5. Keep every processed result in a clearly named live variable and render every final cut as an
+   inline image. Never write a `*_processed.nc` product or an image file.
+6. Leave clear before/after validation figures and binding-energy mapping slices in the notebook;
+   inspect dimensions, coordinates and finite-data coverage before declaring success.
 7. At the end, append one Markdown cell containing the selected gold and evidence, fitted Fermi
-   correction, angular offset and metadata source, number of cuts processed, every output filename,
-   every unprocessed target with its exact reason, and whether validation and persistence completed.
+   correction, number of cuts processed, the variable/cell for every cut, cache conversion/reuse
+   counts, every unprocessed target with its exact reason, and whether visual validation completed.
+   Identify the selected gold explicitly as `gold=SELECTED_STEM (index SELECTED_INDEX)`, replacing
+   both placeholders with the values observed in this run. Saying only "gold scan fitted once" is
+   incomplete.
+   Copy the complete `processed_stems=...` token returned by the batch receipt into this Markdown
+   verbatim. Never construct the list from the processed count or assume consecutive scan numbers.
+   State the observed numeric angular correction together with its exact source field, for example
+   `theta_offset=VALUE deg from record.theta_offset_deg`, replacing VALUE with the observed number.
+   Naming `record.theta_offset_deg` without its value is incomplete.
 
 Operating constraints
 
 - Preserve the input data. The notebook is an append-only execution record: add new work at the end
   and do not alter or delete earlier cells.
-- Persist analysis results only through the enabled consent-gated persistence capability. A request,
-  plan, or denied/failed save is not a saved product.
+- The converted NetCDF cache and its metadata sidecar are the only allowed data writes. Do not call
+  the persistence tool for analysis results and do not save figures.
 - Keep notebook output bounded and decision-relevant. Do not dump complete arrays or metadata files.
+- For a raw 3D mapping, do not call MDC before momentum conversion: the raw energy coordinate is
+  kinetic energy. Pass `eV_slice=(binding_energy_center, total_width)` and the retained gold fit
+  directly to `k_convert`, so Fermi correction happens before the narrow binding-energy slice and
+  k-space interpolation. Do not convert several complete 3D mappings merely to make a view.
+- If a mapping record has no angular reference in ExperimentIndex, do not invent zero degrees;
+  skip that mapping view and state the missing metadata as its exact reason.
 - Ask for scientific information only when it is genuinely absent from both the data and metadata.
   Make all ordinary workflow decisions yourself.
 - Evaluation material is intentionally outside the workspace. Do not inspect benchmark source,

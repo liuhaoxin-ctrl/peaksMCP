@@ -14,7 +14,7 @@ This script replaces the guess with a measurement:
    ``k_convert``);
 2. measure the comparison metrics against the human products;
 3. measure the same metrics for negative controls - wrong EF, no angular
-   zeroing, wrong angle, wrong scan, centre slice instead of the integral;
+   zeroing, wrong angle, wrong scan, and integration instead of the centre plane;
 4. write ``benchmark/q4_oracle.json`` with ``status: qualified`` **only** when
    the positive baseline separates from every control, together with the
    thresholds ``run_case.py`` then applies.
@@ -68,25 +68,24 @@ REQUIRED_CONTROLS = ("wrong_ef", "no_zeroing", "wrong_angle", "wrong_scan", "def
 
 def _pipeline() -> tuple[dict[int, Any], dict[str, str]]:
     """Regenerate the products with the canonical pipeline, in memory."""
-    from peaksMCP.overrides import inspect_experiment, load_data
+    import peaks
 
-    scans = load_data(str(DATA_DIR))
-    summary = inspect_experiment(scans)
-    gold_index = int(summary.gold[0])
-    gold = scans[f"BP_{gold_index:04d}"]
+    experiment = peaks.load_experiment(DATA_DIR)
+    gold_index = int(experiment.gold[0])
+    gold = experiment[gold_index]
     fit = gold.fit_gold(plot=False, show=False)
     ef = dict(fit.attrs["EF_correction"])
-    offsets = {int(row.index): row.theta_offset_deg for row in summary.records}
+    offsets = {int(row.index): row.theta_offset_deg for row in experiment.records}
 
     products: dict[int, Any] = {}
     provenance = {
         "gold_index": str(gold_index),
         "ef_correction": json.dumps(ef, sort_keys=True),
-        "cuts": ",".join(str(int(i)) for i in sorted(summary.cuts, key=int)),
+        "cuts": ",".join(str(int(i)) for i in sorted(experiment.cuts, key=int)),
     }
-    for raw_index in summary.cuts:
+    for raw_index in experiment.cuts:
         index = int(raw_index)
-        cut = scans[f"BP_{index:04d}"]
+        cut = experiment[index]
         extra = [d for d in cut.dims if d not in ("eV", "theta_par")]
         if extra:
             # The deflector axis is scanned: the product is the centre plane,
@@ -94,68 +93,69 @@ def _pipeline() -> tuple[dict[int, Any], dict[str, str]]:
             # and the same intensity scale for the plane, 0.7768 and 43.8x for
             # the integral).
             cut = cut.isel({extra[0]: cut.sizes[extra[0]] // 2})
-        cut.metadata.set_EF_correction(ef)
         offset = offsets.get(index)
         if offset:
-            cut = cut.assign_coords(theta_par=cut.theta_par - float(offset))
-        products[index] = cut.k_convert(quiet=True)
+            cut = cut.metadata.assign_normal_emission(theta_par=float(offset))
+        products[index] = cut.k_convert(EF_correction=fit, quiet=True)
     return products, provenance
 
 
 def _variants(products: dict[int, Any]) -> dict[str, dict[int, Any]]:
     """Negative controls: each one is physically wrong in exactly one way."""
-    from peaksMCP.overrides import inspect_experiment, load_data
+    import peaks
 
-    scans = load_data(str(DATA_DIR))
-    summary = inspect_experiment(scans)
-    offsets = {int(row.index): row.theta_offset_deg for row in summary.records}
-    gold = scans[f"BP_{int(summary.gold[0]):04d}"]
+    experiment = peaks.load_experiment(DATA_DIR)
+    offsets = {int(row.index): row.theta_offset_deg for row in experiment.records}
+    gold = experiment[int(experiment.gold[0])]
     fit = gold.fit_gold(plot=False, show=False)
     ef = dict(fit.attrs["EF_correction"])
 
     controls: dict[str, dict[int, Any]] = {
         "wrong_ef": {}, "no_zeroing": {}, "wrong_angle": {}, "deflector_integral": {},
     }
-    for raw_index in summary.cuts:
+    for raw_index in experiment.cuts:
         index = int(raw_index)
-        raw = scans[f"BP_{index:04d}"]
+        raw = experiment[index]
         extra = [d for d in raw.dims if d not in ("eV", "theta_par")]
         base = raw.isel({extra[0]: raw.sizes[extra[0]] // 2}) if extra else raw
 
         shifted = dict(ef)
         shifted["c0"] = float(ef.get("c0", 0.0)) + 0.30  # a wrong Fermi level
-        wrong_ef = base.copy()
-        wrong_ef.metadata.set_EF_correction(shifted)
         offset = offsets.get(index) or 0.0
-        wrong_ef = wrong_ef.assign_coords(theta_par=wrong_ef.theta_par - float(offset))
-        controls["wrong_ef"][index] = wrong_ef.k_convert(quiet=True)
-
-        no_zeroing = base.copy()
-        no_zeroing.metadata.set_EF_correction(ef)
-        controls["no_zeroing"][index] = no_zeroing.k_convert(quiet=True)
-
-        wrong_angle = base.copy()
-        wrong_angle.metadata.set_EF_correction(ef)
-        wrong_angle = wrong_angle.assign_coords(
-            theta_par=wrong_angle.theta_par - float(offset) * 0.0 + 3.0
+        wrong_ef = base.metadata.assign_normal_emission(theta_par=float(offset))
+        controls["wrong_ef"][index] = wrong_ef.k_convert(
+            EF_correction=shifted, quiet=True
         )
-        controls["wrong_angle"][index] = wrong_angle.k_convert(quiet=True)
+
+        controls["no_zeroing"][index] = base.k_convert(
+            EF_correction=fit, quiet=True
+        )
+
+        wrong_angle = base.metadata.assign_normal_emission(
+            theta_par=float(offset) - 3.0
+        )
+        controls["wrong_angle"][index] = wrong_angle.k_convert(
+            EF_correction=fit, quiet=True
+        )
 
         if extra:
             # The deflector-resolved record, integrated over the scanned axis
             # instead of selecting the plane: the mistake the criteria must
             # catch (43.8x the intensity scale of the human product).
             whole = raw.sum(extra)
-            whole.metadata.set_EF_correction(ef)
-            whole = whole.assign_coords(theta_par=whole.theta_par - float(offset))
-            controls["deflector_integral"][index] = whole.k_convert(quiet=True)
-    controls.update(_structural_controls(scans, summary, products))
+            whole = whole.metadata.assign_normal_emission(theta_par=float(offset))
+            controls["deflector_integral"][index] = whole.k_convert(
+                EF_correction=fit, quiet=True
+            )
+    controls.update(_structural_controls(experiment, products))
     return controls
 
 
-def _structural_controls(scans: Any, summary: Any, products: dict[int, Any]) -> dict[str, dict[int, Any]]:
-    """Wrong-scan and centre-slice controls (no extra conversion needed)."""
-    cuts = [int(i) for i in summary.cuts]
+def _structural_controls(
+    experiment: Any, products: dict[int, Any]
+) -> dict[str, dict[int, Any]]:
+    """Build the wrong-scan structural control without extra conversion."""
+    cuts = [int(i) for i in experiment.cuts]
     wrong_scan = {}
     for position, index in enumerate(cuts):
         neighbour = cuts[(position + 1) % len(cuts)]
@@ -222,6 +222,7 @@ def _thresholds(positive: dict[str, float], controls: dict[str, dict[str, float]
         # scanned deflector axis lands at 43.8.
         "efficiency_min": 0.5,
         "efficiency_max": 2.0,
+        "corr_min": 0.98,
     }
     control_mask = [
         controls[name]["mask_overlap_min"]
@@ -319,8 +320,8 @@ def main() -> int:
         "positive": positive,
         "controls": controls,
         "thresholds": _thresholds(positive, controls),
-        "gating_metrics": ["coord_delta", "mask_overlap", "ef_landmark", "kx_landmark", "efficiency"],
-        "recorded_metrics": ["corr", "nrmse", "shape"],
+        "gating_metrics": ["coord_delta", "mask_overlap", "ef_landmark", "kx_landmark", "efficiency", "corr"],
+        "recorded_metrics": ["nrmse", "shape"],
         "undetectable_controls": undetectable,
         "required_controls": list(REQUIRED_CONTROLS),
         "unqualified_reasons": reasons,

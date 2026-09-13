@@ -45,17 +45,125 @@ _MAX_OMITTED_MIMES = 4
 def _search_match_mode(query: Any, searched: str, matches: list[dict[str, Any]]) -> str:
     """Classify how one search resolved: exact_name / exact_alias / fuzzy / list.
 
-    ``searched == "override"`` means the query hit an override name or alias
-    exactly; name equality decides which.  Any other non-empty query resolved
-    through the mixed full-index fallback (fuzzy).  An empty query is a list.
+    Exact matches are derived from the rank score in the single catalog.
+    An empty query is a list.
     """
     query_text = query.strip().lower() if isinstance(query, str) else ""
     if not query_text:
         return "list"
     primary = matches[0]["name"] if matches else ""
-    if searched == "override":
-        return "exact_name" if primary.lower() == query_text else "exact_alias"
+    score = matches[0].get("score") if matches else None
+    if primary.lower() == query_text and score == 1000:
+        return "exact_name"
+    if score == 900:
+        return "exact_alias"
     return "fuzzy"
+
+
+def _model_api_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """Add ``canonical_id`` without removing the legacy ``id`` field.
+
+    ``get`` accepts ``canonical_id``, while existing consumers still read
+    ``id``.  Returning both makes the model-facing handoff explicit without a
+    breaking response-shape migration.
+    """
+    result = dict(entry)
+    canonical_id = result.get("id")
+    if canonical_id is not None:
+        result["canonical_id"] = canonical_id
+    return result
+
+
+def _session_proof_ledger(state: SharedState) -> list[dict[str, Any]]:
+    """Return proofs owned by the current live kernel's shared state."""
+    snapshots = dict(state.verified_apis)
+    return [
+        {
+            "canonical_id": canonical_id,
+            "name": snapshot.get("name"),
+            "scope": snapshot.get("scope"),
+        }
+        for canonical_id, snapshot in sorted(snapshots.items())
+    ]
+
+
+def _search_api_entry(entry: dict[str, Any], state: SharedState) -> dict[str, Any]:
+    """Expose one search row together with its current session proof state."""
+    result = _model_api_entry(entry)
+    canonical_id = str(result.get("canonical_id") or "")
+    result["proof_status"] = (
+        "already_proven" if canonical_id in state.verified_apis else "needs_get"
+    )
+    return result
+
+
+def _search_query_issue(query: Any) -> str | None:
+    """Reject query shapes that enumerate the catalog instead of stating intent."""
+    if not isinstance(query, str) or not query.strip():
+        return "empty_query"
+    normalized = " ".join(query.lower().split())
+    if len(normalized) == 1 and normalized.isascii() and normalized.isalpha():
+        return "single_letter_query"
+    if "*" in normalized or "\\" in normalized:
+        return "wildcard_or_regex_query"
+    broad_queries = {
+        "all",
+        "all api",
+        "all apis",
+        "api",
+        "apis",
+        "catalog",
+        "everything",
+        "list",
+        "list all",
+        "list api",
+        "list apis",
+    }
+    if normalized in broad_queries:
+        return "broad_catalog_query"
+    return None
+
+
+def _search_next_action(
+    matches: list[dict[str, Any]], query_issue: str | None = None
+) -> dict[str, Any]:
+    """Give one unambiguous next action without inviting redundant ``get`` calls."""
+    if query_issue is not None:
+        return {
+            "action": "refine_search",
+            "reason": query_issue,
+            "instruction": (
+                "Submit one descriptive full-intent query; do not enumerate the catalog."
+            ),
+        }
+    if not matches:
+        return {
+            "action": "refine_search",
+            "instruction": "No API matched; refine the descriptive query.",
+        }
+    # Search is an entrypoint selector, not a bulk contract fetch. Even a fuzzy
+    # result exposes only its highest-ranked candidate as the next get target.
+    candidates = matches[:1]
+    eligible_ids = [
+        str(match["canonical_id"])
+        for match in candidates
+        if match.get("proof_status") == "needs_get"
+    ]
+    if eligible_ids:
+        return {
+            "action": "get_only_selected_unproven",
+            "eligible_canonical_ids": eligible_ids,
+            "instruction": (
+                "Choose only APIs you will call, then get each eligible id once. "
+                "Never get an id listed in session_proof_ledger."
+            ),
+        }
+    return {
+        "action": "use_proven_match_without_get",
+        "instruction": (
+            "The matching API is already proven; do not call get for it again."
+        ),
+    }
 
 
 def _clean_output_text(value: Any) -> str:
@@ -289,8 +397,8 @@ def _record_verified_api(state: SharedState, entry: dict[str, Any]) -> None:
 #: Audit arguments kept in full: the executed cell IS the product's record of
 #: what ran, and everything downstream (operator review, the benchmark grader)
 #: reads it back.  A blanket 200-character cap silently hid every call past the
-#: cap - a cell that imported first and called ``load_data()`` afterwards looked
-#: like it never used the curated verb.
+#: cap - a cell that imported first and called ``load_experiment()`` afterwards
+#: looked like it never used the curated verb.
 _AUDIT_FULL_ARGUMENTS = frozenset({"code"})
 #: Other arguments stay bounded: they are summaries, not records.
 _AUDIT_ARGUMENT_MAX = 200
@@ -447,13 +555,17 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
             query, scope, limit, include_advanced=include_advanced
         )
         match_mode = _search_match_mode(query, searched, matches)
+        model_matches = [_search_api_entry(match, state) for match in matches]
+        query_issue = _search_query_issue(query)
         return {
             "query": query,
+            "session_proof_ledger": _session_proof_ledger(state),
+            "next_action": _search_next_action(model_matches, query_issue),
             "scope": scope,
             # Backwards-compatible: searched_tier keeps the same label values.
             "searched_tier": searched,
             # Canonical names for the two search dimensions:
-            # searched_namespace is override / mixed / all; match_mode is
+            # searched_namespace is catalog / all; match_mode is
             # exact_name / exact_alias / fuzzy / list.
             "searched_namespace": searched,
             "match_mode": match_mode,
@@ -461,7 +573,7 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
             "count": len(matches),
             "peaks_version": index.peaks_version,
             "fingerprint": index.fingerprint,
-            "matches": matches,
+            "matches": model_matches,
         }
 
     def get(canonical_id: str) -> dict[str, Any]:
@@ -471,16 +583,15 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
             raise KeyError(
                 f"unknown canonical API ID: {canonical_id}. get accepts ONLY "
                 "the canonical id returned by search "
-                "(module:peaksMCP.overrides:<name> or a peaks module:name) - "
+                "(for example dataarray:peaks...:k_convert) - "
                 "run search first, then get the id from its results."
             )
-        _record_verified_api(state, entry)
         detail = describe_api(entry)
         if detail.get("project_added") and not detail.get("signature_resolved"):
             raise RuntimeError(
                 f"manifest export {detail.get('export')!r} is not importable/resolvable "
-                "- the override manifest and its implementation have drifted; fix the "
-                "manifest row or the adapter before use."
+                "- the facade catalog row and implementation have drifted; fix the "
+                "catalog row or facade before use."
             )
         if detail.get("project_added") and detail.get("contract_input_issues"):
             raise RuntimeError(
@@ -488,7 +599,22 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
                 + "; ".join(detail["contract_input_issues"])
                 + " - fix the manifest row before use."
             )
-        return detail
+        already_proven = canonical_id in state.verified_apis
+        _record_verified_api(state, entry)
+        model_detail = _model_api_entry(detail)
+        return {
+            "canonical_id": model_detail.pop("canonical_id"),
+            "proof_status": "already_proven" if already_proven else "newly_proven",
+            "session_proof_ledger": _session_proof_ledger(state),
+            "next_action": {
+                "action": "use_api_without_get_again",
+                "instruction": (
+                    "Use this contract and do not call get for this canonical id again "
+                    "in the current live kernel. Pass the id in run_cell.api_ids when called."
+                ),
+            },
+            **model_detail,
+        }
 
     def inspect_notebook(
         target: str = "variables",
@@ -503,14 +629,17 @@ def register_safe_tools(mcp: FastMCP, state: SharedState, notebook: NotebookBack
 
         ``target`` discriminates the request: ``variables`` (namespace rows),
         ``variable`` (one named variable, requires ``variable_name``),
-        ``active_cell`` / ``cells`` / ``cell`` (cell identity/source; ``cells``
-        pages tail history via ``limit``/``offset``, ``cell`` takes an id or
-        index).  ``detail`` selects ``summary`` (one bounded line/item) or
+        ``kernel`` (live runtime state; ``runtime`` is an exact alias),
+        ``active_cell`` / ``cells`` / ``cell`` (cell identity/source;
+        ``notebook`` is an exact alias for ``cells``, which pages tail history
+        via ``limit``/``offset``; ``cell`` takes an id or index).  ``detail``
+        selects ``summary`` (one bounded line/item) or
         ``preview`` (structural detail).  ``with_text_outputs=True`` adds each
         cell's bounded TEXT outputs (streams + text/plain only, ~8KB/cell) so
         the model can re-read what a cell printed - the notebook is the shared
         context center.  Image payloads are NEVER returned by any target (they
-        travel once, settled inside the run reply).
+        travel once, settled inside the run reply).  This tool does not browse
+        files; use a cataloged Peaks loader for experiment paths.
         """
         return notebook.inspect(
             target,

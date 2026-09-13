@@ -202,6 +202,8 @@ def test_dashboard_assets_and_status_online(monkeypatch):
     assert status["components"]["kernel"]["state"] == "ready"
     assert status["components"]["mcp"]["state"] == "ready"
     assert status["components"]["comm"]["state"] == "ready"
+    assert all("last_error" in component for component in status["components"].values())
+    assert all(component["last_error"] is None for component in status["components"].values())
     assert status["notebook_open_url"] == "/open-notebook"
     assert "token" not in status
     opened = client.get("/open-notebook", follow_redirects=False)
@@ -215,8 +217,35 @@ def test_status_reports_mcp_offline(monkeypatch):
     client, _supervisor = _authenticated_client()
     status = client.get("/api/status").json()
     assert status["components"]["mcp"]["state"] == "error"
+    assert status["components"]["mcp"]["last_error"] == "MCP endpoint unreachable"
     assert status["aggregate"] == "error"
     assert status["components"]["extension"]["state"] == "ready"
+
+
+def test_status_assigns_runtime_error_to_jupyter_component(monkeypatch):
+    monkeypatch.setattr("peaksMCP.app.api._mcp_probe", _offline_mcp)
+    monkeypatch.setattr("peaksMCP.app.api._jupyter_kernel_state", _idle_kernel)
+    supervisor = _FakeSupervisor(jupyter_state="running", jupyter_alive=False)
+    original_status = supervisor.status
+    supervisor.status = lambda: {**original_status(), "last_error": "RuntimeError: Jupyter exited"}
+    client, _supervisor = _authenticated_client(supervisor)
+    components = client.get("/api/status").json()["components"]
+    assert components["supervisor"]["last_error"] is None
+    assert components["jupyter"]["last_error"] == "RuntimeError: Jupyter exited"
+    assert components["mcp"]["last_error"] == "MCP endpoint unreachable"
+
+
+def test_status_distinguishes_extension_probe_error_from_unavailable_kernel(monkeypatch):
+    monkeypatch.setattr("peaksMCP.app.api._mcp_probe", _offline_mcp)
+    monkeypatch.setattr("peaksMCP.app.api._jupyter_kernel_state", _idle_kernel)
+    supervisor = _FakeSupervisor()
+    supervisor.extension_status = lambda timeout=3: {
+        "loaded": False,
+        "detail": "extension probe failed: missing magic",
+    }
+    client, _supervisor = _authenticated_client(supervisor)
+    extension = client.get("/api/status").json()["components"]["extension"]
+    assert extension["last_error"] == "extension probe failed: missing magic"
 
 
 @pytest.mark.parametrize(

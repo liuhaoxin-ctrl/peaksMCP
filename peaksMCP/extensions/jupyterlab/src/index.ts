@@ -417,8 +417,13 @@ async function handle(panel: NotebookPanel, comm: Kernel.IComm, data: any): Prom
         // and never overwrite an existing cell.
         notebook.activeCellIndex = notebook.widgets.length - 1;
         NotebookActions.insertBelow(notebook);
+        if (notebook.activeCell?.model.type !== 'code') {
+          NotebookActions.changeCellType(notebook, 'code');
+        }
         const executed = notebook.activeCell;  // the cell we are about to run
-        if (!executed) { throw new Error('could not create a code cell'); }
+        if (!executed || executed.model.type !== 'code') {
+          throw new Error('could not create a code cell');
+        }
         executed.model.sharedModel.setSource(data.code ?? '');
         // run() acts on the whole UI selection. Only this new cell is authorised.
         const executionSuccess = await NotebookActions.runCells(notebook, [executed], panel.sessionContext);

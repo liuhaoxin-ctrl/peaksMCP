@@ -1,17 +1,10 @@
-"""Strict schema validation for the curated presentation catalogs.
+"""Strict schema validation for the single curated API catalog.
 
-Two documents are curated by hand and consumed by discovery:
-
-- ``native_catalog.yaml`` (version 1) — upstream peaks presentation only:
-  every entry is fixed to the native tier and may carry just ``aliases``
-  and ``docstring_note``.
-- ``override_manifest.yaml`` (version 5, breaking) — the single manifest of
-  public project APIs.  One row per adapter: ``export`` (the only identity,
-  ``peaksMCP.overrides.<name>``) plus the full structured contract
-  (``summary``/``inputs``/``returns``/``preconditions``/``side_effects``/
-  ``errors``/``example``) and search aliases.  No module hints, docstring
-  notes or project seeds — signatures are verified at runtime by importing
-  the declared export.
+``api_catalog.yaml`` is keyed by canonical API id.  Native rows select and
+annotate APIs discovered from ``peaks``; facade rows carry a complete callable
+contract.  ``kind`` (native/facade) and ``exposure``
+(core/advanced/hidden) are independent, and a catalog may contain zero
+facades.
 
 Validation failures are loud by design: a damaged default configuration must
 fail the index build instead of silently degrading to an empty catalog.
@@ -19,21 +12,21 @@ fail the index build instead of silently degrading to an empty catalog.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import yaml
 
-#: v1 native-catalog entry keys (retrieval/display only).
-_NATIVE_ENTRY_KEYS = frozenset({"aliases", "docstring_note"})
+#: One declared parameter of a facade (``inputs`` entry).
+_INPUT_ENTRY_KEYS = frozenset({"name", "type", "required", "default", "note"})
 
-#: v5 project-manifest entry keys: the full structured contract per public
-#: adapter.  No module/docstring_note/project seeds: export is the only
-#: identity, signatures are verified at runtime by importing export.
-_OVERRIDE_ENTRY_KEYS = frozenset(
+_CATALOG_ENTRY_KEYS = frozenset(
     {
-        "export",
+        "kind",
         "exposure",
         "aliases",
+        "docstring_note",
+        "export",
         "summary",
         "inputs",
         "returns",
@@ -43,14 +36,10 @@ _OVERRIDE_ENTRY_KEYS = frozenset(
         "example",
     }
 )
-
-#: Every public adapter must declare the FULL contract - a row that only
-#: carries export/exposure/summary would leave the model without the
-#: usage/limit/side-effect documentation the black-box surface promises.
-_OVERRIDE_REQUIRED_KEYS = frozenset(
+_CATALOG_REQUIRED_KEYS = frozenset({"kind", "exposure"})
+_FACADE_REQUIRED_KEYS = frozenset(
     {
         "export",
-        "exposure",
         "summary",
         "inputs",
         "returns",
@@ -60,22 +49,16 @@ _OVERRIDE_REQUIRED_KEYS = frozenset(
         "example",
     }
 )
-
-_EXPOSURES = frozenset({"facade", "advanced", "internal"})
-
-#: v5: one declared parameter of an adapter (``inputs`` entry).
-_INPUT_ENTRY_KEYS = frozenset({"name", "type", "required", "default", "note"})
+_KINDS = frozenset({"native", "facade"})
+_CATALOG_EXPOSURES = frozenset({"core", "advanced", "hidden"})
+_CANONICAL_ID_RE = re.compile(
+    r"^(?:dataarray|dataset|datatree|top_level|module|[A-Za-z_]\w*):"
+    r"(?:peaks|peaksMCP)(?:\.[A-Za-z_]\w*)*:[A-Za-z_]\w*$"
+)
 
 
 def _check_inputs(entry: dict[str, Any], where: str, errors: list[str]) -> None:
-    """Validate the structured ``inputs`` list of one manifest v5 row.
-
-    Free text let the contract name parameters that do not exist (it declared
-    ``scans:`` for ``inspect_experiment`` whose first parameter is
-    ``experiment``, and ``items:`` for ``plot_batch(data, ...)``).  Structured
-    entries are name-checked against the real signature at runtime
-    (``discovery.signatures``) and shape-checked here, so a typo fails loudly.
-    """
+    """Validate a facade's structured ``inputs`` contract."""
     inputs = entry.get("inputs")
     if not isinstance(inputs, list) or not inputs:
         errors.append(f"{where} inputs must be a non-empty list of parameter entries")
@@ -150,69 +133,56 @@ def _check_aliases(entry: dict[str, Any], where: str, errors: list[str]) -> None
         seen.add(key)
 
 
-def validate_native_catalog(document: dict[str, Any]) -> list[str]:
-    """Validate a v1 native catalog; returns a list of human-readable errors."""
+def validate_api_catalog(document: dict[str, Any]) -> list[str]:
+    """Validate the strict v1 canonical API catalog."""
     errors: list[str] = []
     if document.get("version") != 1:
-        errors.append("native_catalog: version must be 1")
+        errors.append("api_catalog: version must be 1")
     apis = document.get("apis")
     if not isinstance(apis, dict) or not apis:
-        errors.append("native_catalog: apis must be a non-empty mapping")
+        errors.append("api_catalog: apis must be a non-empty mapping")
         return errors
-    for name, entry in apis.items():
+    for canonical_id, entry in apis.items():
+        where = f"api_catalog: {canonical_id}"
+        if not isinstance(canonical_id, str) or not _CANONICAL_ID_RE.fullmatch(canonical_id):
+            errors.append(f"{where} must be a canonical id (<scope>:<module>:<name>)")
         if not isinstance(entry, dict):
-            errors.append(f"native_catalog: {name} must be a mapping")
+            errors.append(f"{where} must be a mapping")
             continue
-        unknown = set(entry) - _NATIVE_ENTRY_KEYS
+        unknown = set(entry) - _CATALOG_ENTRY_KEYS
         if unknown:
-            errors.append(f"native_catalog: {name} has unknown key(s) {sorted(unknown)}")
-        _check_aliases(entry, f"native_catalog: {name}", errors)
-    return errors
-
-
-def validate_override_manifest(document: dict[str, Any]) -> list[str]:
-    """Validate a v5 override manifest; returns a list of human-readable errors."""
-    errors: list[str] = []
-    if document.get("version") != 5:
-        errors.append("override_manifest: version must be 5")
-    apis = document.get("apis")
-    if not isinstance(apis, dict) or not apis:
-        errors.append("override_manifest: apis must be a non-empty mapping")
-        return errors
-    for name, entry in apis.items():
-        if not isinstance(entry, dict):
-            errors.append(f"override_manifest: {name} must be a mapping")
+            errors.append(f"{where} has unknown key(s) {sorted(unknown)}")
+        for required in sorted(_CATALOG_REQUIRED_KEYS):
+            if required not in entry:
+                errors.append(f"{where} must declare {required!r}")
+        kind = entry.get("kind")
+        if kind not in _KINDS:
+            errors.append(f"{where} has invalid kind {kind!r} (allowed: {sorted(_KINDS)})")
+        exposure = entry.get("exposure")
+        if exposure not in _CATALOG_EXPOSURES:
+            errors.append(
+                f"{where} has invalid exposure {exposure!r} "
+                f"(allowed: {sorted(_CATALOG_EXPOSURES)})"
+            )
+        _check_aliases(entry, where, errors)
+        if kind == "native":
+            facade_only = set(entry) & (_FACADE_REQUIRED_KEYS - {"summary"})
+            if facade_only:
+                errors.append(f"{where} native row has facade-only key(s) {sorted(facade_only)}")
             continue
-        unknown = set(entry) - _OVERRIDE_ENTRY_KEYS
-        if unknown:
-            errors.append(f"override_manifest: {name} has unknown key(s) {sorted(unknown)}")
-        for required in sorted(_OVERRIDE_REQUIRED_KEYS):
+        if kind != "facade":
+            continue
+        for required in sorted(_FACADE_REQUIRED_KEYS):
             value = entry.get(required)
             if value is None or (isinstance(value, str) and not value.strip()):
-                errors.append(f"override_manifest: {name} must declare {required!r}")
-        _check_aliases(entry, f"override_manifest: {name}", errors)
-        _check_inputs(entry, f"override_manifest: {name}", errors)
+                errors.append(f"{where} must declare {required!r}")
+        _check_inputs(entry, where, errors)
         export = entry.get("export")
-        if export is not None and (
-            not isinstance(export, str)
-            or not export.startswith("peaksMCP.overrides.")
-            or export.rsplit(".", 1)[-1] != name
-        ):
-            errors.append(
-                f"override_manifest: {name} export must be peaksMCP.overrides.<name>: {export!r}"
-            )
-        exposure = entry.get("exposure")
-        if exposure is not None and exposure not in _EXPOSURES:
-            errors.append(
-                f"override_manifest: {name} has invalid exposure {exposure!r} "
-                f"(allowed: {sorted(_EXPOSURES)})"
-            )
+        if isinstance(export, str) and isinstance(canonical_id, str):
+            _, _, api_name = canonical_id.rpartition(":")
+            if export.rsplit(".", 1)[-1] != api_name or not export.startswith("peaksMCP."):
+                errors.append(
+                    f"{where} facade export must be a peaksMCP path ending in .{api_name}: "
+                    f"{export!r}"
+                )
     return errors
-
-
-def validate_documents(native: dict[str, Any], overrides: dict[str, Any]) -> list[str]:
-    """Validate both curated catalogs together (order matters for messages)."""
-    return [
-        *validate_native_catalog(native),
-        *validate_override_manifest(overrides),
-    ]

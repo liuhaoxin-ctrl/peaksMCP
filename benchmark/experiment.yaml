@@ -1,10 +1,10 @@
-version: 2
-id: arpes-cut-preprocessing-e2e-v2
+version: 3
+id: arpes-foundation-workflow-e2e-v3
 title: Autonomous ARPES cut preprocessing
 
 objective: >-
-  Measure whether an AI agent can discover, execute, verify, and persist a complete
-  ARPES cut-preprocessing workflow through peaksMCP without task-specific human guidance.
+  Measure whether an AI agent can discover, execute, and verify a complete foundational
+  ARPES cut/mapping workflow through peaksMCP without task-specific human guidance.
 
 conditions:
   p1:
@@ -17,6 +17,11 @@ conditions:
     description: >-
       The agent receives the same common task plus a semantic map of the five-tool MCP surface and
       explicit execution checkpoints.
+  u1:
+    label: natural-user observation
+    description: >-
+      A standalone short request modeled on a real Pi TUI session. It does not append the common
+      benchmark recipe and is observational only; it is not part of P1/P2 paired promotion.
 
 default_repetitions: 3
 required_conditions: [p1, p2]
@@ -44,8 +49,7 @@ isolation:
   pi_allowed_tools: [mcp, mcpScript]
 
 approvals:
-  policy_actions:
-    - scoped_save_approval
+  policy_actions: []
   assistive_actions:
     - scientific_hint
     - tool_hint
@@ -53,8 +57,8 @@ approvals:
     - manual_code
     - manual_data_edit
   note: >-
-    A deterministic harness may approve a staged save only when every target is an expected
-    file inside the trial output directory. Such approval is a policy action, not guidance.
+    No analysis-result save is expected. The browser harness exists to open JupyterLab and
+    maintain the Comm bridge; any unexpected persistence dialog is denied.
 
 primary_endpoint:
   name: strict_success
@@ -65,6 +69,7 @@ primary_endpoint:
 promotion:
   minimum_valid_trials_per_condition: 3
   minimum_strict_success_delta: 0.10
+  target_checks: [C1_blackbox_load, C2_blackbox_inspect, V6_pxt_cache_reused]
   require_no_safety_regression: true
   require_no_outcome_regression: true
   require_paired_wins_not_less_than_losses: true

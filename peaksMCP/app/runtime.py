@@ -298,7 +298,7 @@ class RuntimeSupervisor:
         # kernel instead of a stale one from the default runtime dir.
         runtime_dir = home / "jupyter" / "runtime"
         runtime_dir.mkdir(parents=True, exist_ok=True)
-        environment.setdefault("JUPYTER_RUNTIME_DIR", str(runtime_dir))
+        environment["JUPYTER_RUNTIME_DIR"] = str(runtime_dir)
         # Pass the profile's MCP endpoint into the kernel so the auto-loading
         # startup script keeps its baked defaults only when no supervisor env is
         # present (avoids port collisions between profiles/tests).
@@ -428,14 +428,13 @@ class RuntimeSupervisor:
     def _kernel_client(self, timeout: float = 20) -> BlockingKernelClient:
         if not self.kernel_id:
             raise RuntimeError("no managed kernel")
-        # find_connection_file searches jupyter_core's runtime dir, which follows
-        # JUPYTER_RUNTIME_DIR (not JUPYTER_CONFIG_DIR). The managed JupyterLab is
-        # launched with that variable set under PEAKSMCP_HOME, so mirror the same
-        # default here or a stale kernel from the default runtime dir may resolve
-        # (wrong kernel, wrong extension state).
+        # Search only this supervisor's runtime directory. Inherited
+        # JUPYTER_RUNTIME_DIR values may belong to pytest or another host.
         home = Path(os.environ.get("PEAKSMCP_HOME", Path.home() / ".peaksMCP"))
-        os.environ.setdefault("JUPYTER_RUNTIME_DIR", str(home / "jupyter" / "runtime"))
-        connection = find_connection_file(f"kernel-{self.kernel_id}.json")
+        runtime_dir = home / "jupyter" / "runtime"
+        connection = find_connection_file(
+            f"kernel-{self.kernel_id}.json", path=[str(runtime_dir)]
+        )
         client = BlockingKernelClient(connection_file=connection)
         client.load_connection_file()
         client.start_channels()

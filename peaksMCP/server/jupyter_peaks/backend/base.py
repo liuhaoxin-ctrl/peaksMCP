@@ -15,8 +15,11 @@ def ensure_fresh_index(state: SharedState) -> Any:
     Replaces the old fail-fast ``INDEX_STALE_RESTART_REQUIRED`` error: if the
     installed Peaks / peaksMCP source changed after the index was built, the
     index is rebuilt (under the shared state lock) so searches and code
-    execution keep working without a kernel restart.  Only the actual rebuild
-    holds the lock; the staleness check and searches are lock-free.
+    execution keep working without a kernel restart.  A fingerprint-changing
+    rebuild invalidates all earlier API proofs: their signature/scope snapshots
+    describe the old index and must not unlock calls until ``get`` proves the
+    refreshed contracts. Only the actual rebuild holds the lock; the staleness
+    check and searches are lock-free.
     """
     from peaksMCP.discovery.index import build_index
 
@@ -28,7 +31,11 @@ def ensure_fresh_index(state: SharedState) -> Any:
         with state.lock:
             # Re-check under the lock: another call may have rebuilt already.
             if state.api_index.is_stale():
-                state.api_index = build_index()
+                old_fingerprint = state.api_index.fingerprint
+                fresh_index = build_index()
+                if fresh_index.fingerprint != old_fingerprint:
+                    state.verified_apis.clear()
+                state.api_index = fresh_index
     return state.api_index
 
 
@@ -58,10 +65,12 @@ class SharedState:
     mcp_instance_id: str | None = None
     #: Canonical-API proof ledger: ``canonical id -> entry snapshot``
     #: (id/name/scope/module/tier/exposure) recorded by a successful
-    #: ``get`` this session.  run_cell unlocks an exact-name Peaks
-    #: call ONLY through this ledger (id + scope must match the call) - names
-    #: alone never unlock Python symbols and same-name/different-scope APIs
-    #: cannot be confused.
+    #: ``get`` in the current live kernel. All MCP clients and an in-kernel MCP
+    #: server/extension restart share this state; a fresh kernel creates an empty
+    #: ledger. A fingerprint-changing API-index rebuild also clears it. run_cell
+    #: unlocks an exact-name Peaks call ONLY through this ledger (id + scope must
+    #: match the call) - names alone never unlock Python symbols and
+    #: same-name/different-scope APIs cannot be confused.
     verified_apis: dict[str, dict[str, Any]] = field(default_factory=dict)
     #: Per-name count of unproven write attempts, driving the advisory ->
     #: hard-refusal escalation until the name is proven with get.

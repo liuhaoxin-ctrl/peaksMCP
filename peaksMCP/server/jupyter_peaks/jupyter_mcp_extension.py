@@ -24,6 +24,13 @@ def get_server() -> JupyterPeaksMCPServer | None:
 def _start(ipython: Any, host: str | None = None, port: int | None = None) -> JupyterPeaksMCPServer:
     global _server, _state
     if _state is None:
+        # Importing peaks registers its native loaders, including L112 PXT/NetCDF
+        # support. Keep runtime ownership in peaks rather than re-registering a
+        # duplicate loader from peaksMCP compatibility modules.
+        try:
+            import peaks  # noqa: F401
+        except Exception:
+            pass
         _state = SharedState(ipython=ipython)
         _state.require_consent = (
             os.environ.get("PEAKSMCP_REQUIRE_CONSENT", "false").lower() == "true"
@@ -31,15 +38,6 @@ def _start(ipython: Any, host: str | None = None, port: int | None = None) -> Ju
         register_comm_target(_state)
         ipython.events.register("pre_run_cell", _state.mark_busy)
         ipython.events.register("post_run_cell", _state.mark_idle)
-        # Register the L112 NetCDF loader into peaks' LOC_REGISTRY explicitly on
-        # the extension-loading thread.  A plain ``import peaksMCP`` performs no
-        # such side effect anymore (see peaksMCP/__init__.py).
-        try:
-            from peaksMCP.pxt_utils.loader import _register_l112_loader
-
-            _register_l112_loader()
-        except Exception:
-            pass
     if _server is None:
         _server = JupyterPeaksMCPServer(
             _state,
@@ -48,7 +46,7 @@ def _start(ipython: Any, host: str | None = None, port: int | None = None) -> Ju
             allow_remote=os.environ.get("PEAKSMCP_ALLOW_REMOTE", "false").lower() == "true",
         )
     # Pre-warm the peaks import on the main (extension-loading) thread. The first
-    # a get call runs on the FastMCP background thread, where an import
+    # get call runs on the FastMCP background thread, where an import
     # racing a concurrent main-thread import could deadlock on the import lock.
     if "peaks" not in sys.modules:
         try:
@@ -101,8 +99,7 @@ class PeaksMCPMagics(Magics):
 def _ensure_matplotlib_inline(ipython: Any) -> None:
     """Force matplotlib's Jupyter inline backend.
 
-    Without it a cell whose last expression is a Figure (typical for routines
-    that *return* a figure, e.g. plot_validation_pair / plot_batch / fit_gold)
+    Without it a cell whose last expression is a Figure (for example fit_gold)
     only emits the ``<Figure size ...>`` text repr — no ``display_data`` png —
     so every tool consumer sees text instead of a rendered image.  The magic
     is safe to run unconditionally: inline captures figures as png while the

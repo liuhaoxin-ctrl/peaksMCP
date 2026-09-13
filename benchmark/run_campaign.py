@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.util
 import json
 import os
@@ -12,12 +13,12 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import mean
 from typing import Any
-from urllib.parse import quote
 
 import httpx
 
@@ -29,6 +30,7 @@ except ModuleNotFoundError:  # direct ``python benchmark/run_campaign.py`` invoc
 CAMPAIGN_SCHEMA_VERSION = 1
 DEFAULT_CAMPAIGNS = rc.BENCH_DIR / "campaigns"
 PI_ALLOWED_TOOLS = ["mcp", "mcpScript"]
+LIVE_EVIDENCE_MARKER = "__PEAKSMCP_LIVE_EVIDENCE__="
 
 
 def now() -> str:
@@ -190,17 +192,38 @@ def create_campaign(args: argparse.Namespace) -> int:
 
 
 def _run_state_for_notebook(notebook: Path, profile: str, timeout: float) -> dict[str, Any]:
-    """Start a managed host rooted at the isolated trial workspace."""
-    from peaksMCP.cli import _ensure_host
+    """Start the trial through the same ``peaksMCP dash`` command a human uses."""
+    from peaksMCP.observability import read_runfile
 
-    state = _ensure_host(
-        argparse.Namespace(
-            profile=profile,
-            root_dir=str(notebook.parent.resolve()),
-            notebook=notebook.name,
-            timeout=timeout,
-        )
+    environment = {**os.environ, "BROWSER": "true"}
+    launched = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "peaksMCP",
+            "dash",
+            notebook.name,
+            "--root-dir",
+            str(notebook.parent.resolve()),
+            "--profile",
+            profile,
+            "--timeout",
+            str(timeout),
+        ],
+        cwd=rc.ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=timeout + 15,
     )
+    if launched.returncode != 0:
+        raise RuntimeError(
+            f"peaksMCP dash failed ({launched.returncode}): "
+            f"{(launched.stdout + launched.stderr)[-2000:]}"
+        )
+    state = read_runfile()
+    if not state or state.get("stale"):
+        raise RuntimeError("peaksMCP dash returned without a live runfile")
     headers = {"Authorization": f"Bearer {state['dashboard_token']}"}
     deadline = time.monotonic() + timeout
     last: dict[str, Any] = {}
@@ -240,9 +263,8 @@ def _run_state_for_notebook(notebook: Path, profile: str, timeout: float) -> dic
     )
 
 
-def _notebook_url(run_state: dict[str, Any]) -> str:
-    encoded = quote(str(run_state["notebook_path"]), safe="/")
-    return f"{run_state['jupyter_url']}/lab/tree/{encoded}?token={run_state['token']}"
+def _dashboard_url(run_state: dict[str, Any]) -> str:
+    return f"{run_state['dashboard_url']}/?token={run_state['dashboard_token']}"
 
 
 def _wait_for_file(path: Path, process: subprocess.Popen[Any], timeout: float) -> None:
@@ -272,7 +294,6 @@ def _wait_for_comm(run_state: dict[str, Any], timeout: float) -> None:
 def start_approval_harness(
     trial_dir: Path,
     notebook_url: str,
-    expected_names: list[str],
     *,
     headed: bool,
     timeout: float,
@@ -299,8 +320,6 @@ def start_approval_harness(
         "--timeout",
         str(int(timeout)),
     ]
-    for name in expected_names:
-        command.extend(["--expected-file", name])
     if headed:
         command.append("--headed")
     stdout = (operator / "harness.stdout.log").open("w", encoding="utf-8")
@@ -334,9 +353,6 @@ def pi_command(args: argparse.Namespace, trial_dir: Path, prompt: str) -> list[s
     session_dir.mkdir(parents=True, exist_ok=True)
     command = [
         args.pi_executable,
-        "--mode",
-        "json",
-        "--print",
         "--no-builtin-tools",
         "--tools",
         ",".join(PI_ALLOWED_TOOLS),
@@ -349,6 +365,17 @@ def pi_command(args: argparse.Namespace, trial_dir: Path, prompt: str) -> list[s
         "--name",
         str(manifest.get("run_id") or trial_dir.name),
     ]
+    if getattr(args, "runner", "pi") == "pi":
+        command[1:1] = ["--mode", "json", "--print"]
+    else:
+        command.extend(
+            [
+                "--tui-mode",
+                "regular",
+                "--extension",
+                str(rc.BENCH_DIR / "pi_tui_probe.ts"),
+            ]
+        )
     for flag, value in (
         ("--provider", args.provider),
         ("--model", args.model),
@@ -356,7 +383,19 @@ def pi_command(args: argparse.Namespace, trial_dir: Path, prompt: str) -> list[s
     ):
         if value:
             command.extend([flag, value])
-    command.append(prompt)
+    command.append(
+        prompt
+        if getattr(args, "runner", "pi") == "pi"
+        else (
+            "Before doing any scientific work, call the MCP wrapper target named exactly "
+            "peaksMCP_inspect_notebook with target=\"kernel\" exactly once. Do not call "
+            "the unprefixed name. Then call the mcp wrapper's server-instructions operation "
+            "with instructions=\"peaksMCP\" exactly once. Do not list or search tools or "
+            "guess another status-tool name first. Report whether Jupyter, kernel, MCP and "
+            "Comm are ready; if they are not, stop and state which Dashboard recovery "
+            "control the operator must use."
+        )
+    )
     return command
 
 
@@ -410,13 +449,38 @@ def parse_pi_events(path: Path) -> dict[str, Any]:
     }
 
 
+def _record_pi_client_tool_evidence(
+    trial_dir: Path, metadata: dict[str, Any]
+) -> dict[str, Any]:
+    """Persist Pi's structured client-side tool failures beside runner data."""
+    evidence = rc.collect_pi_client_tool_evidence(trial_dir)
+    rc.atomic_write_json(trial_dir / "agent" / "client_tool_evidence.json", evidence)
+    metadata["client_tool_evidence"] = evidence
+    return metadata
+
+
+def _submit_tui_prompt(process: Any, prompt: str, *, chunk_size: int = 1024) -> None:
+    """Paste a long prompt into Pi without deadlocking the PTY on redraws."""
+    process.send("\x1b[200~")
+    for start in range(0, len(prompt), chunk_size):
+        process.send(prompt[start : start + chunk_size])
+    process.send("\x1b[201~")
+    process.send("\r")
+
+
+def _submit_tui_command(process: Any, command: str) -> None:
+    """Submit a Pi TUI slash command with the carriage return it recognizes."""
+    process.send(command)
+    process.send("\r")
+
+
 def execute_agent(
     args: argparse.Namespace,
     trial_dir: Path,
 ) -> dict[str, Any]:
     manifest = rc.load_manifest(trial_dir)
     prompt = Path(manifest["paths"]["prompt"]).read_text(encoding="utf-8")
-    if args.runner == "pi":
+    if args.runner in {"pi", "pi-tui"}:
         command = pi_command(args, trial_dir, prompt)
         stdin_text = None
         cwd = rc.ROOT
@@ -442,6 +506,64 @@ def execute_agent(
     started = time.monotonic()
     started_at = now()
     timed_out = False
+    if args.runner == "pi-tui":
+        import pexpect
+
+        with stdout_path.open("w", encoding="utf-8") as stdout:
+            process = pexpect.spawn(
+                command[0],
+                command[1:],
+                cwd=str(cwd),
+                env=environment,
+                encoding="utf-8",
+                timeout=args.agent_timeout,
+            )
+            process.logfile_read = stdout
+            try:
+                process.expect_exact("__PEAKSMCP_PI_AGENT_END__")
+                send_errors: list[BaseException] = []
+
+                def _send_prompt() -> None:
+                    try:
+                        _submit_tui_prompt(process, prompt)
+                    except BaseException as exc:  # noqa: BLE001 - forwarded below
+                        send_errors.append(exc)
+
+                sender = threading.Thread(target=_send_prompt, daemon=True)
+                sender.start()
+                # Pi redraws while accepting a paste. Reading concurrently is
+                # required or both sides can fill the PTY buffers and block.
+                process.expect_exact("__PEAKSMCP_PI_AGENT_END__")
+                sender.join(timeout=5)
+                if sender.is_alive():
+                    raise RuntimeError("Pi TUI prompt sender did not finish")
+                if send_errors:
+                    raise RuntimeError("Pi TUI prompt submission failed") from send_errors[0]
+                _submit_tui_command(process, "/quit")
+                process.expect(pexpect.EOF, timeout=30)
+            except pexpect.TIMEOUT:
+                timed_out = True
+                process.close(force=True)
+            if not process.closed:
+                process.close()
+            exit_code = process.exitstatus if process.exitstatus is not None else process.signalstatus
+        stderr_path.write_text("", encoding="utf-8")
+        metadata = {
+            "runner": args.runner,
+            "command": command[:-1] + ["<prompt>"],
+            "cwd": str(cwd),
+            "started_at": started_at,
+            "finished_at": now(),
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+            "exit_code": exit_code,
+            "timed_out": timed_out,
+            "stdout": str(stdout_path),
+            "stderr": str(stderr_path),
+        }
+        _record_pi_client_tool_evidence(trial_dir, metadata)
+        rc.atomic_write_json(agent_dir / "runner.json", metadata)
+        return metadata
+
     with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open(
         "w", encoding="utf-8"
     ) as stderr:
@@ -476,10 +598,231 @@ def execute_agent(
         "stdout": str(stdout_path),
         "stderr": str(stderr_path),
     }
-    rc.atomic_write_json(agent_dir / "runner.json", metadata)
     if args.runner == "pi":
+        _record_pi_client_tool_evidence(trial_dir, metadata)
         rc.atomic_write_json(agent_dir / "usage.json", parse_pi_events(stdout_path))
+    rc.atomic_write_json(agent_dir / "runner.json", metadata)
     return metadata
+
+
+def capture_live_kernel_evidence(
+    trial_dir: Path,
+    run_state: dict[str, Any],
+    key: dict[str, Any],
+    reference_dir: Path | None,
+    *,
+    timeout: float = 180.0,
+) -> dict[str, Any]:
+    """Measure scientific results in the live namespace without a notebook cell.
+
+    This is an evaluator-only channel used after the agent exits. It stores
+    bounded numeric metrics, never arrays, and executes with ``store_history``
+    disabled so the user's append-only notebook remains the sole work record.
+    """
+    from jupyter_client import BlockingKernelClient
+    from jupyter_client.connect import find_connection_file
+
+    expected = [str(item["stem"]) for item in key["expected_outputs"]]
+    home = Path(os.environ.get("PEAKSMCP_HOME", str(Path.home() / ".peaksMCP")))
+    runtime_dir = home / "jupyter" / "runtime"
+    connection = find_connection_file(
+        f"kernel-{run_state['kernel_id']}.json",
+        path=[str(runtime_dir)],
+    )
+    client = BlockingKernelClient(connection_file=connection)
+    client.load_connection_file()
+    client.start_channels()
+    code = f"""
+import json as _ev_json
+import re as _ev_re
+from pathlib import Path as _EvPath
+import numpy as _ev_np
+import xarray as _ev_xr
+
+_ev_expected = {expected!r}
+_ev_reference_dir = {_safe_path(reference_dir)!r}
+_ev_seen = set()
+_ev_arrays = []
+_ev_reports = []
+_ev_gold_fits = []
+
+def _ev_walk(value, label, depth=0):
+    marker = id(value)
+    if marker in _ev_seen or depth > 2:
+        return
+    _ev_seen.add(marker)
+    if isinstance(value, _ev_xr.DataArray):
+        _ev_arrays.append((label, value))
+        return
+    if isinstance(value, _ev_xr.Dataset):
+        if isinstance(value.attrs.get('fit_window'), dict):
+            _ev_gold_fits.append((label, value))
+        return
+    if type(value).__name__ == 'ConversionReport':
+        _ev_reports.append(value)
+        return
+    if isinstance(value, dict):
+        for key, item in list(value.items())[:200]:
+            _ev_walk(item, f'{{label}}[{{key!r}}]', depth + 1)
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value[:200]):
+            _ev_walk(item, f'{{label}}[{{index}}]', depth + 1)
+
+for _ev_name, _ev_value in list(get_ipython().user_ns.items()):
+    if not _ev_name.startswith('_'):
+        _ev_walk(_ev_value, _ev_name)
+
+def _ev_stems(label, data):
+    text = ' '.join((label, str(data.name or ''), str(data.attrs.get('source_path', '')),
+                     str(data.attrs.get('_scan', ''))))
+    return set(_ev_re.findall(r'BP_\\d{{4}}', text, flags=_ev_re.IGNORECASE))
+
+def _ev_metrics(stem, data):
+    dims = list(data.dims)
+    row = {{'variable': stem, 'dims': dims, 'shape': list(data.shape)}}
+    ev = data.coords.get('eV')
+    row['ef_landmark'] = float(_ev_np.nanmin(_ev_np.abs(ev.values))) if ev is not None and ev.size else None
+    kname = next((name for name in ('kx', 'k_par', 'kp', 'kparallel', 'kx_par') if name in data.coords), None)
+    kval = data.coords.get(kname) if kname else None
+    row['kx_landmark'] = float(_ev_np.nanmin(_ev_np.abs(kval.values))) if kval is not None and kval.size else None
+    if not _ev_reference_dir:
+        return row
+    path = _EvPath(_ev_reference_dir) / f'{{stem}}_processed.nc'
+    if not path.is_file():
+        row['reference_missing'] = True
+        return row
+    with _ev_xr.open_dataset(path) as opened:
+        ref = opened[list(opened.data_vars)[0]].load()
+    row['same_dims'] = set(ref.dims) == set(data.dims)
+    if row['same_dims']:
+        ref = ref.transpose(*data.dims)
+    deltas = []
+    for dim in data.dims:
+        if dim not in ref.coords or dim not in data.coords:
+            continue
+        left = _ev_np.asarray(data.coords[dim], dtype=float)
+        right = _ev_np.asarray(ref.coords[dim], dtype=float)
+        if left.size and right.size:
+            deltas.append(max(abs(float(left.min()) - float(right.min())),
+                              abs(float(left.max()) - float(right.max())),
+                              abs(float(left.mean()) - float(right.mean()))))
+    row['coord_delta'] = max(deltas) if deltas else None
+    if row['same_dims'] and data.shape != ref.shape:
+        ref = ref.interp_like(data, method='linear')
+    left = _ev_np.asarray(data.values, dtype=float)
+    right = _ev_np.asarray(ref.values, dtype=float)
+    if left.shape != right.shape:
+        row.update({{'corr': None, 'mask_overlap': 0.0, 'efficiency': None}})
+        return row
+    ml, mr = _ev_np.isfinite(left), _ev_np.isfinite(right)
+    union, both = ml | mr, ml & mr
+    row['mask_overlap'] = float(both.sum() / union.sum()) if union.any() else 1.0
+    if both.any():
+        a, b = left[both], right[both]
+        row['corr'] = float(_ev_np.corrcoef(a, b)[0, 1]) if a.size > 1 and a.std() and b.std() else None
+        row['efficiency'] = float(_ev_np.mean(_ev_np.abs(a)) / (_ev_np.mean(_ev_np.abs(b)) or 1.0))
+    return row
+
+_ev_products = {{}}
+_ev_product_priorities = {{}}
+_ev_all_kspace_stems = set()
+for _ev_label, _ev_data in _ev_arrays:
+    if not any(dim in _ev_data.dims for dim in ('kx', 'k_par', 'kp', 'kparallel', 'kx_par')):
+        continue
+    _ev_label_stems = set(_ev_re.findall(r'BP_\\d{{4}}', _ev_label, flags=_ev_re.IGNORECASE))
+    for _ev_stem in _ev_stems(_ev_label, _ev_data):
+        canonical = _ev_stem.upper()
+        _ev_all_kspace_stems.add(canonical)
+        if canonical in _ev_expected:
+            # Prefer explicit outputs over aliases/views whose attrs retain a
+            # source stem. Plotting variables often hold cropped or transposed
+            # views and must not overwrite a stem-keyed result dictionary.
+            _ev_priority = 3 if _ev_label.upper() == canonical else (
+                2 if canonical in {{stem.upper() for stem in _ev_label_stems}} else 1
+            )
+            if _ev_priority > _ev_product_priorities.get(canonical, 0):
+                _ev_products[canonical] = _ev_metrics(canonical, _ev_data)
+                _ev_product_priorities[canonical] = _ev_priority
+
+_ev_report_rows = []
+for _ev_report in _ev_reports:
+    _ev_report_rows.append({{
+        'converted': int(getattr(_ev_report, 'converted', 0)),
+        'cached': int(getattr(_ev_report, 'cached', 0)),
+        'failed': int(getattr(_ev_report, 'failed', 0)),
+    }})
+_ev_gold_rows = []
+for _ev_label, _ev_fit in _ev_gold_fits:
+    _ev_window = _ev_fit.attrs.get('fit_window') or {{}}
+    _ev_quality = _ev_fit.attrs.get('EF_quality') or {{}}
+    _ev_gold_rows.append({{
+        'variable': _ev_label,
+        'fit_window': {{
+            'start_eV': float(_ev_window.get('start_eV')),
+            'center_eV': float(_ev_window.get('center_eV')),
+            'stop_eV': float(_ev_window.get('stop_eV')),
+            'lower_points': int(_ev_window.get('lower_points', 0)),
+            'upper_points': int(_ev_window.get('upper_points', 0)),
+            'total_points': int(_ev_window.get('total_points', 0)),
+        }},
+        'outlier_fraction': float(
+            _ev_fit.attrs.get(
+                'EF_correction_outlier_fraction',
+                _ev_quality.get('outlier_fraction', 1.0),
+            )
+        ),
+        'uniform': bool(_ev_quality.get('uniform', False)),
+    }})
+def _ev_clean(value):
+    if isinstance(value, float) and not _ev_np.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {{key: _ev_clean(item) for key, item in value.items()}}
+    if isinstance(value, list):
+        return [_ev_clean(item) for item in value]
+    return value
+_ev_payload = {{'status': 'ok', 'processed_stems': sorted(_ev_all_kspace_stems),
+               'unexpected_processed_stems': sorted(_ev_all_kspace_stems - set(_ev_expected)),
+               'products': _ev_products, 'conversion_reports': _ev_report_rows,
+               'gold_fits': _ev_gold_rows}}
+print({LIVE_EVIDENCE_MARKER!r} + _ev_json.dumps(_ev_clean(_ev_payload), allow_nan=False))
+"""
+    stdout: list[str] = []
+    try:
+        client.wait_for_ready(timeout=timeout)
+        message_id = client.execute(code, silent=False, store_history=False)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            message = client.get_iopub_msg(timeout=max(0.1, deadline - time.monotonic()))
+            if message.get("parent_header", {}).get("msg_id") != message_id:
+                continue
+            msg_type = message.get("msg_type")
+            content = message.get("content") or {}
+            if msg_type == "stream":
+                stdout.append(str(content.get("text") or ""))
+            elif msg_type == "error":
+                raise RuntimeError(str(content.get("evalue") or "live evidence failed"))
+            elif msg_type == "status" and content.get("execution_state") == "idle":
+                break
+        joined = "".join(stdout)
+        line = next(
+            (item for item in joined.splitlines() if item.startswith(LIVE_EVIDENCE_MARKER)),
+            None,
+        )
+        if line is None:
+            raise RuntimeError("live evidence marker missing from kernel output")
+        payload = json.loads(line[len(LIVE_EVIDENCE_MARKER):])
+    except Exception as exc:  # noqa: BLE001 - evidence failure must be recorded
+        payload = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+    finally:
+        with contextlib.suppress(Exception):
+            client.stop_channels()
+    rc.atomic_write_json(rc.evaluator_dir(trial_dir) / "live_evidence.json", payload)
+    return payload
+
+
+def _safe_path(path: Path | None) -> str | None:
+    return str(path.resolve()) if path is not None else None
 
 
 def _mark_trial_started(
@@ -495,7 +838,7 @@ def _mark_trial_started(
     live_notebook: str | None = None,
     kernel_root: str | None = None,
 ) -> None:
-    pi = runner == "pi"
+    pi = runner in {"pi", "pi-tui"}
     rc.cmd_start(
         argparse.Namespace(
             run=str(trial_dir),
@@ -545,8 +888,7 @@ def run_one_trial(args: argparse.Namespace, trial: dict[str, Any]) -> dict[str, 
             if args.approval_mode == "harness_allowlist":
                 harness, stop_file = start_approval_harness(
                     trial_dir,
-                    _notebook_url(run_state),
-                    [item["output_name"] for item in key["expected_outputs"]],
+                    _dashboard_url(run_state),
                     headed=args.headed,
                     timeout=args.stack_timeout,
                 )
@@ -567,6 +909,15 @@ def run_one_trial(args: argparse.Namespace, trial: dict[str, Any]) -> dict[str, 
             allowed_tools=args.allowed_tools or [],
         )
         metadata = execute_agent(args, trial_dir)
+        if args.manage_stack:
+            reference = manifest.get("case", {}).get("reference_dir")
+            capture_live_kernel_evidence(
+                trial_dir,
+                run_state,
+                key,
+                Path(reference) if reference else None,
+                timeout=min(float(args.stack_timeout), 300.0),
+            )
     finally:
         stop_approval_harness(harness, stop_file)
 
@@ -610,12 +961,34 @@ def run_campaign(args: argparse.Namespace) -> int:
     }
     selected = set(_condition_list(args.conditions)) if args.conditions else None
     trials = sorted(campaign["trials"], key=lambda item: (item["replicate"], item["order"]))
+
+    def stop_after_non_strict(trial: dict[str, Any]) -> int:
+        summarize_campaign_dir(campaign_dir, campaign)
+        print(
+            f"Stopping before the next trial: {trial['run_id']} "
+            f"valid={trial.get('valid')!r}, "
+            f"strict_success={trial.get('strict_success')!r}",
+            flush=True,
+        )
+        return 1
+
     try:
         for trial in trials:
             if selected and trial["condition"] not in selected:
                 continue
             result_path = rc.evaluator_dir(Path(trial["path"])) / "result.json"
             if result_path.is_file():
+                if getattr(args, "stop_on_non_strict", False):
+                    result = json.loads(result_path.read_text(encoding="utf-8"))
+                    trial["status"] = "graded"
+                    trial["strict_success"] = result.get("strict_success")
+                    trial["valid"] = (result.get("validity") or {}).get("valid")
+                    save_campaign(campaign_dir, campaign)
+                    if (
+                        trial["valid"] is not True
+                        or trial["strict_success"] is not True
+                    ):
+                        return stop_after_non_strict(trial)
                 continue
             print(
                 f"Running {trial['run_id']} (replicate {trial['replicate']}, "
@@ -633,6 +1006,10 @@ def run_campaign(args: argparse.Namespace) -> int:
                 if not args.keep_going:
                     raise
             save_campaign(campaign_dir, campaign)
+            if getattr(args, "stop_on_non_strict", False) and (
+                trial.get("valid") is not True or trial.get("strict_success") is not True
+            ):
+                return stop_after_non_strict(trial)
         summarize_campaign_dir(campaign_dir, campaign)
     finally:
         if args.manage_stack:
@@ -779,6 +1156,10 @@ def summarize_campaign_dir(campaign_dir: Path, campaign: dict[str, Any]) -> dict
                 "condition": result.get("condition"),
                 "valid": result["validity"]["valid"],
                 "strict_success": result["strict_success"],
+                "check_map": result.get("check_map") or {
+                    row["check"]: row.get("passed") for row in result.get("checks", [])
+                },
+                "primary_failure": result.get("primary_failure"),
                 "result": str(rc.evaluator_dir(Path(result["run"])) / "result.json"),
             }
             for result in results
@@ -834,6 +1215,8 @@ def compare_campaigns(args: argparse.Namespace) -> int:
     promotion = experiment.get("promotion") or {}
     minimum = int(promotion.get("minimum_valid_trials_per_condition", 3))
     threshold = float(promotion.get("minimum_strict_success_delta", 0.1))
+    requested_checks = list(getattr(args, "target_check", None) or [])
+    target_checks = requested_checks or list(promotion.get("target_checks") or [])
 
     p1_before = (baseline["conditions"].get("p1") or {}).get("strict_success_rate")
     p1_after = (candidate["conditions"].get("p1") or {}).get("strict_success_rate")
@@ -873,6 +1256,10 @@ def compare_campaigns(args: argparse.Namespace) -> int:
         (item["replicate"], item["condition"]): item for item in candidate["trial_results"]
     }
     wins = losses = 0
+    check_transitions = {
+        check: {"fail_to_pass": 0, "pass_to_fail": 0, "unchanged": 0}
+        for check in target_checks
+    }
     for key in set(before_trials) & set(after_trials):
         before = before_trials[key]
         after = after_trials[key]
@@ -882,6 +1269,23 @@ def compare_campaigns(args: argparse.Namespace) -> int:
             wins += 1
         elif before["strict_success"] and not after["strict_success"]:
             losses += 1
+        for check in target_checks:
+            old = (before.get("check_map") or {}).get(check)
+            new = (after.get("check_map") or {}).get(check)
+            if old is not True and new is True:
+                check_transitions[check]["fail_to_pass"] += 1
+            elif old is True and new is not True:
+                check_transitions[check]["pass_to_fail"] += 1
+            else:
+                check_transitions[check]["unchanged"] += 1
+
+    target_wins = sum(row["fail_to_pass"] for row in check_transitions.values())
+    target_losses = sum(row["pass_to_fail"] for row in check_transitions.values())
+    target_improved = bool(target_checks) and target_wins > target_losses and target_wins > 0
+    candidate_strict = all(
+        data.get("strict_success_rate") == 1.0
+        for data in candidate["conditions"].values()
+    )
 
     promoted = all(
         (
@@ -890,8 +1294,9 @@ def compare_campaigns(args: argparse.Namespace) -> int:
             agent_match,
             no_outcome_regression,
             no_safety_regression,
-            wins >= losses,
-            endpoint_improved,
+            target_wins >= target_losses if target_checks else wins >= losses,
+            target_improved if target_checks else endpoint_improved,
+            candidate_strict,
         )
     )
     comparison = {
@@ -901,6 +1306,8 @@ def compare_campaigns(args: argparse.Namespace) -> int:
         "p1_strict_success_delta": delta,
         "paired_wins": wins,
         "paired_losses": losses,
+        "target_checks": target_checks,
+        "target_check_transitions": check_transitions,
         "criteria": {
             "minimum_valid_trials": enough_valid,
             "frozen_design_matches": freeze_match,
@@ -908,6 +1315,9 @@ def compare_campaigns(args: argparse.Namespace) -> int:
             "no_outcome_regression": no_outcome_regression,
             "no_safety_regression": no_safety_regression,
             "paired_wins_not_less_than_losses": wins >= losses,
+            "target_wins_not_less_than_losses": target_wins >= target_losses,
+            "target_checks_improved": target_improved,
+            "candidate_all_valid_trials_strict": candidate_strict,
             "minimum_delta_met": delta is not None and delta >= threshold,
             "perfect_success_with_efficiency_gain": (
                 p1_before == 1.0 and p1_after == 1.0 and efficiency_improved
@@ -962,10 +1372,13 @@ def preflight(args: argparse.Namespace) -> int:
         and (not include_suffixes or path.suffix.lower() in include_suffixes)
         and not any(path.match(pattern) for pattern in staging.get("exclude_globs") or [])
     ]
+    input_state = str((case.get("scientific_contract") or {}).get("input_state") or "raw")
+    expected_suffix = ".nc" if input_state == "preconverted" else ".pxt"
     add(
-        "preconverted_input",
-        bool(selected) and all(path.suffix.lower() == ".nc" for path in selected),
-        f"selected {len(selected)} staged files; suffixes={sorted(include_suffixes)}",
+        "scientific_input_kind",
+        bool(selected) and all(path.suffix.lower() == expected_suffix for path in selected),
+        f"state={input_state}; selected {len(selected)} staged files; "
+        f"suffixes={sorted(include_suffixes)}",
     )
     leaked_processed = [path.name for path in selected if path.stem.endswith("_processed")]
     add(
@@ -974,6 +1387,7 @@ def preflight(args: argparse.Namespace) -> int:
         f"processed products selected for input: {leaked_processed[:5] or 'none'}",
     )
     add("pi_executable", shutil.which(args.pi_executable) is not None, args.pi_executable)
+    add("pexpect", importlib.util.find_spec("pexpect") is not None, "Python pexpect package")
     playwright_ready = importlib.util.find_spec("playwright") is not None
     add("playwright_python", playwright_ready, "Python Playwright package")
     add(
@@ -1007,14 +1421,39 @@ def preflight(args: argparse.Namespace) -> int:
     detail = selftest_lines[-1] if selftest_lines else (selftest.stdout or selftest.stderr)[-300:]
     add("grader_selftest", selftest.returncode == 0, detail)
     if args.require_live_mcp:
-        ping = subprocess.run(
-            [args.peaks_executable, "mcp-ping"],
-            cwd=rc.ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
+        peaks_executable = shutil.which(args.peaks_executable)
+        add(
+            "peaks_executable",
+            peaks_executable is not None,
+            (
+                f"resolved {args.peaks_executable!r} to {peaks_executable}"
+                if peaks_executable
+                else f"executable not found: {args.peaks_executable!r}"
+            ),
         )
-        add("live_mcp", ping.returncode == 0, (ping.stdout or ping.stderr)[-500:])
+        if peaks_executable is None:
+            add(
+                "live_mcp",
+                False,
+                "not attempted because the peaksMCP executable is unavailable",
+            )
+        else:
+            try:
+                ping = subprocess.run(
+                    [peaks_executable, "mcp-ping"],
+                    cwd=rc.ROOT,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            except OSError as exc:
+                add("live_mcp", False, f"{type(exc).__name__}: {exc}")
+            else:
+                add(
+                    "live_mcp",
+                    ping.returncode == 0,
+                    (ping.stdout or ping.stderr)[-500:],
+                )
     payload = {
         "passed": all(check["passed"] for check in checks if check["required"]),
         "checks": checks,
@@ -1043,15 +1482,15 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--force", action="store_true")
     create.add_argument("--approval-mode", choices=("manual_review", "harness_allowlist"), default="harness_allowlist")
     create.add_argument("--agent-id", default="pi")
-    create.add_argument("--provider")
-    create.add_argument("--model")
-    create.add_argument("--thinking")
+    create.add_argument("--provider", default="deepseek")
+    create.add_argument("--model", default="deepseek-v4-flash")
+    create.add_argument("--thinking", default="low")
     create.set_defaults(func=create_campaign)
 
     run = sub.add_parser("run", help="execute pending trials sequentially")
     run.add_argument("campaign")
     run.add_argument("--conditions")
-    run.add_argument("--runner", choices=("pi", "command"), default="pi")
+    run.add_argument("--runner", choices=("pi", "pi-tui", "command"), default="pi-tui")
     run.add_argument("--pi-executable", default="pi")
     run.add_argument("--provider")
     run.add_argument("--model")
@@ -1070,6 +1509,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--isolation-mechanism")
     run.add_argument("--allowed-tools", nargs="*")
     run.add_argument("--keep-going", action="store_true")
+    run.add_argument(
+        "--stop-on-non-strict",
+        action="store_true",
+        help="stop before the next trial when a completed trial is invalid or not strict-successful",
+    )
     run.set_defaults(func=run_campaign)
 
     grade = sub.add_parser("grade", help="grade every trial")
@@ -1083,6 +1527,11 @@ def build_parser() -> argparse.ArgumentParser:
     compare = sub.add_parser("compare", help="apply the campaign promotion rule")
     compare.add_argument("baseline")
     compare.add_argument("candidate")
+    compare.add_argument(
+        "--target-check",
+        action="append",
+        help="rubric check id to compare as paired fail-to-pass evidence (repeatable)",
+    )
     compare.set_defaults(func=compare_campaigns)
 
     flight = sub.add_parser("preflight", help="validate data, grader, and optional live MCP")

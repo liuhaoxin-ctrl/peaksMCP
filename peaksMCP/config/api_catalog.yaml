@@ -1,0 +1,233 @@
+version: 1
+# The model-visible peaks surface. Keys are exact discovery canonical IDs.
+# Anything found by the dynamic scanner but absent here is hidden by default.
+apis:
+  top_level:peaks.core.fileIO.experiment:pxt2nc:
+    kind: native
+    exposure: core
+    aliases: [convert pxt, pxt to netcdf, convert raw experiment, PXT转换, 原始数据转换]
+    docstring_note: Convert raw PXT data into validated, reusable NetCDF cache files. Keep each report in a named variable and display only report.summary_line(); never print the full report/items list.
+  top_level:peaks.core.fileIO.experiment:load_experiment:
+    kind: native
+    exposure: core
+    aliases: [load experiment, inspect experiment, classify scans, preprocess all 2D data, preprocess 2D experiment, 2D cut preprocessing, 加载实验, 读取实验数据, 检查实验, 扫描分类]
+    docstring_note: >-
+      Call once: `from peaks import load_experiment; exp = load_experiment(source)`.
+      Print only `len(exp.gold)`, `len(exp.needs_conversion)`, and
+      `len(exp.conflicts)`; no reflection/to_dict. Do not inspect exp after loading
+      unless its reply was truncated. Do not search or get pxt2nc unless it is
+      non-empty; then convert/reload once. Otherwise say "preconverted cache reused".
+
+      gold/cuts/mappings are index lists; records expose
+      index/stem/kind/is_gold/dims/theta_offset_deg/polarisation. Use exact glue:
+      `records_by_index = {record.index: record for record in exp.records};
+      gold_index = exp.gold[0]; gold = exp[gold_index]; gold_record =
+      records_by_index[gold_index]`. Summarize with `gold_record.stem`. Iterate
+      `for cut_index in exp.cuts`; bind `record = records_by_index[cut_index]`
+      and `raw = exp[cut_index]`.
+      ExperimentConflict exposes only index/data_format/dims/issue. For a cut
+      conflict with deflector_perp use `.sel(deflector_perp=0.0)`; do not search
+      for an additional Peaks extraction API.
+
+      Before any analysis cell, exact-search/get fit_gold,
+      assign_normal_emission, and k_convert when not already proven in the
+      ledger; never use a blocked run_cell as proof. Use direct search/get calls
+      rather than mcpScript. Fit once: `gold_fit =
+      gold.fit_gold(show=False, quiet=True)`. Process exactly exp.cuts, never gold,
+      mappings, or unsupported records. Each cut calls
+      `raw.metadata.assign_normal_emission(theta_par=record.theta_offset_deg)`
+      then `zeroed.k_convert(EF_correction=gold_fit, quiet=True)`. The value is on
+      the record; the metadata accessor does not expose `raw.metadata.theta_offset_deg`. Save
+      `theta_by_stem[record.stem] = record.theta_offset_deg` in the batch and use
+      `theta_by_stem[rep_stem]` in labels. Keep one stem-keyed result dictionary
+      and print one receipt:
+      `print("processed_stems=" + ",".join(sorted(result_dict)))`. Use at most
+      three stdout lines of 200 characters.
+
+      Render exactly three static figures once in separate cells: returned gold
+      diagnostic, the compact all-cut grid via `peaks.plot_cut_grid(result_dict,
+      theta_by_stem)`, and the representative comparison via
+      `peaks.plot_before_after(representative_raw, representative_kcut, rep_stem,
+      theta_by_stem)` (labels use `theta_by_stem[rep_stem]`). Leave each returned
+      Figure as the cell's final expression; the helpers fix the layout in code
+      and render once.
+
+      Final Markdown, at most 2000 characters, must name the result dictionary
+      and all processed stems. Copy the complete returned `processed_stems=...`
+      token verbatim; never infer consecutive stems from the count. Identify
+      observed `gold=SELECTED_STEM (index SELECTED_INDEX)`; "gold scan fitted
+      once" alone is incomplete. Include only EF, numeric theta, cache,
+      validation, and failures. Do not repeat runtime/tool/API guidance. Do not
+      hand-type a representative stem; omit it or use the live stem variable. Do
+      not reread datasheet or persist processed data or figures.
+
+  top_level:peaks.core.metadata.history:History:
+    kind: native
+    exposure: advanced
+    aliases: [processing history, provenance, 处理历史]
+
+  dataarray:peaks.core.process.data_select:EDC:
+    kind: native
+    exposure: core
+    aliases: [energy distribution curve, 能量分布曲线, 能谱曲线]
+  dataarray:peaks.core.process.data_select:MDC:
+    kind: native
+    exposure: core
+    aliases: [momentum distribution curve, 动量分布曲线, 动量曲线]
+  dataarray:peaks.core.process.data_select:DOS:
+    kind: native
+    exposure: core
+    aliases: [density of states, 态密度, 态密]
+  dataarray:peaks.core.process.data_select:tot:
+    kind: native
+    exposure: core
+    aliases: [total intensity, integrated intensity, spectral weight, 总强度, 谱权重]
+  dataarray:peaks.core.process.data_select:extract_cut:
+    kind: native
+    exposure: core
+    aliases: [slice data, crop spectrum, crop a region of the data, line cut, 切片, 截取]
+  dataarray:peaks.core.process.data_select:radial_cuts:
+    kind: native
+    exposure: core
+    aliases: [radial cut, angular cut, 径向切片, 径向切割]
+  dataarray:peaks.core.process.differentiate:deriv:
+    kind: native
+    exposure: core
+    aliases: [derivative, differentiation, 导数, 微分, 求导]
+  dataarray:peaks.core.process.differentiate:curvature:
+    kind: native
+    exposure: core
+    aliases: [curvature, 曲率]
+
+  dataarray:peaks.core.process.tools:smooth:
+    kind: native
+    exposure: core
+    aliases: [smoothing, filter, 平滑, 滤波]
+  dataarray:peaks.core.process.tools:norm:
+    kind: native
+    exposure: core
+    aliases: [normalize, normalization, 归一化, 标准化]
+  dataarray:peaks.core.process.tools:bgs:
+    kind: native
+    exposure: core
+    aliases: [background subtraction, subtract background, 背景扣除]
+  dataarray:peaks.core.process.tools:bin_data:
+    kind: native
+    exposure: core
+    aliases: [bin pixels, coarsen data, 数据分箱, 像素合并]
+  dataarray:peaks.core.process.tools:sym:
+    kind: native
+    exposure: core
+    aliases: [symmetrize, mirror spectrum, 对称化, 镜像对称]
+  dataarray:peaks.core.process.tools:rotate:
+    kind: native
+    exposure: core
+    aliases: [rotate image, angular rotation, 旋转谱图, 数据旋转]
+  dataarray:peaks.core.process.tools:degrid:
+    kind: native
+    exposure: core
+    aliases: [remove mesh grid, FFT grid removal, 去网格, 去除条纹]
+  dataarray:peaks.core.process.data_select:mask_data:
+    kind: native
+    exposure: core
+    aliases: [polygon mask, region mask, 多边形掩膜, 区域遮罩]
+  dataarray:peaks.core.process.data_select:drop_nan_borders:
+    kind: native
+    exposure: core
+    aliases: [trim nan edges, crop empty border, 删除空边, 裁剪NaN边界]
+  module:peaks.core.process.tools:drift_correction:
+    kind: native
+    exposure: core
+    aliases: [drift correction, align maps, 漂移校正, 图像配准]
+  dataarray:peaks.core.process.tools:correct_isolated_bad_pixels:
+    kind: native
+    exposure: core
+    aliases: [bad pixel removal, clean bad pixels, 坏点修复, 去坏点]
+
+  datatree:peaks.core.process.tools:sum_data:
+    kind: native
+    exposure: core
+    aliases: [sum scans, add spectra, 数据相加, 求和]
+  datatree:peaks.core.process.tools:subtract_data:
+    kind: native
+    exposure: core
+    aliases: [subtract scans, difference spectrum, 数据相减, 差谱]
+  datatree:peaks.core.process.tools:merge_data:
+    kind: native
+    exposure: core
+    aliases: [merge scans, combine spectra, concatenate, 数据合并, 拼接]
+
+  dataarray:peaks.core.fitting.fit:estimate_EF:
+    kind: native
+    exposure: core
+    aliases: [Fermi level, Fermi energy, 费米能级]
+  dataarray:peaks.core.process.tools:estimate_sym_point:
+    kind: native
+    exposure: core
+    aliases: [symmetry point, mirror centre, 对称中心, 对称点]
+  dataarray:peaks.core.fitting.fit:fit_gold:
+    kind: native
+    exposure: core
+    aliases: [gold reference fit, fit Fermi edge, gold fit, Fermi level fit, 金参考拟合, 金拟合, 费米边拟合, 费米能级拟合]
+    docstring_note: >-
+      Call exactly once as the bound DataArray method `gold_fit =
+      gold.fit_gold(show=False, quiet=True)`, not as an imported module function, and keep
+      the returned Dataset. Its attrs contain EF_correction, scalar EF_poly4,
+      EF_quality, EF_correction_outlier_count/fraction, average_resolution_eV,
+      fit_window and figure. EF_quality and fit_window are mappings, not scalar
+      floats: never print either complete mapping or iterate it generically. Read exactly
+      fit_window[start_eV/stop_eV/lower_points/upper_points] and
+      EF_quality[outlier_fraction/uniform], then print those with EF_poly4 in
+      one line under 200 characters. Then assign
+      `gold_figure = gold_fit.attrs["figure"]` and leave `gold_figure` as the
+      cell's final expression. Do not call display. `show=False` keeps this
+      returned Figure closed until that final expression renders it once. The
+      receipt must precede the figure so run_cell returns both
+      without inspect_notebook. Reuse the same Dataset for every cut and never
+      rerun fit_gold.
+  dataarray:peaks.core.process.k_conversion:k_convert:
+    kind: native
+    exposure: core
+    aliases: [momentum conversion, k-space, 动量转换, k空间]
+    docstring_note: In a notebook batch, pass EF_correction=fit_result_or_mapping and quiet=True directly so one progress widget is not emitted per scan. A converted cut exposes kx or ky (depending on geometry), never k_par; obtain the momentum coordinate from the output dims/coords instead of guessing an alias. For a raw 3D mapping, do not call MDC first; pass eV_slice=(binding_energy_center, total_width) to k_convert so Fermi correction precedes the narrow binding-energy slice and momentum interpolation.
+  metadata:peaks.core.metadata.metadata_methods:set_EF_correction:
+    kind: native
+    exposure: core
+    aliases: [set Fermi correction, apply gold correction, 设置费米校正, 应用金参考]
+  metadata:peaks.core.metadata.metadata_methods:set_normal_emission:
+    kind: native
+    exposure: core
+    aliases: [set normal emission, angular zero, 设置正出射, 角度零点]
+  metadata:peaks.core.metadata.metadata_methods:assign_normal_emission:
+    kind: native
+    exposure: core
+    aliases: [assign normal emission, copy with angular zero, 正出射校准副本, 角度归零副本]
+    docstring_note: In experiment batch work, call raw.metadata.assign_normal_emission(theta_par=record.theta_offset_deg) for each cut and keep the returned copy. Never replace the per-record contract value with a remembered constant, and do not also call the mutating set_normal_emission variant.
+
+  datatree:peaks.core.display.plotting:plot_grid:
+    kind: native
+    exposure: advanced
+    aliases: [figure grid, visualize batch, panel plot, plot a grid of spectra, 绘图, 画图, 批量谱图, 批量画一组谱图, 画一个panel图网格]
+    docstring_note: Call only as the bound DataTree method tree.plot_grid(...) and retain the returned compact Figure; do not import or call a bare/module-level plot_grid. A stem-keyed result dictionary is not a DataTree, so use Matplotlib glue for its compact grid and do not get plot_grid for that workflow. Do not create one figure per record.
+
+  top_level:peaks.core.display.plotting:plot_cut_grid:
+    kind: native
+    exposure: core
+    aliases: [cut grid plot, plot all cuts grid, all-cut grid, panel grid of cuts, 切谱网格图, 全部切谱图, 批量切谱网格]
+    docstring_note: >-
+      Render the compact labeled all-cut grid exactly once with
+      `grid_figure = peaks.plot_cut_grid(result_dict, theta_by_stem)` and leave
+      `grid_figure` as the cell's final expression. The helper fixes the layout
+      in code and closes its own Figure, so it renders once; do not hand-compose
+      Matplotlib grid glue for the batch.
+  top_level:peaks.core.display.plotting:plot_before_after:
+    kind: native
+    exposure: core
+    aliases: [before after comparison, raw vs processed plot, representative comparison, 前后对比图, 代表谱对比图]
+    docstring_note: >-
+      Render the representative raw-versus-processed comparison exactly once with
+      `cmp_figure = peaks.plot_before_after(representative_raw,
+      representative_kcut, rep_stem, theta_by_stem)` and leave `cmp_figure` as
+      the cell's final expression. The helper fixes the layout in code and closes
+      its own Figure, so it renders once; do not hand-compose the two-panel
+      Matplotlib glue.

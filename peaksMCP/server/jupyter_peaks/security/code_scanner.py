@@ -363,6 +363,14 @@ _PATH_METHODS = {"unlink", "write_text", "write_bytes", "rmdir", "rename", "repl
 _PATH_CONSTRUCTORS = {
     "Path", "PosixPath", "WindowsPath", "pathlib.Path", "pathlib.PosixPath", "pathlib.WindowsPath",
 }
+_PATH_READ_METHODS = frozenset({
+    "read_text", "read_bytes", "iterdir", "glob", "rglob",
+})
+_OS_LISTING_CALLS = frozenset({"os.walk", "os.listdir", "os.scandir"})
+_NUMPY_FILE_READ_METHODS = frozenset({
+    "load", "loadtxt", "genfromtxt", "fromfile", "memmap", "open_memmap",
+    "recfromcsv", "recfromtxt",
+})
 _ENV_MUTATORS = {"update", "setdefault", "pop", "popitem", "clear", "__setitem__", "__delitem__"}
 _DYN_BASES = {"globals", "locals", "vars", "__builtins__", "builtins"}
 _INDIRECT_TARGETS = {"exec", "eval", "compile", "__import__"}
@@ -375,10 +383,30 @@ _SYSTEM_METHOD_NAMES = {name.rsplit(".", 1)[-1] for name in _SYSTEM_CALLS} | {"s
 _FILE_WRITERS = {
     "np.save", "numpy.save", "np.savetxt", "numpy.savetxt", "np.savez", "numpy.savez",
     "np.savez_compressed", "numpy.savez_compressed", "plt.imsave", "matplotlib.pyplot.imsave",
-    "pd.to_csv", "pandas.DataFrame.to_csv", "xr.to_netcdf", "xarray.DataArray.to_netcdf",
-    "xarray.Dataset.to_netcdf", "json.dump",
+    "json.dump",
 }
-_FILE_WRITE_METHOD_NAMES = {"save", "savetxt", "savez", "savez_compressed", "imsave", "to_csv", "to_netcdf", "dump", "to_pickle"}
+_FILE_WRITE_METHOD_NAMES = {
+    "save", "savetxt", "savez", "savez_compressed", "imsave", "dump",
+}
+# Methods that only persist when an output path/buffer is supplied.  Without
+# that target, pandas/xarray serializers such as ``to_json()`` and
+# ``to_netcdf()`` return an in-memory value and are safe inside run_cell.
+_TARGETED_FILE_WRITE_METHODS: dict[
+    str, tuple[tuple[int, ...], frozenset[str]]
+] = {
+    "to_csv": ((0,), frozenset({"path_or_buf"})),
+    "to_excel": ((0,), frozenset({"excel_writer"})),
+    "to_feather": ((0,), frozenset({"path"})),
+    "to_hdf": ((0,), frozenset({"path_or_buf"})),
+    "to_json": ((0,), frozenset({"path_or_buf"})),
+    "to_netcdf": ((0,), frozenset({"path"})),
+    "to_parquet": ((0,), frozenset({"path"})),
+    "to_pickle": ((0,), frozenset({"path"})),
+    "to_zarr": ((0, 1), frozenset({"store", "chunk_store"})),
+}
+_ALL_FILE_WRITE_METHOD_NAMES = (
+    _FILE_WRITE_METHOD_NAMES | _TARGETED_FILE_WRITE_METHODS.keys()
+)
 # Constructors that propagate a network origin through aliases
 # (``s = requests.Session(); client = s; client.get(...)``).
 _NETWORK_CLIENTS = {"requests.Session", "requests.sessions.Session", "httpx.Client", "httpx.AsyncClient"}
@@ -432,7 +460,28 @@ def _open_modes(node: ast.Call, mode_position: int = 1) -> str | None:
             if isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str):
                 return classify(keyword.value.value)
             return None  # variable / expression mode
-    return None
+    # Both builtins.open() and pathlib.Path.open() default to read mode when
+    # the caller omits ``mode``.
+    return "r"
+
+
+def _is_direct_file_reader_call(node: ast.Call, name: str, aliases: _Aliases) -> bool:
+    """Whether a Notebook call directly reads or enumerates the filesystem."""
+    method = name.rsplit(".", 1)[-1]
+    root = name.split(".", 1)[0]
+    if name in {"open", "builtins.open", "io.open"}:
+        return _open_modes(node) == "r"
+    if method == "open" and _has_path_origin(_chain(node.func, aliases)):
+        return _open_modes(node, mode_position=0) == "r"
+    if method in _PATH_READ_METHODS and _has_path_origin(_chain(node.func, aliases)):
+        return True
+    if name in _OS_LISTING_CALLS:
+        return True
+    if root in {"pd", "pandas"} and method.startswith("read_"):
+        return True
+    if root in {"xr", "xarray"} and method.startswith("open_"):
+        return True
+    return root in {"np", "numpy"} and method in _NUMPY_FILE_READ_METHODS
 
 
 def _indirect_call_target(node: ast.Call, aliases: _Aliases) -> str | None:
@@ -467,6 +516,38 @@ def _is_savefig(node: ast.Call, aliases: _Aliases) -> bool:
     return any(any(keyword in part for keyword in keywords) for part in chain)
 
 
+def _has_file_write_target(node: ast.Call, method: str) -> bool:
+    """Whether a pandas/xarray writer receives a non-None output target."""
+    positions, keywords = _TARGETED_FILE_WRITE_METHODS[method]
+    for position in positions:
+        if len(node.args) > position:
+            value = node.args[position]
+            if not (isinstance(value, ast.Constant) and value.value is None):
+                return True
+    for keyword in node.keywords:
+        # ``**options`` can hide the target and therefore cannot be treated as
+        # an in-memory-only serialization call.
+        if keyword.arg is None:
+            return True
+        if keyword.arg in keywords and not (
+            isinstance(keyword.value, ast.Constant) and keyword.value.value is None
+        ):
+            return True
+    return False
+
+
+def _is_file_writer_call(node: ast.Call, name: str) -> bool:
+    method = name.rsplit(".", 1)[-1]
+    return (
+        name in _FILE_WRITERS
+        or method in _FILE_WRITE_METHOD_NAMES
+        or (
+            method in _TARGETED_FILE_WRITE_METHODS
+            and _has_file_write_target(node, method)
+        )
+    )
+
+
 def _dangerous_reference(name: str) -> bool:
     """True when a stored alias/attribute target resolves to a dangerous sink."""
     if not name:
@@ -476,7 +557,7 @@ def _dangerous_reference(name: str) -> bool:
     if name in _RAW_FILE_WRITERS or name in _DESERIALIZE_SINKS or name in _FILE_WRITERS:
         return True
     return name.rsplit(".", 1)[-1] in (
-        _SYSTEM_METHOD_NAMES | _PATH_METHODS | _FILE_WRITE_METHOD_NAMES | {"read_pickle"}
+        _SYSTEM_METHOD_NAMES | _PATH_METHODS | _ALL_FILE_WRITE_METHOD_NAMES | {"read_pickle"}
     )
 
 
@@ -584,13 +665,18 @@ def _classify_call(
         consent_issues.append(SecurityIssue("FILE002", _desc("file_mode_unclear"), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
     elif name.endswith(".open") and _has_path_origin(_chain(node.func, aliases)) and _open_modes(node, mode_position=0) == "w":
         issues.append(SecurityIssue("FILE001", _desc("file_modifying_path"), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
+    elif _is_direct_file_reader_call(node, name, aliases):
+        issues.append(SecurityIssue(
+            "FILE004", _desc("file_read_direct", name=name),
+            RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node),
+        ))
     elif _is_path_method_call(node, aliases):
         issues.append(SecurityIssue("SYS001", _desc("path_destructive", name=name), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
     elif _is_env_mutation_call(node, aliases):
         issues.append(SecurityIssue("ENV001", _desc("env_mutation"), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
     elif _is_savefig(node, aliases):
         consent_issues.append(SecurityIssue("SAVE001", _desc("savefig_consent"), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
-    elif name in _FILE_WRITERS or name.rsplit(".", 1)[-1] in _FILE_WRITE_METHOD_NAMES:
+    elif _is_file_writer_call(node, name):
         consent_issues.append(SecurityIssue("SAVE002", _desc("file_write_consent", name=name), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
     target = _indirect_call_target(node, aliases)
     if target:
@@ -602,7 +688,10 @@ def _classify_call(
             issues.append(SecurityIssue("FILE001", _desc("file_modifying_indirect"), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
         elif target == "open" and _open_modes(node) is None:
             consent_issues.append(SecurityIssue("FILE002", _desc("file_mode_unclear_indirect"), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
-        elif target in _FILE_WRITE_METHOD_NAMES:
+        elif target in _FILE_WRITE_METHOD_NAMES or (
+            target in _TARGETED_FILE_WRITE_METHODS
+            and _has_file_write_target(node, target)
+        ):
             consent_issues.append(SecurityIssue("SAVE002", _desc("file_write_consent_indirect", target=target), RiskLevel.HIGH, getattr(node, "lineno", 0), ast.unparse(node)))
 
 

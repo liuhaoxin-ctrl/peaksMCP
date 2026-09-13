@@ -230,6 +230,9 @@ def test_kernelspec_reinstalled_when_remote_permission_changes(monkeypatch, tmp_
     assert status["last_error"] == "_Stop: "
     environment = spawn.call_args.kwargs["env"]
     assert environment["JUPYTER_CONFIG_DIR"] == str(tmp_path / "runtime/jupyter")
+    assert environment["JUPYTER_RUNTIME_DIR"] == str(
+        tmp_path / "runtime/jupyter/runtime"
+    )
     assert environment["PEAKSMCP_HOST"] == "127.0.0.1"
     assert environment["PEAKSMCP_PORT"] == "8123"
     assert environment["PEAKSMCP_AUTOSTART"] == "true"

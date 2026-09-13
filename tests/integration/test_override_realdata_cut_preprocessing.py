@@ -1,13 +1,16 @@
-"""Acceptance: override black-box functions from a raw PXT cut to an inline figure.
+"""Real-data integration for internal conversion, loading and plotting components.
+
+This module is not the public model workflow. It exercises implementation
+components directly so failures can be localized below the five-tool MCP and
+``peaks.pxt2nc`` / ``peaks.load_experiment`` product boundary. The public human
+path is covered by ``tests/e2e/test_e2e_realdata_live.py``.
 
 The workflow mirrors a Jupyter session, not a file-processing pipeline:
 
 1. raw data starts as a ``.pxt`` file (``PEAKSMCP_REALDATA_PXT`` -> the raw
    L112 data folder, e.g. ``.../BP260623/data``);
-2. the override black-box functions are the API surface: ``convert_experiment``
-   (PXT -> NetCDF, the *only* on-disk artifact), ``inspect_experiment`` for the
-   experiment record, and ``plot_validation_pair`` / ``plot_batch`` for
-   figures;
+2. internal conversion and compatibility helpers are tested as components;
+   their presence here does not make them model-facing APIs;
 3. everything after conversion stays in memory — the loader geometry
    (scan.loc=L112, manipulator axes) is provided by our registered L112
    loader, EF + theta offset are attached in memory, ``k_convert`` runs in
@@ -16,7 +19,7 @@ The workflow mirrors a Jupyter session, not a file-processing pipeline:
 4. a second NetCDF is only written when a save is explicitly requested
    (``kd.save(path)``), proving no incidental disk writes happen.
 
-Native ``peaks`` steps (``peaks.load``, ``da.k_convert``) are unavoidable glue:
+Native ``peaks`` steps (``peaks.load``, ``da.k_convert``) provide the scientific path:
 raw PXT geometry comes from the instrument loader, and k-conversion is a peaks
 accessor.  Without the raw folder these tests skip — run them on the machine
 that holds the data (or point ``PEAKSMCP_REALDATA_PXT`` at it).
@@ -33,6 +36,8 @@ import shutil
 from pathlib import Path
 
 import pytest
+
+pytestmark = [pytest.mark.integration, pytest.mark.realdata, pytest.mark.slow]
 
 RAW_PXT_DIR = Path(
     os.environ.get("PEAKSMCP_REALDATA_PXT")
@@ -155,7 +160,7 @@ def test_save_only_happens_when_explicitly_requested(tmp_path):
 def test_experiment_metadata_json_is_consumable_by_override_inspect():
     """translate_datasheet output stays readable through the inspect_experiment
     facade (the raw-document parser is an internal detail of it)."""
-    from peaksMCP.overrides import inspect_experiment
+    from peaksMCP.overrides.inspection import inspect_experiment
 
     summary = inspect_experiment(METADATA_JSON)
     by_index = {row.index: row for row in summary.records}

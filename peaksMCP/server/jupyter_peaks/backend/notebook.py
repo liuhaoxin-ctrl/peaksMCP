@@ -3,10 +3,8 @@
 Object summaries follow a generic protocol so no peaksMCP class gets a
 special case: xarray structures use :func:`summarize_xarray`; numpy arrays
 their shape/dtype; LoadedScans-like indices (anything whose entries carry
-``representation``/``stem`` and that exposes ``stems``) are summarized
-structurally (representations, conversion state, provenance) — never
-classified (classification is inspect_experiment's job); everything else
-falls back to a bounded repr.
+``representation``/``stem`` and that exposes ``stems``) are summarized through
+their combined experiment index; everything else falls back to a bounded repr.
 """
 
 from __future__ import annotations
@@ -224,9 +222,8 @@ def _cap(stems: Any, limit: int = _STEMS_MAX) -> tuple[list[str], bool]:
 def summarize_index(value: Any, *, limit: int = _STEMS_MAX) -> dict[str, Any]:
     """Summarize a LoadedScans-like index through the generic protocol.
 
-    Structural only: representation counts, conversion state and metadata
-    provenance.  Classification (gold/cut/mapping...) is deliberately absent —
-    inspect_experiment is the single owner of that.
+    Structural summary of representation counts, conversion state, metadata
+    provenance, and the compact classification emitted by load_experiment.
     """
     representations: dict[str, int] = {}
     for entry in value.entries:
@@ -361,8 +358,9 @@ class NotebookBackend:
 
         Targets: ``variables`` (listing rows), ``variable`` (one named
         variable), ``kernel`` (live kernel/extension state, including whether
-        the kernel is still busy after a timeout), ``active_cell`` /
-        ``cells`` / ``cell`` (cell identity,
+        the kernel is still busy after a timeout; ``runtime`` is an exact
+        alias), ``active_cell`` /
+        ``cells`` (``notebook`` is an exact alias) / ``cell`` (cell identity,
         source and - when ``with_text_outputs=True`` - the cell's bounded
         TEXT outputs: stream stdout/stderr + text/plain only, capped at
         ~8KB/cell; images and other payloads are never returned, so the
@@ -370,6 +368,10 @@ class NotebookBackend:
         ``detail``: ``summary`` / ``preview``; ``limit``/``offset`` page the
         ``cells`` history.
         """
+        if target == "runtime":
+            target = "kernel"
+        if target == "notebook":
+            target = "cells"
         if target == "variables":
             return self._inspect_variables(detail=detail, limit=limit)
         if target == "variable":
@@ -392,7 +394,8 @@ class NotebookBackend:
                                       with_text_outputs=with_text_outputs)
         raise ValueError(
             f"inspect_notebook: unknown target {target!r}; expected "
-            "variables | variable | active_cell | cells | cell"
+            "variables | variable | kernel (alias: runtime) | active_cell | "
+            "cells (alias: notebook) | cell"
         )
 
     def _inspect_kernel(self, *, detail: str) -> dict[str, Any]:
@@ -401,7 +404,19 @@ class NotebookBackend:
         ``run_cell`` never interrupts the kernel, so the model uses this to see
         whether the timed-out cell is still executing before it retries.
         """
-        return {"target": "kernel", "detail": detail, **self.server_status()}
+        return {
+            "target": "kernel",
+            "detail": detail,
+            **self.server_status(),
+            "next_action": {
+                "action": "search",
+                "instruction": (
+                    "inspect_notebook does not browse files. For an experiment task, "
+                    "call peaksMCP_search once with the full intent and use "
+                    "load_experiment; do not inspect or list the input path."
+                ),
+            },
+        }
 
     def _inspect_variables(self, *, detail: str, limit: int) -> dict[str, Any]:
         limit = max(1, min(int(limit), _LIST_VARIABLES_LIMIT))

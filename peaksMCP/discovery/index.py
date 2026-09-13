@@ -27,68 +27,18 @@ _INDEX_PACKAGE = Path(__file__).resolve().parent.parent
 _ADAPTER_SOURCES = (
     "discovery/index.py",
     "discovery/signatures.py",
-    "config/native_catalog.yaml",
-    "config/override_manifest.yaml",
+    "config/api_catalog.yaml",
     "config/metadata.py",
     "config/metadata_baseline.yaml",
     "server/jupyter_peaks/core/tools.py",
 )
-#: Curated presentation documents: ``native_catalog.yaml`` (v1) carries
-#: upstream aliases/notes for the native tier; ``override_manifest.yaml``
-#: (v5, breaking) is the single manifest of public project APIs — one row per
-#: verb with ``export`` plus the full structured contract.  Project rows are
-#: recognised by their ``export`` key; native rows never carry one, so the two
-#: catalogs cannot be confused inside the merged view.  The retired single-file
-#: config/manifest.yaml is read only as a compatibility fallback when both new
-#: catalogs are absent.
-_NATIVE_CATALOG = "config/native_catalog.yaml"
-_OVERRIDE_MANIFEST = "config/override_manifest.yaml"
-_LEGACY_MANIFEST = "config/manifest.yaml"
-
-#: peaks modules whose entries must never be surfaced by search/get.  The
-#: hvplot-based ``iplot`` accessor is intentionally hidden: "interactive"
-#: intent resolves to the native Qt viewer ``disp`` instead.  The PXT reader
-#: module is hidden too: loading is a single curated verb (``load_data`` in
-#: peaksMCP.overrides), so the raw ``load_pxt`` implementation stays internal.
-_HIDDEN_MODULES = frozenset(
-    {"peaks.core.GUI.iplot.hvplot", "peaksMCP.pxt_utils.loader"}
-)
-
-#: Presentation tiers inside one index: ``override`` marks the peaksMCP
-#: project-added APIs (black-box tier, preferred by search); everything else
-#: is the native ``peaks`` tier.
-TIER_OVERRIDE = "override"
+#: API implementation kinds. Exposure (core/advanced/hidden) is orthogonal.
 TIER_NATIVE = "native"
 
-#: Canonical module for every project (override-tier) API.  Search/get expose
-#: project functions ONLY under ``module:peaksMCP.overrides:<name>``, matching
-#: the manifest ``export`` value.  Every public adapter is importable from the
-#: canonical module, and get verifies that import at runtime; the
-#: implementation module is projection detail and never surfaces.
-CANONICAL_MODULE = "peaksMCP.overrides"
-
-#: Searched-namespace label for the fallback stage: no override name/alias hit
-#: exactly, so the query ranked against the full index (override candidates
-#: plus native).  Reported as ``searched_namespace="mixed"`` — it is no longer
-#: mislabelled as "native" (that word now means the entry tier only).
-TIER_MIXED = "mixed"
-
-#: Minimum relevance that qualifies a stage-1 override hit in the two-tier
-#: search (exact alias tier, 900, and above — i.e. the query equals an
-#: override's canonical name or one of its aliases).  Weaker partial matches
-#: (name/alias substrings, 650-800) intentionally fall through to the native
-#: search so short generic names like ``plot`` are not hijacked by
-#: ``plot_batch``.
-OVERRIDE_MIN_SCORE = 900
-
-#: Stage-1 acceptance for an alias *embedded* in a natural-language sentence
-#: ("帮我加载数据", "which scans are cuts"): the model rarely types the alias
-#: alone, and without this band the override tier was unreachable unless the
-#: agent guessed the exact alias - i.e. the black box only existed when it was
-#: not needed.  Aliases shorter than :data:`OVERRIDE_ALIAS_CONTAINED_MIN_LEN`
-#: are ignored so short generic words cannot hijack the tier.
-OVERRIDE_ALIAS_CONTAINED_SCORE = 720
-OVERRIDE_ALIAS_CONTAINED_MIN_LEN = 4
+#: Acceptance for an alias embedded in a natural-language sentence. Short
+#: aliases are ignored so generic words cannot hijack intent routing.
+ALIAS_CONTAINED_SCORE = 720
+ALIAS_CONTAINED_MIN_LEN = 4
 
 #: Full-tree fingerprint checks are expensive (an os.walk over every Peaks +
 #: peaksMCP source file).  ``ApiIndex.is_stale()`` runs on every search and
@@ -386,14 +336,6 @@ def scan_modules(
     return entries
 
 
-def _read_config_document(path: Path) -> dict[str, Any]:
-    """Parse one curated YAML document; an unreadable file yields {}."""
-    try:
-        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError):
-        return {}
-
-
 def _load_document_checked(path: Path) -> dict[str, Any]:
     """Parse one curated document strictly for the default configuration.
 
@@ -415,122 +357,24 @@ def _load_document_checked(path: Path) -> dict[str, Any]:
 _CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
 
 
-def load_overrides(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
-    """Load the curated catalogs and return the merged presentation view.
+def load_catalog(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
+    """Load and strictly validate the single canonical API catalog."""
+    catalog_path = Path(path) if path is not None else _CONFIG_DIR / "api_catalog.yaml"
+    document = _load_document_checked(catalog_path)
+    from peaksMCP.config.schema import validate_api_catalog
 
-    Two catalogs share one key space but are distinguishable per row:
-    ``config/native_catalog.yaml`` (v1) holds native-tier presentation
-    (aliases/notes for upstream peaks names — no ``export`` key), while
-    ``config/override_manifest.yaml`` (v5, breaking) holds one row per public
-    project API (``export`` + full contract).  Rows are identified by the
-    presence of ``export``; native rows never carry one.
-
-    Parameters
-    ----------
-    path : str or os.PathLike, optional
-        Explicit override file to read (any legacy shape, including the
-        retired single-file ``config/manifest.yaml``, parsed leniently).
-        When omitted, the merged view of both new catalogs is returned
-        after strict schema validation; the legacy single file is read as
-        a compatibility fallback only when both new catalogs are absent.
-
-    Returns
-    -------
-    dict
-        Merged document with ``version`` and ``apis`` (native rows merged
-        with project rows; a name collision resolves to the v5 project row).
-
-    Raises
-    ------
-    ValueError
-        When the default configuration is damaged (duplicate keys, malformed
-        YAML or schema violations) — loud failure beats an empty catalog.
-    """
-    if path is not None:
-        return _read_config_document(Path(path))
-    try:
-        native = _load_document_checked(_CONFIG_DIR / "native_catalog.yaml")
-        overrides = _load_document_checked(_CONFIG_DIR / "override_manifest.yaml")
-    except OSError:
-        # Compatibility: pre-split checkouts ship only the single file.
-        legacy = _read_config_document(_CONFIG_DIR / "manifest.yaml")
-        if legacy:
-            return legacy
-        return {}
-    from peaksMCP.config.schema import validate_documents
-
-    errors = validate_documents(native, overrides)
+    errors = validate_api_catalog(document)
     if errors:
         raise ValueError("curated config invalid:\n- " + "\n- ".join(errors))
-    merged: dict[str, Any] = {"version": overrides.get("version", 4)}
-    merged_apis: dict[str, Any] = {}
-    for document in (native, overrides):
-        merged_apis.update(document.get("apis") or {})
-    merged["apis"] = merged_apis
-    return merged
+    return document
 
 
-def load_api_overrides(path: str | os.PathLike[str] | None = None) -> dict[str, dict[str, Any]]:
-    """Return the per-API presentation entries, keyed by API name.
-
-    Project rows (from the v5 manifest) carry ``export`` plus the structured
-    contract (``summary``/``inputs``/``returns``/``preconditions``/
-    ``side_effects``/``errors``/``example``).  Native rows carry only
-    presentation keys (``aliases``/notes).  Callers distinguish the two by
-    the presence of ``export`` — see :func:`load_project_added`.
-
-    Parameters
-    ----------
-    path : str or os.PathLike, optional
-        Explicit override file to read; defaults to the merged
-        native/override catalogs (see :func:`load_overrides`).
-
-    Returns
-    -------
-    dict of dict
-        Mapping of API name to its curated configuration.
-
-    Examples
-    --------
-    >>> "load_data" in load_api_overrides()
-    True
-    """
-    entries = load_overrides(path).get("apis") or {}
-    return {str(name): dict(config or {}) for name, config in entries.items()}
-
-
-def load_project_added(path: str | os.PathLike[str] | None = None) -> set[str]:
-    """Return the canonical ids this project adds to the API.
-
-    Derived from the ``export`` key in ``config/override_manifest.yaml``
-    (v5): every row whose export is ``peaksMCP.overrides.<name>`` is exposed
-    under exactly ``module:peaksMCP.overrides:<name>``.  The audited exposure
-    record therefore cannot drift from the contract that sits next to it.
-    :func:`build_index` marks every matching entry with ``project_added=True``
-    so callers can tell project code from upstream.
-
-    Parameters
-    ----------
-    path : str or os.PathLike, optional
-        Explicit override file to read; defaults to the merged
-        native/override catalogs (see :func:`load_overrides`).
-
-    Returns
-    -------
-    set of str
-        Canonical ids such as ``module:peaksMCP.overrides:load_data``.
-        Native-catalog rows (no ``export``) are never included.
-
-    Examples
-    --------
-    >>> "module:peaksMCP.overrides:plot_batch" in load_project_added()
-    True
-    """
-    return {
-        f"module:{CANONICAL_MODULE}:{name}"
-        for name, config in load_api_overrides(path).items()
-        if config.get("export")
-    }
+def load_api_catalog(
+    path: str | os.PathLike[str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Return catalog rows keyed by exact canonical API id."""
+    entries = load_catalog(path).get("apis") or {}
+    return {str(canonical_id): dict(config or {}) for canonical_id, config in entries.items()}
 
 
 def _merge_duplicates(entries: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -548,7 +392,7 @@ def _merge_duplicates(entries: Iterable[dict[str, Any]]) -> list[dict[str, Any]]
 
 
 def build_index() -> ApiIndex:
-    """Build the complete live API index for the installed Peaks package.
+    """Build the curated model API index against the installed Peaks package.
 
     Returns
     -------
@@ -564,72 +408,70 @@ def build_index() -> ApiIndex:
     import peaks
 
     package_dir = os.path.dirname(peaks.__file__)
-    # Native tier: the installed Peaks package is the ONLY dynamically
-    # scanned source (runtime descriptors + AST over the peaks package).
-    entries = _merge_duplicates([*scan_runtime(), *scan_modules(package_dir)])
-
-    # Project tier: the curated manifest (v5) is the single source.  Every
-    # public adapter is constructed statically - no AST scan of peaksMCP, no
-    # canonical projection, no legacy ids.  The full structured contract
-    # rides on the entry so get can render it without source access.
-    project_entries: list[dict[str, Any]] = []
-    for name, config in load_api_overrides().items():
-        # Only v5 manifest rows (carrying ``export``) become project entries;
-        # native-catalog presentation rows are injected below instead.
-        if not config.get("export"):
-            continue
-        summary = str(config.get("summary") or "")
-        contract = {
-            key: config.get(key)
-            for key in (
-                "summary", "inputs", "returns", "preconditions",
-                "side_effects", "errors", "example",
-            )
-            if config.get(key) is not None
-        }
-        project_entries.append(
-            {
-                "id": f"module:{CANONICAL_MODULE}:{name}",
-                "scope": "module",
-                "module": CANONICAL_MODULE,
+    scanned = {
+        str(item["id"]): item
+        for item in _merge_duplicates([*scan_runtime(), *scan_modules(package_dir)])
+    }
+    entries: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for canonical_id, config in load_api_catalog().items():
+        catalog_kind = str(config["kind"])
+        exposure = str(config["exposure"])
+        if catalog_kind == "native":
+            discovered = scanned.get(canonical_id)
+            if discovered is None:
+                missing.append(canonical_id)
+                continue
+            item = dict(discovered)
+            item["project_added"] = False
+        else:
+            scope, module, name = canonical_id.split(":", 2)
+            summary = str(config.get("summary") or "")
+            item = {
+                "id": canonical_id,
+                "scope": scope,
+                "module": module,
                 "name": name,
                 "kind": "function",
                 "func_name": name,
                 "summary": summary,
                 "docstring": summary,
-                "aliases": [str(value) for value in (config.get("aliases") or [])],
-                "exposure": str(config.get("exposure") or "facade"),
-                "tier": TIER_OVERRIDE,
                 "project_added": True,
-                "contract": contract,
-                "export": str(config.get("export") or f"{CANONICAL_MODULE}.{name}"),
+                "contract": {
+                    key: config.get(key)
+                    for key in (
+                        "summary",
+                        "inputs",
+                        "returns",
+                        "preconditions",
+                        "side_effects",
+                        "errors",
+                        "example",
+                    )
+                },
+                "export": str(config["export"]),
             }
+        item["aliases"] = sorted(
+            set([*item.get("aliases", []), *(str(value) for value in config.get("aliases") or [])])
         )
-    entries = [*entries, *project_entries]
-
-    # Native alias/docstring-note injection (project entries carry their own
-    # aliases and structured contract already).
-    api_overrides = load_api_overrides()
-    for item in entries:
-        if item.get("project_added"):
-            continue
-        names = {item["name"], item["id"]}
-        item_aliases: list[str] = []
-        note: str | None = None
-        for key, config in api_overrides.items():
-            if config.get("export"):
-                continue
-            if key in names or key.lower() == str(item["name"]).lower():
-                item_aliases.extend(str(value) for value in config.get("aliases") or [])
-                if config.get("docstring_note"):
-                    note = str(config["docstring_note"])
-        if note is not None:
-            item["docstring_note"] = note
-        item["aliases"] = sorted(set([*item.get("aliases", []), *item_aliases]))
-        item["tier"] = TIER_NATIVE
+        if config.get("docstring_note"):
+            item["docstring_note"] = str(config["docstring_note"])
+        item["catalog_kind"] = catalog_kind
+        item["tier"] = catalog_kind
+        item["exposure"] = exposure
+        if exposure != "hidden":
+            entries.append(item)
+    if missing:
+        raise ValueError(
+            "api_catalog native canonical id(s) missing from installed peaks: "
+            + ", ".join(sorted(missing))
+        )
     fingerprint = source_fingerprint()
-    entries = [item for item in entries if item.get("module") not in _HIDDEN_MODULES]
-    return ApiIndex(entries=entries, peaks_version=getattr(peaks, "__version__", "?"), fingerprint=fingerprint)
+    return ApiIndex(
+        entries=sorted(entries, key=lambda item: str(item["id"])),
+        peaks_version=getattr(peaks, "__version__", "?"),
+        fingerprint=fingerprint,
+    )
 
 
 def _alias_contained(query: str, query_tokens: set[str], aliases: list[str]) -> bool:
@@ -639,11 +481,11 @@ def _alias_contained(query: str, query_tokens: set[str], aliases: list[str]) -> 
     the CJK/latin boundary moved, e.g. the alias ``哪些是cut`` against the query
     "哪些是 cut" — so the check accepts a raw substring *or* full token coverage
     of the alias.  Aliases shorter than the minimum length are skipped: a short
-    word inside a sentence is not intent evidence, and the override tier must
-    not hijack generic queries.
+    word inside a sentence is not intent evidence and must not hijack generic
+    queries.
     """
     for alias in aliases:
-        if len(alias) < OVERRIDE_ALIAS_CONTAINED_MIN_LEN:
+        if len(alias) < ALIAS_CONTAINED_MIN_LEN:
             continue
         if alias in query:
             return True
@@ -673,9 +515,7 @@ def _rank_entries(
     Scores mirror the search contract: exact name 1000, exact alias 900,
     name-prefix 800, alias-contained-in-the-sentence 720 (the natural-language
     band), name-substring 700, alias-substring 650, then the token-overlap
-    fallback.  Each row carries its match kind so the override tier can accept
-    the alias band without lowering the name thresholds. ``tier`` restricts the candidate set to ``all`` /
-    :data:`TIER_OVERRIDE` / :data:`TIER_NATIVE`.
+    fallback. ``tier`` optionally restricts the candidate set by catalog kind.
 
     Exposure gating: ``advanced`` entries (the curated low-level layer) are
     excluded unless the query hits them exactly (score >= 900) or
@@ -685,11 +525,11 @@ def _rank_entries(
     qtokens = _tokens(query)
     scored: list[tuple[int, str, dict[str, Any], str]] = []
     for item in entries:
+        if item.get("exposure") == "hidden":
+            continue
         if scope != "all" and item["scope"] != scope:
             continue
-        if tier == TIER_OVERRIDE and not item.get("project_added"):
-            continue
-        if tier == TIER_NATIVE and item.get("project_added"):
+        if tier != "all" and item.get("catalog_kind", item.get("tier")) != tier:
             continue
         name = str(item.get("name", "")).lower()
         module = str(item.get("module", "")).lower()
@@ -705,7 +545,7 @@ def _rank_entries(
         elif query in name:
             score, match = 700, "name_substring"
         elif _alias_contained(query, qtokens, aliases):
-            score, match = OVERRIDE_ALIAS_CONTAINED_SCORE, "alias_contained"
+            score, match = ALIAS_CONTAINED_SCORE, "alias_contained"
         elif any(query in alias or alias in query for alias in aliases):
             score, match = 650, "alias_partial"
         else:
@@ -772,15 +612,13 @@ def _filter_entries(
     """
 
     def keep(entry: dict[str, Any]) -> bool:
+        if entry.get("exposure") == "hidden":
+            return False
         if scope != "all" and entry["scope"] != scope:
             return False
         if not include_advanced and entry.get("exposure") == "advanced":
             return False
-        if tier == TIER_OVERRIDE:
-            return bool(entry.get("project_added"))
-        if tier == TIER_NATIVE:
-            return not entry.get("project_added")
-        return True
+        return tier == "all" or entry.get("catalog_kind", entry.get("tier")) == tier
 
     return [entry for entry in entries if keep(entry)]
 
@@ -801,7 +639,7 @@ def _compact_entry(item: dict[str, Any], score: int | None = None) -> dict[str, 
         "module": item.get("module"),
         "scope": item.get("scope"),
         "tier": item.get("tier")
-        or (TIER_OVERRIDE if item.get("project_added") else TIER_NATIVE),
+        or str(item.get("catalog_kind") or TIER_NATIVE),
         "exposure": item.get("exposure"),
         "summary": summary[:160],
         "score": score,
@@ -847,9 +685,7 @@ def search_index(
     limit : int, default 5
         Maximum number of unique results, clamped to 1 through 20.
     tier : str, default "all"
-        Optional ``"all"`` / ``"override"`` / ``"native"`` candidate filter.
-        The model-facing two-stage behaviour lives in
-        :func:`search_index_tiered`.
+        Optional ``"all"`` / ``"native"`` / ``"facade"`` kind filter.
 
     Returns
     -------
@@ -884,21 +720,12 @@ def search_index_tiered(
     *,
     include_advanced: bool = False,
 ) -> tuple[str, list[dict[str, Any]]]:
-    """Two-stage override-first search used by the MCP search tool.
-
-    Stage 1 ranks only the override tier. If its best hit reaches
-    :data:`OVERRIDE_MIN_SCORE` (the query equals an override's canonical name
-    or one of its aliases), the override matches are returned alone under
-    searched-namespace ``override``. Otherwise the search falls back to the
-    full index under ``mixed`` — override candidates plus native peaks APIs
-    are ranked together (this is a mixed namespace, not a native-only list).
-    An empty query lists the whole index under ``all``.
+    """Search the single curated namespace and return its namespace label.
 
     Returns
     -------
     tuple of (str, list of dict)
-        Searched-namespace label (``override`` / ``mixed`` / ``all``) followed
-        by the best matching records.
+        Searched-namespace label (``catalog`` / ``all``) and matching records.
     """
     if scope not in _SCOPES:
         raise ValueError(f"invalid scope {scope!r}; expected one of {sorted(_SCOPES)}")
@@ -909,15 +736,7 @@ def search_index_tiered(
             _compact_entry(item)
             for item in _filter_entries(entries, scope, "all", include_advanced=include_advanced)[:limit]
         ]
-    override_rows = _rank_entries(
-        entries, query, scope, TIER_OVERRIDE, include_advanced=include_advanced
-    )
-    if override_rows and (
-        override_rows[0][0] >= OVERRIDE_MIN_SCORE
-        or override_rows[0][3] == "alias_contained"
-    ):
-        return TIER_OVERRIDE, _compact_rows(override_rows, limit)
-    return TIER_MIXED, _compact_rows(
+    return "catalog", _compact_rows(
         _rank_entries(entries, query, scope, "all", include_advanced=include_advanced),
         limit,
     )
@@ -942,13 +761,7 @@ class ApiIndex:
         *,
         include_advanced: bool = False,
     ) -> list[dict[str, Any]]:
-        """Two-tier override-first search; returns compact entries only.
-
-        Override (peaksMCP project) APIs win whenever the query exactly matches
-        one of their names or aliases; otherwise the full index is searched.
-        Advanced entries surface only on exact hits or when
-        ``include_advanced=True``.  See :meth:`search_tiered` for the label.
-        """
+        """Search the curated model surface; returns compact entries only."""
         return search_index_tiered(
             self.entries, query, scope, limit, include_advanced=include_advanced
         )[1]
@@ -961,12 +774,7 @@ class ApiIndex:
         *,
         include_advanced: bool = False,
     ) -> tuple[str, list[dict[str, Any]]]:
-        """Two-stage override-first search with the searched-namespace label.
-
-        Returns a ``(searched_namespace, matches)`` pair where the label is
-        ``"override"`` (query hit an override name/alias exactly), ``"mixed"``
-        (fell back to the full index) or ``"all"`` (empty query).
-        """
+        """Search with a ``catalog``/``all`` namespace label."""
         return search_index_tiered(
             self.entries, query, scope, limit, include_advanced=include_advanced
         )
@@ -976,7 +784,7 @@ class ApiIndex:
 
         Strict division of labour with :meth:`search`: search returns compact
         rows (canonical id, name, tier, one-line summary); get accepts only
-        such a canonical id (e.g. ``module:peaksMCP.overrides:show_mapping_slice``)
+        such a canonical id (e.g. a ``dataarray:peaks...:k_convert`` id)
         and returns the internal entry for detail lookup.  Bare names, search
         aliases and legacy implementation ids are refused — a caller that has
         only a name or alias must search first.

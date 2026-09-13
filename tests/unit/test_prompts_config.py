@@ -28,7 +28,7 @@ def test_prompts_yaml_exposes_all_runtime_groups():
         "api_check_rule",
     ):
         assert unsafe[key], f"missing notebook_unsafe prompt {key!r}"
-    assert "override" in unsafe["api_check_rule"].lower()
+    assert "cataloged peaks apis" in unsafe["api_check_rule"].lower()
 
 
 # (snippet, expected rule, prompt key, formatting values) — ties the wording
@@ -37,6 +37,7 @@ def test_prompts_yaml_exposes_all_runtime_groups():
 _SCANNER_CASES = [
     ("import os\nos.system('whoami')", "SYS001", "sys_destructive", {"name": "os.system"}),
     ("import subprocess\nsubprocess.run(['ls'])", "CAP001", "cap_sandbox_via", {"name": "subprocess.run"}),
+    ("import os\nos.listdir('.')", "FILE004", "file_read_direct", {"name": "os.listdir"}),
     ("import matplotlib.pyplot as plt\nplt.savefig('o.png')", None, None, {}),
     ("import numpy as np\nx = np.array([1, 2])", None, None, {}),
     ("!ls", "IPY001", "ipy_shell", {}),
@@ -74,13 +75,113 @@ def test_server_instructions_are_delivered_from_prompts_yaml():
     assert _SERVER_INSTRUCTIONS == template
     assert template.startswith("peaksMCP operating contract")
     assert "Use only these five tools: search, get, inspect_notebook, run_cell, and\n  save_with_consent" in template
-    assert template.index("use search, then get") < template.index("Pass the proven ids")
-    assert template.index("begin with load_data") < template.index("then inspect_experiment")
+    assert template.index("Search once with") < template.index("Before submitting any run_cell")
+    assert template.index("Start with load_experiment") < template.index("call pxt2nc")
+    assert "do not get the same\n  canonical id twice" in template
     assert 'cell_type="markdown"' in template
     assert "A run_cell timeout is not cancellation" in template
-    assert "run_cell is never a persistence path" in template
+    assert "run_cell is not a general persistence path" in template
     assert 'receipt status is "saved"' in template
-    assert "fit_gold" not in template  # task-specific science belongs to the skill/prompt
+    assert "gold.fit_gold(show=False, quiet=True)" in template
+    assert "Never stringify either mapping" in " ".join(template.split())
+    assert "start_eV/stop_eV/lower_points/upper_points" in template
+    assert "treat total_points as an energy" in template
+    assert 'gold_fit.attrs["figure"]' in template
+    assert "k_convert(..., quiet=True)" in template
+    assert "plt.close(fig)" in template
+    assert "never a defensive getattr" in template
+
+
+def test_server_instructions_match_exact_live_tool_argument_names():
+    template = " ".join(prompts()["server_instructions"].split())
+
+    for call_shape in (
+        "search(query=...)",
+        "get(canonical_id=...)",
+        "inspect_notebook(target=...)",
+        'run_cell(code=..., api_ids=[...], cell_type="code")',
+        "save_with_consent(variable_name=..., path=...)",
+    ):
+        assert call_shape in template
+    assert "Never substitute id for canonical_id, source for code, or regex for query" in template
+    assert 'run_cell(code=TEXT, cell_type="markdown")' in template
+    assert "Never pass code_language, language, or any other key" in template
+
+
+def test_server_instructions_reject_round_one_redundant_exploration():
+    template = " ".join(prompts()["server_instructions"].lower().split())
+
+    assert "single-letter" in template
+    assert "broad catalog enumeration" in template
+    assert "repository files, docs, prompts, or skills" in template
+    assert "get only api ids you will call" in template
+    assert "before submitting any run_cell" in template
+    assert "including calls inside loops or batches" in template
+    assert "a search result or an api_ids entry is not proof" in template
+    assert "never use a rejected run_cell as api discovery" in template
+    assert "at most three non-empty stdout lines" in template
+    assert "do not immediately inspect that cell" in template
+    assert "capture representative_raw before normal-emission assignment" in template
+    assert "representative_kcut from that same single batch loop" in template
+    assert "never reload a scan or repeat a scientific call solely for validation" in template
+    assert "from peaks import load_experiment" in template
+    assert "non-empty needs_conversion" in template
+    assert "coordinate `.values`" in template
+    assert "every processed stem" in template
+    assert "experimentconflict has exactly four public fields" in template
+    assert "do not add a separate inventory-only cell" in template
+    assert "do not search/get plot_grid" in template
+    assert "one value per stem" in template
+    assert "gold=selected_stem (index selected_index)" in template
+    assert 'saying only "gold scan fitted once" is incomplete' in template
+    assert 'print("processed_stems=" + ",".join(sorted(result_dict)))' in template
+    assert "copy the complete returned `processed_stems=...` token verbatim" in template
+    assert "never infer consecutive stems from the processed count" in template
+    assert "never wrap discovery or proof calls in mcpscript" in template
+    assert "theta_offset=value deg from record.theta_offset_deg" in template
+    assert "naming `record.theta_offset_deg` without its value is incomplete" in template
+
+
+def test_task_prompts_require_numeric_theta_value_with_exact_record_source():
+    root = Path(__file__).resolve().parents[2]
+    common = (root / "benchmark/prompts/common.txt").read_text(encoding="utf-8")
+    tool_aware = (root / "benchmark/prompts/p2_tool_aware.txt").read_text(encoding="utf-8")
+
+    for raw_prompt in (common, tool_aware):
+        prompt = " ".join(raw_prompt.split())
+        assert "theta_offset=VALUE deg from record.theta_offset_deg" in prompt
+        assert "replacing VALUE with the observed number" in prompt
+
+
+def test_task_prompts_require_the_selected_gold_identifier():
+    root = Path(__file__).resolve().parents[2]
+    paths = (
+        root / "benchmark/prompts/common.txt",
+        root / "benchmark/prompts/p2_tool_aware.txt",
+    )
+
+    for path in paths:
+        prompt = " ".join(path.read_text(encoding="utf-8").split())
+        assert "gold=SELECTED_STEM (index SELECTED_INDEX)" in prompt
+        assert '"gold scan fitted once"' in prompt
+
+
+def test_task_prompts_require_live_processed_stem_receipt_reuse():
+    root = Path(__file__).resolve().parents[2]
+    paths = (
+        root / "benchmark/prompts/common.txt",
+        root / "benchmark/prompts/p2_tool_aware.txt",
+    )
+
+    for path in paths:
+        prompt = " ".join(path.read_text(encoding="utf-8").split())
+        assert "exactly one" in prompt
+        assert "processed_stems=" in prompt
+        assert "sorted" in prompt
+        assert "three stdout lines" in prompt
+        assert "200 characters" in prompt
+        assert "verbatim" in prompt
+        assert "consecutive" in prompt
 
 
 def test_active_prompt_surfaces_do_not_name_retired_tools():
@@ -91,6 +192,7 @@ def test_active_prompt_surfaces_do_not_name_retired_tools():
         "benchmark/prompts/common.txt",
         "benchmark/prompts/p1_goal_only.txt",
         "benchmark/prompts/p2_tool_aware.txt",
+        "benchmark/prompts/u1_natural_2d.txt",
         "claude_plugin/skills/cut-preprocessing/SKILL.md",
     ):
         texts.append((root / relative).read_text(encoding="utf-8"))

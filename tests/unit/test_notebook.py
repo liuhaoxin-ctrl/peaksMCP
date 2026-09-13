@@ -112,7 +112,7 @@ def test_loaded_scans_surfaces_through_the_generic_index_protocol():
     classification): representation counts, conversion state and provenance.
     The notebook is the shared context and the agent needs programmatic
     situation awareness (is the required data already loaded?)."""
-    from peaksMCP.overrides import LoadedScans, ScanEntry
+    from peaksMCP.overrides.load import LoadedScans, ScanEntry
 
     exp = LoadedScans(
         [
@@ -175,7 +175,7 @@ def test_index_protocol_works_for_any_object_without_imports():
 
 
 def test_inspect_notebook_targets_and_details_are_bounded():
-    from peaksMCP.overrides import LoadedScans, ScanEntry
+    from peaksMCP.overrides.load import LoadedScans, ScanEntry
 
     exp = LoadedScans(
         [ScanEntry(stem="BP_0015", path="/d/BP_0015.nc", representation="netcdf",
@@ -436,6 +436,10 @@ def test_kernel_target_reports_busy_state_for_timeout_recovery():
     assert idle["target"] == "kernel"
     assert idle["kernel_state"] == "idle"
     assert idle["kernel_busy_s"] is None
+    assert idle["next_action"]["action"] == "search"
+    assert "does not browse files" in idle["next_action"]["instruction"]
+    assert "peaksMCP_search" in idle["next_action"]["instruction"]
+    assert "load_experiment" in idle["next_action"]["instruction"]
 
     state.mark_busy()
     busy = backend.inspect("kernel")
@@ -445,3 +449,27 @@ def test_kernel_target_reports_busy_state_for_timeout_recovery():
 
     state.mark_idle()
     assert backend.inspect("kernel")["kernel_state"] == "idle"
+
+
+def test_runtime_is_an_exact_alias_for_kernel_without_weakening_target_validation():
+    backend = NotebookBackend(SharedState(FakeIPython({})))
+
+    runtime = backend.inspect("runtime")
+    assert runtime["target"] == "kernel"
+    assert runtime["kernel_state"] == "idle"
+
+    for unknown in ("runtim", "Runtime", " runtime "):
+        with pytest.raises(
+            ValueError,
+            match=r"unknown target .*kernel \(alias: runtime\)",
+        ):
+            backend.inspect(unknown)
+
+
+def test_notebook_is_an_exact_alias_for_cells():
+    backend = NotebookBackend(SharedState(FakeIPython({})))
+
+    notebook = backend.inspect("notebook")
+
+    assert notebook["target"] == "cells"
+    assert notebook["cells"] == []

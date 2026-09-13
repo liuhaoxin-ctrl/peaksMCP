@@ -3,16 +3,28 @@ tools:
   search:
     title: Search Peaks API
     description: >
-      MUST be called before writing any Peaks analysis code. Search is
-      two-tier and override-first: the peaksMCP override APIs (this project's
-      high-level verbs) are searched first and returned alone whenever the
-      query hits one of them by exact name or alias; only when no override
-      fits does search fall back to the native peaks API index. Each response
-      reports searched_namespace ("override" | "mixed"), match_mode
+      MUST be called before writing any Peaks analysis code. Search covers the
+      single curated peaks API catalog; APIs discovered dynamically but not
+      cataloged are hidden. Core APIs participate in normal search. Advanced
+      APIs require an exact name/alias or include_advanced=true, and hidden
+      APIs are never returned. Each response reports searched_namespace
+      ("catalog" | "all"), match_mode
       (exact_name | exact_alias | fuzzy | list) and a score per hit. Rows are
       deliberately compact and black-box: canonical id, name, tier, exposure
       and a one-line summary - never docstrings, aliases or source paths.
-      Call get with the returned canonical id for the full contract.
+      Submit one descriptive full-intent query, for example "preprocess all 2D
+      data", and follow the matching entrypoint contract. Empty, wildcard,
+      regex, single-letter, and broad catalog enumeration queries are not API
+      discovery. Do not inspect repository files, docs, prompts, or skills for
+      a recipe when the catalog answers the task. Each response marks every
+      match as needs_get or already_proven, includes the compact
+      session_proof_ledger, and supplies one next_action. Follow that action;
+      call search/get directly and never through mcpScript or another client
+      batch helper, so an opaque wrapper response cannot trigger a duplicate
+      retry. Never get an already-proven id. session_proof_ledger belongs to the
+      current live kernel: it is shared across MCP clients, survives an MCP
+      extension/server restart in that kernel, and is empty in a fresh kernel.
+      A fingerprint-changing API-index refresh clears stale proofs.
   get:
     title: Get Peaks API
     description: >
@@ -20,29 +32,43 @@ tools:
       input form is accepted (bare names and aliases are refused; search
       first). Returns the runtime-verified signature and the structured
       contract (inputs/returns/preconditions/side_effects/errors/example)
-      for override APIs; never source paths. A successful get also records
+      for facade APIs and source-backed details for native APIs; never source
+      paths. A successful get also records
       the canonical proof in the run ledger: run_cell executes an exact-name
       Peaks call only after its canonical id was fetched here with a
-      matching scope when the receiver type is known.
+      matching scope when the receiver type is known. One successful proof is
+      valid for the current live kernel. Get only API IDs you will call; do not fetch
+      speculative helpers or the same canonical id again. The response places
+      proof_status, session_proof_ledger, and the sole next_action before the
+      full contract so the current proof state remains visible.
   inspect_notebook:
-    title: Inspect Notebook
+    title: Inspect Notebook and Runtime Status
     description: >
-      Inspect the live notebook through the generic object-summary protocol
+      Inspect Notebook content or runtime status. target="kernel" reports
+      Jupyter, kernel, MCP extension, Comm and API-index readiness; use it for
+      the initial peaksMCP health check. It does not browse files; use a
+      cataloged Peaks loader for experiment paths. Other targets use the generic
+      object-summary protocol
       (bounded; raw cell outputs are NEVER returned - they travel exactly
       once, settled inside the run_cell reply). target discriminates:
       "variables" (namespace rows), "variable" (one named variable - pass
       variable_name), "kernel" (live kernel state: busy/idle, so a timed-out
-      cell can be checked before retrying), "active_cell" (current cell
+      cell can be checked before retrying; exact alias: "runtime"),
+      "active_cell" (current cell
       identity/source metadata),
       "cells" (bounded trailing notebook history - tail + pagination via
-      limit/offset) or "cell" (one cell by id or index - pass cell). detail
+      limit/offset; "notebook" is an exact alias for "cells") or "cell" (one
+      cell by id or index - pass cell). detail
       selects "summary" (one bounded line per item) or "preview"
       (structural detail: xarray dims/sizes/dtype/units/lazy state,
-      LoadedScans-like indices report representation counts and conversion
-      state - never classification, which belongs to inspect_experiment;
+      experiment indices report representation counts, conversion state, and
+      the classification produced by load_experiment;
       bounded sources for history rows). with_text_outputs=True returns each
       cell's bounded TEXT outputs (streams + text/plain only, ~8KB cap) -
-      images are never returned by any target.
+      images are never returned by any target. Do not immediately re-read a
+      successful run_cell: its settled bounded output was already returned.
+      Re-read a cell only after truncation, or inspect kernel state after a
+      timeout; use target="variable" for new structural questions.
   run_cell:
     title: Run Cell
     description: >
@@ -51,12 +77,41 @@ tools:
       every Peaks API reference against the live index and executes the cell;
       exact-name calls require a matching canonical id fetched with get and
       declared through api_ids (scope is strict when the receiver type is
-      known). cell_type="markdown" appends a non-executed
-      narrative or final summary and does not accept api_ids. Code cells are
-      NEVER a persistence path: file writers are hard-blocked; persist results
-      with save_with_consent and PXT conversion with convert_experiment. Code
+      known). For a non-executed narrative or final summary use exactly
+      run_cell(code=TEXT, cell_type="markdown"): omit api_ids and never pass
+      code_language or language because cell_type is the sole selector. Code cells are
+      not a general persistence path: file writers are hard-blocked; persist
+      results with save_with_consent. The cataloged pxt2nc call owns the sole
+      automatic NetCDF cache exception. Code
       responses include the cell identity, normalised errors/figure markers,
       and bounded stdout signals; notebook text remains the shared record.
+      A successful response is settled; do not immediately inspect that cell.
+      Never use a code cell to enumerate the repository or read its docs,
+      prompts, skills, or experiment datasheet for workflow discovery. Use
+      search/get and the ExperimentIndex contract. The exact argument is
+      code=..., never source=.... Emit at most three non-empty stdout lines per
+      cell, each at most 200 characters, by aggregating batch counts/ranges.
+      Never print a
+      complete array or coordinate `.values`, attrs mapping, or one line per
+      record; report count/min/max/step instead. Do not print text after the
+      first figure. In batch work pass quiet=True to progress-producing Peaks
+      APIs. Render exactly three static figures: the gold diagnostic, one
+      compact grid containing every cut, and one representative before/after
+      comparison. Put each figure in its own cell; close Matplotlib glue
+      figures before leaving the figure as the final expression so the inline
+      backend cannot flush a duplicate. End the single batch with exactly one
+      live-key receipt: print("processed_stems=" +
+      ",".join(sorted(result_dict))), substituting the actual result dictionary;
+      keep total stdout within three lines and each line within 200 characters.
+      End with a Markdown summary naming the final variable and copying the
+      complete returned processed_stems=... token verbatim; never infer
+      consecutive stems from the count. Also report the cache or preconverted
+      decision, validation figures, and failed/unprocessed items (state none
+      explicitly). Identify the selected gold as gold=SELECTED_STEM (index
+      SELECTED_INDEX), replacing both placeholders with observed values; "gold
+      scan fitted once" alone is incomplete. State the numeric angular correction together with its exact
+      source, for example theta_offset=VALUE deg from record.theta_offset_deg;
+      a source field without its observed value is incomplete.
   save_with_consent:
     title: Save Variable With Consent
     description: >

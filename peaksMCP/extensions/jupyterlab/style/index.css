@@ -1,0 +1,13 @@
+/*
+ * Keep verbose textual results readable without changing notebook output data.
+ * MIME-specific selectors leave figures and rich HTML at their natural size.
+ */
+.jp-Notebook .jp-OutputArea-output.jp-RenderedText[data-mime-type='text/plain'],
+.jp-Notebook
+  .jp-OutputArea-output.jp-RenderedText[data-mime-type='application/vnd.jupyter.stdout'],
+.jp-Notebook
+  .jp-OutputArea-output.jp-RenderedText[data-mime-type='application/vnd.jupyter.stderr'] {
+  max-height: min(16rem, 36vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}

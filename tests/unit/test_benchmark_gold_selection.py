@@ -53,10 +53,35 @@ def test_next_over_the_classified_gold_resolves_to_the_gold_index():
     assert unresolved is False
 
 
+def test_experiment_gold_ignores_unrelated_digits_in_input_paths():
+    code = (
+        "first_conversion = peaks.pxt2nc('/tmp/pytest-499/input')\n"
+        "experiment = peaks.load_experiment(first_conversion.destination)\n"
+        "gold_index = next(i for i in experiment.gold if i in present)\n"
+        "gold_stem = f'BP_{gold_index:04d}'\n"
+        "gold = experiment[gold_stem]\n"
+        "fit = gold.fit_gold(plot=False)\n"
+    )
+    found, unresolved = _resolve(code)
+    assert found == GOLD
+    assert unresolved is False
+
+
 def test_summary_gold_subscript_and_bare_call_resolve():
     code = (
         "gold = scans[summary.gold[0]]\n"
         "fit = fit_gold(gold, plot=False)\n"
+    )
+    found, unresolved = _resolve(code)
+    assert found == GOLD
+    assert unresolved is False
+
+
+def test_experiment_gold_position_is_not_mistaken_for_scan_zero():
+    code = (
+        "gold_index = experiment.gold[0]\n"
+        "gold_scan = experiment[gold_index]\n"
+        "gold_fit = gold_scan.fit_gold()\n"
     )
     found, unresolved = _resolve(code)
     assert found == GOLD

@@ -120,16 +120,18 @@ function renderControls(s) {
   setEnabled($('#stop-jupyter'), hostUp && jupyterReady);
   setEnabled($('#start-mcp'), hostUp && jupyterReady && !mcpReady);
   setEnabled($('#stop-mcp'), hostUp && mcpReady);
+  setEnabled($('#restart-mcp'), hostUp && jupyterReady);
+  setEnabled($('#restart-kernel'), hostUp && jupyterReady);
   const lab = $('#open-lab');
   if (lab) {
     lab.href = s.notebook_open_url || '';
-    // Open-once semantics: usable only while Jupyter is ready AND no frontend
-    // session is attached yet; once the Comm bridge connects, the managed
-    // notebook is already open, so the button grays out (same pattern as
-    // Start MCP after the MCP is started).
-    const on = hostUp && jupyterReady && !commReady && !!lab.href;
+    // A connected Comm proves one frontend is open, but does not prove the
+    // human can still see it. Keep the same control usable as a reopen action.
+    const on = hostUp && jupyterReady && !!lab.href;
     lab.style.pointerEvents = on ? 'auto' : 'none';
     lab.style.opacity = on ? '1' : '0.3';
+    const label = $('#open-lab-label');
+    if (label) label.textContent = commReady ? 'Reopen Notebook' : 'Open Notebook';
   }
 }
 
@@ -193,8 +195,15 @@ function renderComponents(s) {
       const title = document.createElement('b');
       title.textContent = String(name);
       const detail = document.createElement('span');
+      detail.className = 'component-detail';
       detail.textContent = String(c.detail || '');
       article.append(header, title, detail);
+      if (c.last_error) {
+        const error = document.createElement('span');
+        error.className = 'component-error';
+        error.textContent = `Last error: ${String(c.last_error)}`;
+        article.append(error);
+      }
       container.appendChild(article);
     });
   }
@@ -384,10 +393,15 @@ async function postAction(path, label, options = {}) {
 
 bind('#start-mcp', 'click', () => postAction('/api/start-mcp', 'Start MCP'));
 bind('#stop-mcp', 'click', () => postAction('/api/mcp/stop', 'Stop MCP'));
+bind('#restart-mcp', 'click', () => postAction('/api/restart/mcp', 'Restart MCP'));
 bind('#start-jupyter', 'click', () => postAction('/api/jupyter/start', 'Start Jupyter'));
 bind('#stop-jupyter', 'click', () => postAction('/api/jupyter/stop', 'Stop Jupyter', {
   confirm: true,
   confirmMsg: 'Stop JupyterLab and its managed kernel? The dashboard stays up and can restart it.'
+}));
+bind('#restart-kernel', 'click', () => postAction('/api/restart/kernel', 'Restart Kernel', {
+  confirm: true,
+  confirmMsg: 'Restart the managed kernel? In-memory analysis variables will be cleared.'
 }));
 
 bind('#snapshot-button', 'click', () => postAction('/api/notebook/snapshot', 'Save snapshot'));

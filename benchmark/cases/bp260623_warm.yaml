@@ -1,0 +1,44 @@
+version: 1
+id: bp260623-warm
+title: L112 BP260623 second-pass cut preprocessing
+split: development
+
+paths:
+  data_env: PEAKSMCP_BENCH_WARM_DATA
+  data_default: /Users/haoxin/Documents/实验数据/BP260623/data_netcdf
+  datasheet_env: PEAKSMCP_BENCH_DATASHEET
+  datasheet_default: /Users/haoxin/Documents/实验数据/BP260623/data/datasheet.csv
+  reference_env: PEAKSMCP_BENCH_REFERENCE
+  reference_default: /Users/haoxin/Documents/实验数据/BP260623/data_netcdf
+
+parser:
+  kind: l112_datasheet
+  file_stem_template: BP_{index:04d}
+  input_suffixes: [.nc]
+  output_template: '{stem}_processed.nc'
+
+staging:
+  strategy: copy
+  include_suffixes: [.nc]
+  exclude_globs: ['*_processed.nc']
+  include_datasheet: true
+
+scientific_contract:
+  target_kind: cut
+  input_state: preconverted
+  gold_selection: Data format identifies the gold reference; comments are not authoritative.
+  theta_offset_source: datasheet note or per-record metadata
+  expected_gold_indices: [20]
+  expected_theta_offset_deg: 1.5
+  expected_call_counts:
+    pxt2nc: 0
+    load_experiment: 1
+    fit_gold: 1
+    assign_normal_emission: 1
+    k_convert: 1
+
+known_challenge: >-
+  This is a second-pass workflow: validated NetCDF inputs already exist, so repeating PXT
+  conversion is redundant. Process the same 14 cuts as the cold-input case. Record 26 is a
+  three-dimensional file whose declared sweep role conflicts with its shape; surface that
+  conflict and use the experiment decision lists rather than silently dropping the record.

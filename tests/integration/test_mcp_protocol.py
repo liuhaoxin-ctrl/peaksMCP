@@ -10,6 +10,8 @@ from peaksMCP.config.metadata import tool_names
 from peaksMCP.server.jupyter_peaks.backend import SharedState
 from peaksMCP.server.jupyter_peaks.mcp_server import JupyterPeaksMCPServer
 
+pytestmark = [pytest.mark.integration]
+
 
 class FakeIPython:
     user_ns = {"answer": 42}
@@ -71,6 +73,49 @@ async def test_initialize_list_and_safe_tool_calls():
         assert variables.data["variables"][0]["name"] == "answer"
         search = await client.call_tool("search", {"query": "动量转换", "limit": 3})
         assert search.data["matches"][0]["name"] == "k_convert"
+
+
+@pytest.mark.asyncio
+async def test_real_client_search_reports_prior_proof_across_same_kernel_restart():
+    """A later unrelated search must not invite the r002 duplicate get."""
+    k_convert_id = "dataarray:peaks.core.process.k_conversion:k_convert"
+    assign_id = "metadata:peaks.core.metadata.metadata_methods:assign_normal_emission"
+    state = SharedState(FakeIPython())
+    server = JupyterPeaksMCPServer(state)
+
+    async with Client(server.mcp) as client:
+        initial = (await client.call_tool("search", {"query": "k_convert"})).data
+        match = next(row for row in initial["matches"] if row["canonical_id"] == k_convert_id)
+        assert initial["session_proof_ledger"] == []
+        assert match["proof_status"] == "needs_get"
+
+        proof = (await client.call_tool("get", {"canonical_id": k_convert_id})).data
+        assert proof["proof_status"] == "newly_proven"
+
+    # A client connection does not own the proof ledger; the live kernel's
+    # SharedState does. A fresh client must therefore see the prior proof.
+    async with Client(server.mcp) as client:
+        later = (
+            await client.call_tool("search", {"query": "assign_normal_emission"})
+        ).data
+
+    assert later["session_proof_ledger"] == [
+        {"canonical_id": k_convert_id, "name": "k_convert", "scope": "dataarray"}
+    ]
+    assert later["matches"][0]["canonical_id"] == assign_id
+    assert later["matches"][0]["proof_status"] == "needs_get"
+    assert later["next_action"]["action"] == "get_only_selected_unproven"
+    assert later["next_action"]["eligible_canonical_ids"] == [assign_id]
+
+    # The dashboard's MCP restart builds a new server around the same kernel
+    # SharedState. That restart must preserve proofs just like a new client.
+    restarted_server = JupyterPeaksMCPServer(state)
+    async with Client(restarted_server.mcp) as client:
+        after_restart = (
+            await client.call_tool("search", {"query": "assign_normal_emission"})
+        ).data
+    assert after_restart["session_proof_ledger"] == later["session_proof_ledger"]
+    assert after_restart["next_action"]["eligible_canonical_ids"] == [assign_id]
 
 
 @pytest.mark.asyncio

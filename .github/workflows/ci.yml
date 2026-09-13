@@ -30,4 +30,4 @@ jobs:
             exit 1
           fi
       - run: ruff check peaksMCP tests tools
-      - run: pytest -m 'not e2e'
+      - run: python tools/test.py quick

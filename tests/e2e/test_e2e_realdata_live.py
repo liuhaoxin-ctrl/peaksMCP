@@ -1,7 +1,7 @@
 """Real-data E2E: a human at JupyterLab driving peaksMCP over its five tools.
 
 Scope: this file is the **product-path acceptance** for the MCP/Jupyter/Comm
-chain — real data, real browser, real kernel, real consent cards, all driven
+chain — real data, real browser, real kernel, all driven
 through the model-facing tools exactly as an agent would.  It is *not* the
 autonomous-agent benchmark: whether a model can interpret a task prompt,
 schedule tools and recover from its own mistakes is measured by
@@ -11,7 +11,8 @@ needs a model provider and therefore never runs in CI.
 The suite replaces the earlier mechanism-only live tests.  It simulates the
 real usage story end to end on the machine that holds the beamtime data:
 
-1. **cut preprocessing** — index the converted folder, fit the gold reference
+1. **conversion and cut preprocessing** — convert raw PXT twice to prove cache
+   reuse, load/classify the experiment, fit the gold reference
    once through native ``fit_gold``, flatten the Fermi edge, zero the
    high-symmetry angle and convert one cut to k-space, with the validation
    figure rendered inline;
@@ -27,10 +28,9 @@ so the suite exercises the same API-proof gate a real agent meets: canonical
 ids are proven with ``get`` in ONE persistent MCP session, and each native
 reference is declared per cell through ``api_ids``.
 
-Data-privacy contract: the raw folder is only read.  The fixture copies the
-three scans it needs into a temporary home and converts them into the sibling
-``data_netcdf/`` layout the real dataset uses (``convert_pxt``), so nothing is
-written next to the source; the dashboard scenario re-checks that.
+Data-privacy contract: the raw folder is only read. The fixture copies three
+scans into a temporary home; ``peaks.pxt2nc`` creates the sibling cache there,
+then a second call must reuse it. No processed NetCDF or image is persisted.
 
 Requirements: the raw beamtime folder (``PEAKSMCP_REALDATA_PXT``, defaulting
 to the L112 BP260623 dataset), Google Chrome (Playwright ``channel="chrome"``)
@@ -38,7 +38,7 @@ and the ``peaks`` conda environment.  Without the raw folder the module skips.
 
 Run explicitly::
 
-    pytest -m e2e -v
+    python tools/test.py e2e
 """
 
 from __future__ import annotations
@@ -58,14 +58,17 @@ from pathlib import Path
 import httpx
 import pytest
 
-pytestmark = [pytest.mark.e2e]
+pytestmark = [pytest.mark.e2e, pytest.mark.realdata, pytest.mark.browser, pytest.mark.slow]
 
 #: Raw beamtime folder (same convention as the real-data integration tests).
 RAW_PXT_DIR = Path(
     os.environ.get("PEAKSMCP_REALDATA_PXT")
     or "/Users/haoxin/Documents/实验数据/BP260623/data"
 )
-_CONVERTED_HINT = Path("/Users/haoxin/Documents/实验数据/BP260623/data_netcdf")
+_CONVERTED_HINT = Path(
+    os.environ.get("PEAKSMCP_BENCH_REFERENCE")
+    or "/Users/haoxin/Documents/实验数据/BP260623/data_netcdf"
+)
 
 #: Experiment metadata document.  Overridable together with the raw folder so
 #: pointing PEAKSMCP_REALDATA_PXT at another dataset never silently pairs that
@@ -82,14 +85,12 @@ MAPPING_STEM = "BP_0001"
 THETA_OFFSET_DEG = 1.5
 SLICE_ENERGIES = (0.0, -0.3, -0.6)
 
-#: Canonical ids the notebook cells rely on (native + facade).
+#: Canonical ids the notebook cells rely on.
+API_PXT2NC = "top_level:peaks.core.fileIO.experiment:pxt2nc"
+API_LOAD_EXPERIMENT = "top_level:peaks.core.fileIO.experiment:load_experiment"
 API_FIT_GOLD = "dataarray:peaks.core.fitting.fit:fit_gold"
 API_K_CONVERT = "dataarray:peaks.core.process.k_conversion:k_convert"
-API_SET_EF = "metadata:peaks.core.metadata.metadata_methods:set_EF_correction"
-API_LOAD_DATA = "module:peaksMCP.overrides:load_data"
-API_INSPECT = "module:peaksMCP.overrides:inspect_experiment"
-API_VALIDATION = "module:peaksMCP.overrides:plot_validation_pair"
-API_SLICE = "module:peaksMCP.overrides:show_mapping_slice"
+API_ASSIGN_NORMAL = "metadata:peaks.core.metadata.metadata_methods:assign_normal_emission"
 
 FIVE_TOOLS = {"search", "get", "inspect_notebook", "run_cell", "save_with_consent"}
 
@@ -298,7 +299,7 @@ def _raw_fingerprint() -> dict[str, tuple[int, str]]:
 
 
 def _prepare_home(home: Path) -> None:
-    """Copy the three raw scans and convert them into the sibling layout.
+    """Copy the three raw scans; conversion is exercised through peaksMCP.
 
     Mirrors the real dataset (raw in ``data/``, converted NetCDF in
     ``data_netcdf/``) without ever writing inside the source folder.  The
@@ -306,9 +307,7 @@ def _prepare_home(home: Path) -> None:
     indexes are checked against the stems before anything is copied.
     """
     data = home / "data"
-    converted = home / "data_netcdf"
     data.mkdir(parents=True)
-    converted.mkdir(parents=True)
     for stem in (GOLD_STEM, CUT_STEM, MAPPING_STEM):
         shutil.copy2(RAW_PXT_DIR / f"{stem}.pxt", data / f"{stem}.pxt")
     if (RAW_PXT_DIR / "datasheet.csv").is_file():
@@ -339,13 +338,9 @@ def _prepare_home(home: Path) -> None:
             f"{METADATA_JSON} has no record for index(es) {missing}; set "
             "PEAKSMCP_REALDATA_METADATA to the matching document"
         )
-        shutil.copy2(METADATA_JSON, converted / "experiment_metadata.json")
-
-    from peaksMCP.pxt_utils.converter import convert_pxt
-
-    for stem in (GOLD_STEM, CUT_STEM, MAPPING_STEM):
-        report = convert_pxt(data / f"{stem}.pxt", converted / f"{stem}.nc")
-        assert report.output is not None, f"conversion failed for {stem}: {report}"
+        # Keep the translated document next to the raw datasheet. pxt2nc owns
+        # copying/refreshing it into the cache directory.
+        shutil.copy2(METADATA_JSON, data / "experiment_metadata.json")
 
 
 @pytest.fixture(scope="module")
@@ -396,11 +391,18 @@ def live(tmp_path_factory):
                 "--renderer-process-limit=1",
             ],
         )
-        page = browser.new_page()
-        page.goto(
-            supervisor.status()["notebook_url"] + f"?token={supervisor.token}",
+        dashboard_page = browser.new_page()
+        dashboard_page.goto(
+            supervisor.dashboard_url + f"/?token={supervisor.dashboard_token}",
             wait_until="domcontentloaded",
         )
+        dashboard_page.wait_for_selector("#open-lab", timeout=30000)
+        dashboard_page.wait_for_function(
+            "document.querySelector('#open-lab')?.getAttribute('href')?.length > 0"
+        )
+        with dashboard_page.expect_popup(timeout=30000) as opened:
+            dashboard_page.locator("#open-lab").click()
+        page = opened.value
         page.wait_for_selector(".jp-Notebook", timeout=90000)
 
         session = McpSession(
@@ -428,17 +430,16 @@ def live(tmp_path_factory):
 
         # The agent's discovery loop: search, then prove every id it will use.
         for query, expected in (
+            ("pxt to netcdf", API_PXT2NC),
+            ("load experiment", API_LOAD_EXPERIMENT),
             ("fit_gold", API_FIT_GOLD),
             ("k_convert", API_K_CONVERT),
-            ("set_EF_correction", API_SET_EF),
+            ("assign normal emission", API_ASSIGN_NORMAL),
         ):
             found = stack.tool("search", {"query": query, "limit": 5})
-            ids = [match.get("id") for match in found.get("matches") or []]
+            ids = [match.get("canonical_id") for match in found.get("matches") or []]
             assert expected in ids, f"search({query!r}) did not surface {expected}: {ids}"
             stack.prove(expected)
-        for facade in (API_LOAD_DATA, API_INSPECT, API_VALIDATION, API_SLICE):
-            stack.prove(facade)
-
         yield stack, (source_before, source_listing)
     finally:
         # Teardown order matters: the supervisor removes its runfile from
@@ -482,47 +483,6 @@ def live(tmp_path_factory):
         )
 
 
-def _answer_save_card(
-    stack: Live, *, approve: bool, timeout: float = 120.0, pending=None
-) -> int:
-    """Answer staged-save consent cards in the real notebook frontend.
-
-    Mirrors the benchmark approval harness: look at every visible JupyterLab
-    dialog, act only on the one carrying the save-card marker, and keep
-    answering until the pending tool call settles (a staged save blocks on the
-    card, so the call runs on a worker thread while this loop clicks).
-    """
-    page = stack.page
-    selector = "button.jp-mod-accept" if approve else "button.jp-mod-reject"
-    deadline = time.monotonic() + timeout
-    clicks = 0
-    card_texts: list[str] = []
-    answered: set[int] = set()
-    while time.monotonic() < deadline:
-        if pending is not None and pending.done():
-            return clicks, card_texts
-        dialogs = page.locator(".jp-Dialog")
-        for index in range(dialogs.count()):
-            dialog = dialogs.nth(index)
-            if not dialog.is_visible():
-                continue
-            if not dialog.locator('[data-peaks-mcp-dialog="save-consent"]').count():
-                continue  # not a save card: leave other dialogs alone
-            button = dialog.locator(selector)
-            if button.count() and index not in answered:
-                # Read the card BEFORE deciding: whatever the human sees here is
-                # what they are approving.
-                card_texts.append(dialog.inner_text())
-                answered.add(index)
-                button.first.click()
-                clicks += 1
-                page.wait_for_timeout(300)
-        time.sleep(0.2)
-    if pending is not None and not pending.done():
-        raise AssertionError(f"the save consent card was never answered ({clicks} click(s))")
-    return clicks, card_texts
-
-
 def test_acceptance_realdata_workflow(live):
     """The acceptance scenario: an explicitly sequential, discovery-driven chain.
 
@@ -532,53 +492,66 @@ def test_acceptance_realdata_workflow(live):
     the earlier steps created: splitting it into independent tests would either
     duplicate the expensive gold fit or hide the dependency behind collection
     order.  Everything the chain processes is *derived* from
-    ``inspect_experiment``\'s classification and the experiment metadata, never
+    ``peaks.load_experiment`` classification and experiment metadata, never
     hard-coded, so a broken classifier or offset source fails here.
     """
     stack, _ = live
 
-    index_cell = stack.cell(
-        "index the converted folder",
-        "from peaksMCP.overrides import load_data, inspect_experiment\n"
-        "scans = load_data('data_netcdf')",
+    first_conversion = stack.cell(
+        "convert raw PXT into the validated cache",
+        "import peaks\n"
+        "conversion_first = peaks.pxt2nc('data')\n"
+        "print(f'converted={conversion_first.converted} cached={conversion_first.cached} failed={conversion_first.failed}')",
+        api_ids=[API_PXT2NC],
+        timeout=300.0,
     )
-    assert index_cell["stdout_lines"] >= 1
-    assert "load_data:" in str(index_cell.get("stdout_head"))
+    assert "failed=0" in str(first_conversion.get("stdout_head"))
+    assert "converted=3" in str(first_conversion.get("stdout_head"))
+
+    second_conversion = stack.cell(
+        "prove a second conversion reuses the cache",
+        "conversion_recheck = peaks.pxt2nc('data')\n"
+        "print(f'converted={conversion_recheck.converted} cached={conversion_recheck.cached} failed={conversion_recheck.failed}')",
+        api_ids=[API_PXT2NC],
+        timeout=300.0,
+    )
+    assert "cached=3" in str(second_conversion.get("stdout_head"))
+    assert "converted=0" in str(second_conversion.get("stdout_head"))
 
     # The classification is the agent's entry point into the chain: it must be
     # readable from the run_cell reply, must be exactly right for this frozen
     # dataset, and must drive every later choice (stems and theta offset).
     classify_cell = stack.cell(
-        "classify the experiment",
-        "summary = inspect_experiment(scans)\n"
+        "load and classify the experiment",
+        "experiment = peaks.load_experiment('data_netcdf')\n"
         # Exact classification for the frozen dataset: the metadata document
         # classifies every record it lists, and the fixture's mapping (no
         # record) is classified from its shape.  The conflict path needs a 3-D
         # record labelled "sweep", which this subset does not load - it is
         # unit-tested instead.
-        "assert summary.gold == [20], summary.gold\n"
-        "assert len(summary.cuts) == 14 and 15 in summary.cuts, summary.cuts\n"
-        "assert 1 in summary.mappings, summary.mappings\n"
-        "assert summary.conflicts == [], summary.conflicts\n"
-        "present = {int(s[-4:]) for s in scans.stems}\n"
-        "gold_index = next(i for i in summary.gold if i in present)\n"
-        "cut_index = next(i for i in summary.cuts if i in present)\n"
-        "mapping_index = next(i for i in summary.mappings if i in present)\n"
+        "assert experiment.gold == [20], experiment.gold\n"
+        "assert len(experiment.cuts) == 14 and 15 in experiment.cuts, experiment.cuts\n"
+        "assert 1 in experiment.mappings, experiment.mappings\n"
+        "present = {int(s[-4:]) for s in experiment.stems}\n"
+        "gold_index = next(i for i in experiment.gold if i in present)\n"
+        "cut_index = next(i for i in experiment.cuts if i in present)\n"
+        "mapping_index = next(i for i in experiment.mappings if i in present)\n"
         "gold_stem = f'BP_{gold_index:04d}'\n"
         "cut_stem = f'BP_{cut_index:04d}'\n"
         "mapping_stem = f'BP_{mapping_index:04d}'\n"
-        "theta_offset = next(r.theta_offset_deg for r in summary.records if r.index == cut_index)\n"
+        "theta_offset = next(r.theta_offset_deg for r in experiment.records if r.index == cut_index)\n"
         "assert theta_offset, 'the angular offset must come from the metadata'",
+        api_ids=[API_LOAD_EXPERIMENT],
     )
     classification = str(classify_cell.get("stdout_head"))
-    assert "inspect_experiment:" in classification, classify_cell
+    assert "load_experiment:" in classification, classify_cell
     assert "gold=[20]" in classification and "cuts=14" in classification, classify_cell
 
     stack.cell(
         "bind the three scans chosen by the classification",
-        "gold = scans[gold_stem]\n"
-        "cut = scans[cut_stem]\n"
-        "mp = scans[mapping_stem]",
+        "gold = experiment[gold_stem]\n"
+        "cut = experiment[cut_stem]\n"
+        "mp = experiment[mapping_stem]",
     )
 
     stack.cell(
@@ -593,18 +566,17 @@ def test_acceptance_realdata_workflow(live):
     assert "c0" in ef_preview and "2.6" in ef_preview, ef_preview
 
     stack.cell(
-        "flatten EF and zero the high-symmetry angle from metadata",
-        "cut.metadata.set_EF_correction(ef)\n"
+        "assign the high-symmetry angle from metadata",
         # The offset must be the experiment's own value, not merely non-zero:
         # the contract value comes from the metadata document.
         "assert abs(theta_offset - " + str(THETA_OFFSET_DEG) + ") < 1e-9, theta_offset\n"
-        "shifted = cut.assign_coords(theta_par=cut.theta_par - theta_offset)",
-        api_ids=[API_SET_EF],
+        "shifted = cut.metadata.assign_normal_emission(theta_par=theta_offset)",
+        api_ids=[API_ASSIGN_NORMAL],
     )
 
     stack.cell(
         "convert the cut to k-space and verify the alignment",
-        "kcut = shifted.k_convert(quiet=True)\n"
+        "kcut = shifted.k_convert(EF_correction=fit, quiet=True)\n"
         "assert kcut.dims == ('eV', 'kx'), kcut.dims\n"
         # Fermi leveling: the axis crosses E_F = 0 *and* carries the fitted
         # shift - a wrong constant (2.4 eV, say) also crosses zero, so the
@@ -628,124 +600,63 @@ def test_acceptance_realdata_workflow(live):
 
     figure_cell = stack.cell(
         "render the raw vs k-space validation figure",
-        "from peaksMCP.overrides import plot_validation_pair\n"
-        "fig = plot_validation_pair(cut, kcut, shared_scale='auto')",
-        api_ids=[API_VALIDATION],
+        "import matplotlib.pyplot as plt\n"
+        "fig, axes = plt.subplots(1, 2, figsize=(10, 4))\n"
+        "cut.plot(ax=axes[0], add_colorbar=False)\n"
+        "kcut.plot(ax=axes[1], add_colorbar=False)\n"
+        "axes[0].set_title('raw detector coordinates')\n"
+        "axes[1].set_title('EF-corrected momentum space')\n"
+        "fig.tight_layout()",
     )
     assert stack.figure_markers(figure_cell) >= 1, figure_cell.get("output")
 
-    # --- persistence is part of the product path (finding: it was never exercised) ---
-    import concurrent.futures
-    import hashlib
-
-    saved_path = Path(os.environ["PEAKSMCP_HOME"]) / "saved" / f"{CUT_STEM}_processed.nc"
-    saved_path.parent.mkdir(parents=True, exist_ok=True)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        # save_with_consent stages the bytes and blocks on the card, so the
-        # tool call runs on a worker thread while the page answers it.
-        pending = executor.submit(
-            stack.session.call,
-            "save_with_consent",
-            {"variable_name": "kcut", "path": str(saved_path)},
-        )
-        clicks, card_texts = _answer_save_card(stack, approve=True, pending=pending)
-        receipt = pending.result(timeout=240)
-    assert clicks == 1, f"the card must be answered exactly once, clicked {clicks} time(s)"
-    assert receipt.get("status") == "saved", receipt
-    assert Path(str(receipt.get("path"))) == saved_path, receipt
-    assert saved_path.is_file(), receipt
-    digest = hashlib.sha256(saved_path.read_bytes()).hexdigest()
-    assert receipt.get("sha256") == digest, (receipt.get("sha256"), digest)
-    # The card is what the human approves, so it must name the same product the
-    # receipt reports: file name, shape and content hash.  A blank or
-    # misleading card would otherwise pass this test.
-    card = card_texts[0]
-    assert saved_path.name in card, card
-    assert str(receipt.get("sha256"))[:12] in card, (card, receipt.get("sha256"))
-    for size in (receipt.get("dims") or {}).values():  # shape shown on the card
-        assert str(size) in card, (card, receipt.get("dims"))
-
-    # Frozen human reference: the only assertion here that can actually fail on
-    # a wrong angular zeroing (the cheap symmetry check cannot).
+    # Frozen reference grading runs through the test-only kernel channel. It is
+    # deliberately absent from the notebook and from the model's tool surface.
     reference_product = _CONVERTED_HINT / f"{CUT_STEM}_processed.nc"
     assert reference_product.is_file(), (
         f"the reference product {reference_product} is required for the "
         "coordinate/numeric comparison; point PEAKSMCP_BENCH_REFERENCE at the "
         "converted reference folder"
     )
-    stack.cell(
-        "the product matches the frozen human reference",
+    stack.supervisor.execute_kernel(
         "import numpy as np\n"
         "import xarray as xr\n"
         f"with xr.open_dataset({str(reference_product)!r}) as _ref:\n"
         "    _ref_da = _ref[list(_ref.data_vars)[0]]\n"
         "    assert list(kcut.dims) == list(_ref_da.dims), (kcut.dims, _ref_da.dims)\n"
-        "    assert np.allclose(kcut.kx.values, _ref_da.kx.values, atol=1e-4), "
-        "(float(kcut.kx.min()), float(_ref_da.kx.min()))\n"
-        "    assert np.allclose(kcut.eV.values, _ref_da.eV.values, atol=1e-3), "
-        "(float(kcut.eV.min()), float(_ref_da.eV.min()))\n"
-        # Intensity is compared by shape, not by absolute scale: the reference
-        # may carry a different normalisation, while a wrong record, EF or
-        # angular offset destroys the correlation.
-        # Masked (NaN) pixels differ between the reference and today's run, so
-        # the comparison runs on the finite sample and ignores the fill value.
-        "    _a = np.nan_to_num(kcut.values.astype(float), nan=0.0)\n"
-        "    _b = np.nan_to_num(_ref_da.values.astype(float), nan=0.0)\n"
-        "    _mask = (np.abs(_a) + np.abs(_b)) > 0\n"
-        "    assert int(_mask.sum()) > int(0.5 * _mask.size), 'too few finite samples'\n"
-        # Correlation is scale- and offset-invariant, so it still fails on a
-        # wrong record, EF or angular offset while tolerating a different
-        # normalisation between the reference and today's pipeline.  The
-        # normalised difference is reported as evidence, not asserted: the
-        # reference products demonstrably carry their own normalisation (the
-        # grader's Q4 shows 0/14 exact matches even for the canonical pipeline).
-        "    _corr = float(np.corrcoef(_a[_mask], _b[_mask])[0, 1])\n"
-        "    assert _corr >= 0.98, _corr\n",
+        # Native conversion can produce one more interpolation point than the
+        # historical human product. Compare physical extents, then interpolate
+        # the reference onto today's grid before comparing masks and intensity.
+        "    _coord_delta = max(max(abs(float(kcut[d].min()) - float(_ref_da[d].min())), "
+        "abs(float(kcut[d].max()) - float(_ref_da[d].max())), "
+        "abs(float(kcut[d].mean()) - float(_ref_da[d].mean()))) for d in kcut.dims)\n"
+        "    assert _coord_delta <= 0.003, _coord_delta\n"
+        "    _aligned = _ref_da.interp_like(kcut, method='linear')\n"
+        "    _a = kcut.values.astype(float)\n"
+        "    _b = _aligned.values.astype(float)\n"
+        "    _ma, _mb = np.isfinite(_a), np.isfinite(_b)\n"
+        "    _union, _both = _ma | _mb, _ma & _mb\n"
+        "    _overlap = float(_both.sum() / _union.sum())\n"
+        "    assert _overlap >= 0.97, _overlap\n"
+        "    _corr = float(np.corrcoef(_a[_both], _b[_both])[0, 1])\n"
+        "    assert _corr >= 0.98, _corr\n"
+        "    _efficiency = float(np.mean(np.abs(_a[_both])) / np.mean(np.abs(_b[_both])))\n"
+        "    assert 0.5 <= _efficiency <= 2.0, _efficiency\n"
+        "    assert float(np.min(np.abs(kcut.eV.values))) <= 0.15\n"
+        "    assert float(np.min(np.abs(kcut.kx.values))) <= 0.05\n",
+        timeout=180,
     )
-
-    # Hash self-consistency does not prove the RIGHT variable was written:
-    # re-open the NetCDF and compare it with the live in-memory product.
-    stack.cell(
-        "the saved NetCDF re-opens as the product that was in memory",
-        "import numpy as np\n"
-        "import xarray as xr\n"
-        f"with xr.open_dataset({str(saved_path)!r}) as _saved:\n"
-        "    _var = _saved[list(_saved.data_vars)[0]]\n"
-        "    assert list(_var.dims) == list(kcut.dims), (_var.dims, kcut.dims)\n"
-        "    assert np.allclose(_var.kx.values, kcut.kx.values), 'kx coords differ'\n"
-        "    assert np.allclose(_var.eV.values, kcut.eV.values), 'eV coords differ'\n"
-        # Storage rounds to the file's precision, so equality is required up to
-        # float32 epsilon - a different variable would differ grossly instead.
-        "    assert np.array_equal(np.isnan(_var.values), np.isnan(kcut.values)), 'mask differs'\n"
-        "    assert np.allclose(_var.values, kcut.values, rtol=1e-6, atol=1e-6, "
-        "equal_nan=True), 'counts differ'\n",
-    )
-
-    denied_path = Path(os.environ["PEAKSMCP_HOME"]) / "denied" / f"{CUT_STEM}_processed.nc"
-    denied_path.parent.mkdir(parents=True, exist_ok=True)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        pending = executor.submit(
-            stack.session.call,
-            "save_with_consent",
-            {"variable_name": "kcut", "path": str(denied_path)},
-        )
-        deny_clicks, _ = _answer_save_card(stack, approve=False, pending=pending)
-        denied = pending.result(timeout=240)
-    assert deny_clicks == 1, f"the card must be answered exactly once, clicked {deny_clicks} time(s)"
-    assert denied.get("status") == "denied", denied
-    assert not denied_path.exists(), "a denied save must write nothing"
 
     stack.cell(
         "convert the full mapping cube",
-        "mp.metadata.set_EF_correction(ef)\n"
-        "kmap = mp.k_convert(quiet=True)\n"
+        "kmap = mp.k_convert(EF_correction=fit, quiet=True)\n"
         "assert {'eV', 'kx', 'ky'} <= set(kmap.dims), kmap.dims\n"
         "assert kmap.sizes['kx'] > 100 and kmap.sizes['ky'] > 100, kmap.sizes\n"
         # The mapping keeps its own geometry (no angular shift is applied), so
         # only the converted ranges are asserted here.
         "assert float(kmap.kx.max()) > 0.1 and float(kmap.ky.max()) > 0.1, "
         "(float(kmap.kx.max()), float(kmap.ky.max()))",
-        api_ids=[API_SET_EF, API_K_CONVERT],
+        api_ids=[API_K_CONVERT],
         timeout=300.0,
     )
     kmap_preview = stack.variable("kmap")
@@ -754,13 +665,15 @@ def test_acceptance_realdata_workflow(live):
     slice_cell = stack.cell(
         "render the mapping's binding-energy slices",
         "import numpy as np\n"
-        "from peaksMCP.overrides import show_mapping_slice\n"
+        "import matplotlib.pyplot as plt\n"
         f"idx = [int(np.argmin(np.abs(kmap.eV.values - e))) for e in {SLICE_ENERGIES!r}]\n"
-        "figs = [show_mapping_slice(kmap, dim='eV', index=i) for i in idx]\n"
-        "assert len(figs) == 3",
-        api_ids=[API_SLICE],
+        "mapping_fig, mapping_axes = plt.subplots(1, 3, figsize=(12, 4))\n"
+        "for axis, index, energy in zip(mapping_axes, idx, " + repr(SLICE_ENERGIES) + "):\n"
+        "    kmap.isel(eV=index).plot(ax=axis, add_colorbar=False)\n"
+        "    axis.set_title(f'{energy:.1f} eV')\n"
+        "mapping_fig.tight_layout()",
     )
-    assert stack.figure_images(slice_cell) >= 3, slice_cell.get("output")
+    assert stack.figure_markers(slice_cell) >= 1, slice_cell.get("output")
 
     stack.cell(
         "sanity-check the processed cube",
@@ -775,9 +688,24 @@ def test_acceptance_realdata_workflow(live):
     assert status["components"]["comm"]["state"] == "ready"
     assert status["notebook_open_url"]
 
-    restarted = stack.dashboard("/api/restart/mcp", method="POST")
-    assert restarted.status_code == 200, restarted.text
-    assert restarted.json().get("ready"), restarted.json()
+    console = stack.browser.new_page()
+    try:
+        console.goto(
+            stack.supervisor.dashboard_url + f"/?token={stack.supervisor.dashboard_token}",
+            wait_until="domcontentloaded",
+        )
+        console.wait_for_selector("#restart-mcp", timeout=30000)
+        with console.expect_response(
+            lambda response: response.url.endswith("/api/restart/mcp")
+            and response.request.method == "POST",
+            timeout=90000,
+        ) as pending_restart:
+            console.locator("#restart-mcp").click()
+        restarted = pending_restart.value
+        assert restarted.ok, restarted.status
+        assert restarted.json().get("ready"), restarted.json()
+    finally:
+        console.close()
     # The in-kernel server instance is new, so the client session is too.
     stack.session.reopen()
 
@@ -809,6 +737,25 @@ def test_acceptance_realdata_workflow(live):
         "reload_probe = True\nassert reload_probe",
     )
     assert probe.get("execution_success") is True, probe
+
+    # The human sees real images in JupyterLab and the durable notebook keeps
+    # their static MIME payloads. No processed array or image is a final file.
+    stack.page.wait_for_selector(".jp-OutputArea-output img", timeout=90000)
+    notebook_path = Path(os.environ["PEAKSMCP_HOME"]) / stack.supervisor.notebook_path
+    notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
+    image_outputs = [
+        output
+        for cell in notebook.get("cells", [])
+        for output in cell.get("outputs", [])
+        if {"image/png", "image/jpeg", "image/svg+xml"} & set(output.get("data") or {})
+    ]
+    assert len(image_outputs) >= 2
+    home = Path(os.environ["PEAKSMCP_HOME"])
+    assert not list(home.rglob("*_processed.nc"))
+    assert not [
+        path for path in home.rglob("*")
+        if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".svg"}
+    ]
 
 
 def test_dashboard_reports_components_and_auth(live):

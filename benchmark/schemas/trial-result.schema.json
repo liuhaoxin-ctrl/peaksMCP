@@ -10,6 +10,8 @@
     "condition",
     "validity",
     "strict_success",
+    "check_map",
+    "primary_failure",
     "score",
     "checks"
   ],
@@ -19,8 +21,22 @@
     "run_id": {"type": "string", "minLength": 1},
     "campaign_id": {"type": ["string", "null"]},
     "replicate": {"type": ["integer", "null"], "minimum": 1},
-    "condition": {"enum": ["p1", "p2", null]},
+    "condition": {"enum": ["p1", "p2", "u1", null]},
     "strict_success": {"type": "boolean"},
+    "check_map": {
+      "type": "object",
+      "additionalProperties": {"type": ["boolean", "null"]}
+    },
+    "primary_failure": {
+      "type": ["object", "null"],
+      "properties": {
+        "check_id": {"type": "string"},
+        "stage": {"type": "string"},
+        "canonical_api_ids": {"type": "array", "items": {"type": "string"}},
+        "normalized_error": {"type": "string"}
+      },
+      "required": ["check_id", "stage", "canonical_api_ids", "normalized_error"]
+    },
     "validity": {
       "type": "object",
       "required": ["valid", "checks"],

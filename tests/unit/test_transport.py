@@ -4,8 +4,52 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from fastmcp import Client, FastMCP
 
-from peaksMCP.transport.stdio_proxy import EXPECTED_TOOL_NAMES, check_http_mcp_server
+from peaksMCP.transport.stdio_proxy import (
+    EXPECTED_TOOL_NAMES,
+    SERVER_INSTRUCTIONS,
+    check_http_mcp_server,
+    create_stdio_proxy,
+)
+
+
+def test_stdio_proxy_forwards_the_curated_server_instructions():
+    proxy = create_stdio_proxy()
+    normalized = " ".join(proxy.instructions.split())
+
+    assert proxy.instructions == SERVER_INSTRUCTIONS
+    assert "Start with load_experiment" in normalized
+    assert "get pxt2nc before observing a non-empty needs_conversion" in normalized
+
+
+def test_stdio_proxy_initializes_and_forwards_tools(monkeypatch):
+    """Exercise the real proxy provider across two in-memory MCP sessions."""
+    upstream = FastMCP("test upstream", instructions="upstream-only instructions")
+
+    @upstream.tool
+    def echo(value: str) -> dict[str, str]:
+        return {"echo": value}
+
+    monkeypatch.setattr(
+        "peaksMCP.transport.stdio_proxy.endpoint",
+        lambda _host, _port: upstream,
+    )
+    proxy = create_stdio_proxy()
+
+    async def exercise_proxy():
+        async with Client(proxy) as client:
+            tools = await client.list_tools()
+            result = await client.call_tool("echo", {"value": "forwarded"})
+            initialized = client.initialize_result or await client.initialize()
+            return initialized.instructions, tools, result
+
+    instructions, tools, result = asyncio.run(exercise_proxy())
+
+    assert instructions == SERVER_INSTRUCTIONS
+    assert [tool.name for tool in tools] == ["echo"]
+    assert result.is_error is False
+    assert result.data == {"echo": "forwarded"}
 
 
 @pytest.mark.parametrize(

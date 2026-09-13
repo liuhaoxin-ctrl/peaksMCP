@@ -447,11 +447,20 @@ main {
   color: var(--text-primary);
 }
 
-.component span:last-child {
+.component .component-detail {
   font-size: 11px;
   color: var(--text-muted);
   word-break: break-word;
   line-height: 1.4;
+}
+
+.component .component-error {
+  display: block;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--danger);
+  font-family: var(--font-mono);
 }
 
 .empty-state {

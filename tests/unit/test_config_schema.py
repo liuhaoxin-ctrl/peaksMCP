@@ -1,197 +1,83 @@
-"""Strict schema tests for the curated catalogs (native_catalog + override_manifest).
-
-A damaged default configuration must fail loudly (ValueError) instead of
-silently degrading to an empty catalog; the explicit-path reader stays
-lenient for legacy shapes during the compatibility window.
-"""
+"""Strict schema tests for the single canonical API catalog."""
 
 from __future__ import annotations
 
 import pytest
 import yaml
 
-from peaksMCP.config.schema import (
-    load_yaml_unique,
-    validate_native_catalog,
-    validate_override_manifest,
-)
+from peaksMCP.config.schema import load_yaml_unique, validate_api_catalog
 
 
-def _native(**overrides):
-    doc = {"version": 1, "apis": {"k_convert": {"aliases": ["k space", "动量转换"]}}}
-    doc.update(overrides)
-    return doc
-
-
-def _override(**overrides):
-    doc = {
-        "version": 5,
+def _facade_document() -> dict:
+    return {
+        "version": 1,
         "apis": {
-            "load_data": {
-                "export": "peaksMCP.overrides.load_data",
-                "exposure": "facade",
-                "summary": "Load ARPES scans into one experiment object.",
-                "aliases": ["load scans", "加载"],
-                # v5: declared parameters are structured, never free text.
-                "inputs": [
-                    {"name": "source", "type": "str | Path", "required": True},
-                    {"name": "lazy", "type": "bool", "required": False, "default": False},
-                ],
-                "returns": "peaks DataArray or LoadedScans",
-                "preconditions": "the path exists",
-                "side_effects": "prints one line; writes nothing",
-                "errors": "missing path",
-                "example": 'load_data("data/")',
+            "module:peaksMCP.facades:future": {
+                "kind": "facade",
+                "exposure": "core",
+                "export": "peaksMCP.facades.future",
+                "summary": "Future facade.",
+                "aliases": ["future workflow"],
+                "inputs": [{"name": "source", "type": "str", "required": True}],
+                "returns": "object",
+                "preconditions": "source exists",
+                "side_effects": "none",
+                "errors": "invalid source",
+                "example": "future(source)",
             }
         },
     }
-    doc.update(overrides)
-    return doc
 
 
 def test_yaml_unique_loader_rejects_duplicate_keys():
-    with pytest.raises(yaml.YAMLError, match="duplicate mapping key 'module'"):
-        load_yaml_unique("load_data:\n  module: a\n  module: b\n")
+    with pytest.raises(yaml.YAMLError, match="duplicate mapping key 'kind'"):
+        load_yaml_unique("api:\n  kind: native\n  kind: facade\n")
 
 
-def test_native_catalog_rejects_unknown_fields_and_bad_versions():
-    errors = validate_native_catalog(_native(apis={"x": {"project": True}}))
+def test_catalog_rejects_unknown_fields_versions_and_duplicate_aliases():
+    doc = {
+        "version": 2,
+        "apis": {
+            "dataarray:peaks.example:run": {
+                "kind": "native",
+                "exposure": "core",
+                "unknown": True,
+                "aliases": ["dup", "DUP"],
+            }
+        },
+    }
+    errors = validate_api_catalog(doc)
+    assert any("version must be 1" in error for error in errors)
     assert any("unknown key" in error for error in errors)
-    assert any("version must be 1" in error for error in validate_native_catalog(_native(version=2)))
-    assert any("non-empty mapping" in error for error in validate_native_catalog(_native(apis={})))
-    errors = validate_native_catalog(_native(apis={"x": {"aliases": ["dup", "DUP"]}}))
     assert any("duplicate alias" in error for error in errors)
 
 
-def test_override_manifest_rejects_unknown_fields_and_bad_enums():
-    errors = validate_override_manifest(_override(apis={"x": {"unknown_thing": 1}}))
-    assert any("unknown key" in error for error in errors)
-    doc = _override()
-    doc["apis"]["load_data"]["exposure"] = "public"
-    errors = validate_override_manifest(doc)
-    assert any("invalid exposure 'public'" in error for error in errors)
-    # v4 rows are keyed by the API name, which must be the last export segment;
-    # a key/export mismatch is a schema violation, not a seed cross-check.
-    doc = _override()
-    doc["apis"]["wrong_name"] = doc["apis"].pop("load_data")
-    errors = validate_override_manifest(doc)
-    assert any("export must be peaksMCP.overrides.<name>" in error for error in errors)
+def test_facade_contract_inputs_are_structured():
+    assert validate_api_catalog(_facade_document()) == []
+    doc = _facade_document()
+    next(iter(doc["apis"].values()))["inputs"] = "source: path"
+    assert any(
+        "inputs must be a non-empty list" in error for error in validate_api_catalog(doc)
+    )
 
 
-def test_override_manifest_project_seeds_are_cross_checked():
-    # v4 has no separate ``project`` block: the apis entry itself is the seed.
-    # An export that does not end with the entry name fails.
-    doc = _override()
-    doc["apis"]["load_data"]["export"] = "peaksMCP.overrides.save_result"
-    errors = validate_override_manifest(doc)
-    assert any("export must be peaksMCP.overrides.<name>" in error for error in errors)
-    # An export outside peaksMCP.overrides fails.
-    doc = _override()
-    doc["apis"]["load_data"]["export"] = "peaksMCP.plotting.plot_batch"
-    errors = validate_override_manifest(doc)
-    assert any("peaksMCP.overrides.<name>" in error for error in errors)
+def test_real_catalog_passes_strict_validation():
+    from pathlib import Path
+
+    document = load_yaml_unique(
+        Path("peaksMCP/config/api_catalog.yaml").read_text(encoding="utf-8")
+    )
+    assert validate_api_catalog(document) == []
 
 
-def test_override_manifest_project_entry_requires_export():
-    doc = _override()
-    del doc["apis"]["load_data"]["export"]
-    errors = validate_override_manifest(doc)
-    assert any("must declare 'export'" in error for error in errors)
-    doc = _override()
-    del doc["apis"]["load_data"]["summary"]
-    errors = validate_override_manifest(doc)
-    assert any("must declare 'summary'" in error for error in errors)
-
-
-def test_real_catalogs_pass_strict_validation():
-    """The shipped catalogs must validate (the discovery loader now refuses
-    to build an index from a damaged default configuration)."""
-    import pathlib
-
-    from peaksMCP.config.schema import validate_documents
-
-    config_dir = pathlib.Path("peaksMCP/config")
-    native = load_yaml_unique((config_dir / "native_catalog.yaml").read_text(encoding="utf-8"))
-    overrides = load_yaml_unique((config_dir / "override_manifest.yaml").read_text(encoding="utf-8"))
-    assert validate_documents(native, overrides) == []
-
-
-def test_default_loader_fails_loudly_on_damaged_config(monkeypatch, tmp_path):
-    """A duplicate key in the default catalogs must raise, never return {}."""
+def test_default_loader_fails_loudly_on_damaged_catalog(monkeypatch, tmp_path):
     import peaksMCP.discovery.index as index_module
 
-    broken = tmp_path / "native_catalog.yaml"
-    broken.write_text("version: 1\napis:\n  k_convert:\n    aliases: [x]\n    aliases: [y]\n", encoding="utf-8")
-    (tmp_path / "override_manifest.yaml").write_text(
-        "version: 3\napis:\n  load_data:\n    module: m\n    project: true\n", encoding="utf-8"
+    (tmp_path / "api_catalog.yaml").write_text(
+        "version: 1\napis:\n  dataarray:peaks.example:run:\n"
+        "    kind: native\n    kind: facade\n",
+        encoding="utf-8",
     )
     monkeypatch.setattr(index_module, "_CONFIG_DIR", tmp_path)
     with pytest.raises(ValueError, match="invalid curated YAML"):
-        index_module.load_overrides()
-
-
-def test_default_loader_falls_back_to_legacy_single_file(monkeypatch, tmp_path):
-    """Pre-split checkouts (only config/manifest.yaml) keep working."""
-    import peaksMCP.discovery.index as index_module
-
-    (tmp_path / "manifest.yaml").write_text(
-        "version: 3\napis:\n  k_convert:\n    aliases: [k space]\n", encoding="utf-8"
-    )
-    monkeypatch.setattr(index_module, "_CONFIG_DIR", tmp_path)
-    document = index_module.load_overrides()
-    assert "k_convert" in document["apis"]
-    # Both new catalogs absent AND no legacy file -> empty (same as before).
-    (tmp_path / "manifest.yaml").unlink()
-    assert index_module.load_overrides() == {}
-
-
-def test_override_manifest_requires_structured_inputs():
-    """v5: ``inputs`` is a list of {name, type, required} entries - free text let
-    the contract name parameters that do not exist."""
-    assert validate_override_manifest(_override()) == []
-
-    doc = _override()
-    doc["apis"]["load_data"]["inputs"] = "source: a file or folder"
-    errors = validate_override_manifest(doc)
-    assert any("inputs must be a non-empty list" in error for error in errors)
-
-    doc = _override()
-    doc["apis"]["load_data"]["inputs"] = []
-    assert any(
-        "inputs must be a non-empty list" in error
-        for error in validate_override_manifest(doc)
-    )
-
-    doc = _override()
-    doc["apis"]["load_data"]["inputs"][0]["sneaky"] = 1
-    assert any(
-        "has unknown key(s)" in error for error in validate_override_manifest(doc)
-    )
-
-    doc = _override()
-    doc["apis"]["load_data"]["inputs"][0]["name"] = "source path"
-    assert any(
-        "needs an identifier name" in error for error in validate_override_manifest(doc)
-    )
-
-    doc = _override()
-    doc["apis"]["load_data"]["inputs"][0]["type"] = "  "
-    assert any(
-        "needs a non-empty type declaration" in error
-        for error in validate_override_manifest(doc)
-    )
-
-    doc = _override()
-    doc["apis"]["load_data"]["inputs"][0]["required"] = "yes"
-    assert any(
-        "required must be a boolean" in error for error in validate_override_manifest(doc)
-    )
-
-    doc = _override()
-    doc["apis"]["load_data"]["inputs"] = [
-        {"name": "source", "type": "str", "required": False},
-    ]
-    assert any(
-        "must mark at least one parameter required" in error
-        for error in validate_override_manifest(doc)
-    )
+        index_module.load_catalog()

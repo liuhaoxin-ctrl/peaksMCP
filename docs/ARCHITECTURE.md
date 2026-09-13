@@ -15,12 +15,35 @@ Supervisor      -> JupyterLab process, health, logs, dashboard and restart recov
 
 ## Components
 
-- `discovery`: live Peaks/xarray API index and source-level signatures.
+- `discovery`: the model-visible Peaks/xarray API index and source-level
+  signatures, curated by the unified `config/api_catalog.yaml`.
 - `server/jupyter_peaks`: MCP registrars, notebook state, Comm bridge and security.
 - `pxt_utils`: datasheet translation, PXT loading and atomic NetCDF conversion.
 - `plotting` and `batch`: publication layout and bounded parallel execution.
 - `app`: profile-driven supervisor, status API and static dashboard.
 - `claude_plugin`: Claude Desktop MCP declaration and analysis skill.
+
+## Public Analysis Surface
+
+The workflow adds only two public Peaks entry points:
+
+- `peaks.pxt2nc(...)` creates or reuses the atomic, owned PXT-to-NetCDF cache.
+  Raw bytes and the complete normalized metadata document participate in the
+  fingerprint; files without its owner/schema marker are never overwritten.
+- `peaks.load_experiment(...)` discovers metadata, indexes the experiment,
+  classifies gold/cut/mapping records and lazily exposes individual scans through
+  one `ExperimentIndex`.
+
+All other fitting, metadata correction, momentum conversion and plotting calls
+are existing Peaks APIs. `config/api_catalog.yaml` is the single model-facing
+catalog for both entry points and those native APIs; callables absent from it are
+hidden. The initial public facade count is zero. `peaksMCP.overrides` remains
+internal compatibility code and is not a second API surface.
+
+Scientific results live in named kernel variables and are rendered as inline
+Notebook output. Figures are not written to disk. The cache and metadata sidecar
+managed by `peaks.pxt2nc` are the only automatic persistence in the analysis
+workflow; conversion never mutates its raw input.
 
 The dashboard is part of the supervisor lifecycle. It publishes the runfile only after
 Uvicorn has bound successfully, authenticates operator API access with a separate
@@ -50,4 +73,4 @@ and neither can edit, delete, or reorder notebook history.
 
 - `peaksMCP dash`
 - `%load_ext peaksMCP.server.jupyter_peaks.jupyter_mcp_extension`
-- `pytest tests`
+- `python tools/test.py --list` (test layers and stable agent-facing entry points)

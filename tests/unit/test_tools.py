@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import Mock
 
-from peaksMCP.config.metadata import tool_names
+import pytest
+
+from peaksMCP.config.metadata import tool_metadata, tool_names
 from peaksMCP.server.jupyter_peaks.backend import SharedState
 from peaksMCP.server.jupyter_peaks.mcp_server import JupyterPeaksMCPServer
 
@@ -49,6 +52,381 @@ def test_tool_metadata_is_nonempty():
     server = JupyterPeaksMCPServer(SharedState(FakeIPython()))
     tools = asyncio.run(server.mcp.list_tools())
     assert all(tool.title and tool.description for tool in tools)
+
+
+def test_tool_metadata_blocks_round_one_discovery_and_notebook_noise_patterns():
+    search = tool_metadata("search")["description"].lower()
+    get = tool_metadata("get")["description"].lower()
+    inspect = tool_metadata("inspect_notebook")["description"].lower()
+    run_cell = tool_metadata("run_cell")["description"].lower()
+
+    assert "preprocess all 2d data" in search
+    for broad_query in ("single-letter", "wildcard", "broad catalog enumeration"):
+        assert broad_query in search
+    assert "session_proof_ledger" in search and "next_action" in search
+    assert "already-proven" in search
+    assert "never through mcpscript" in search
+    assert "current live kernel" in search and "fresh kernel" in search
+    assert "extension/server restart" in search
+    assert "only api ids you will call" in get
+    assert "speculative helpers" in get and "same canonical id again" in get
+    assert "proof_status" in get and "session_proof_ledger" in get
+    assert "sole next_action" in get
+    assert "do not immediately re-read a successful run_cell" in inspect
+    assert "runtime status" in inspect and 'target="kernel"' in inspect
+    assert "does not browse files" in inspect
+    assert '"notebook" is an exact alias for "cells"' in inspect
+    assert "repository" in run_cell and "datasheet" in run_cell
+    assert "at most three non-empty stdout lines" in run_cell
+    assert "each at most 200 characters" in run_cell
+    assert "code=..., never source=..." in run_cell
+    assert 'run_cell(code=text, cell_type="markdown")' in run_cell
+    assert "never pass code_language or language" in run_cell
+    assert "coordinate `.values`" in run_cell
+    assert "one compact grid" in run_cell
+    assert "processed_stems" in run_cell
+
+
+def test_model_api_entry_adds_get_parameter_name_without_removing_legacy_id():
+    from peaksMCP.server.jupyter_peaks.core.tools import _model_api_entry
+
+    row = _model_api_entry({"id": "top_level:peaks:load_experiment", "name": "load_experiment"})
+
+    assert row == {
+        "id": "top_level:peaks:load_experiment",
+        "canonical_id": "top_level:peaks:load_experiment",
+        "name": "load_experiment",
+    }
+
+
+def test_registered_search_and_get_expose_canonical_id_at_model_boundary(
+    monkeypatch, tmp_path
+):
+    """The registered tools, not only the helper, must use get's parameter name."""
+    from peaksMCP.server.jupyter_peaks.core.tools import register_safe_tools
+    from peaksMCP.server.jupyter_peaks.security import AuditLogger
+
+    canonical_id = "top_level:peaks.core.fileIO.experiment:load_experiment"
+    entry = {
+        "id": canonical_id,
+        "name": "load_experiment",
+        "module": "peaks.core.fileIO.experiment",
+        "scope": "top_level",
+        "tier": "native",
+        "exposure": "core",
+        "score": 1000,
+    }
+    index = Mock(peaks_version="test", fingerprint="fingerprint")
+    index.is_stale.return_value = False
+    index.search_tiered.return_value = ("catalog", [entry])
+    index.get.return_value = entry
+    state = SharedState(FakeIPython(), api_index=index)
+
+    registered = {}
+    fake_mcp = Mock()
+
+    def tool(**metadata):
+        def decorate(function):
+            registered[metadata["name"]] = function
+            return function
+
+        return decorate
+
+    fake_mcp.tool.side_effect = tool
+    monkeypatch.setattr(
+        "peaksMCP.server.jupyter_peaks.core.tools.describe_api",
+        lambda row: {**row, "signature": "load_experiment(source)"},
+    )
+    register_safe_tools(
+        fake_mcp,
+        state,
+        Mock(),
+        AuditLogger(tmp_path / "audit.jsonl"),
+    )
+
+    search_result = registered["search"](query="load experiment")
+    get_result = registered["get"](canonical_id=canonical_id)
+    proven_search = registered["search"](query="load experiment")
+    duplicate_get = registered["get"](canonical_id=canonical_id)
+
+    assert search_result["matches"][0]["canonical_id"] == canonical_id
+    assert search_result["matches"][0]["proof_status"] == "needs_get"
+    assert search_result["session_proof_ledger"] == []
+    assert search_result["next_action"]["eligible_canonical_ids"] == [canonical_id]
+    assert search_result["matches"][0]["id"] == canonical_id
+    assert get_result["canonical_id"] == canonical_id
+    assert get_result["id"] == canonical_id
+    assert get_result["proof_status"] == "newly_proven"
+    assert get_result["session_proof_ledger"] == [
+        {
+            "canonical_id": canonical_id,
+            "name": "load_experiment",
+            "scope": "top_level",
+        }
+    ]
+    assert get_result["next_action"]["action"] == "use_api_without_get_again"
+    assert proven_search["matches"][0]["proof_status"] == "already_proven"
+    assert proven_search["next_action"]["action"] == "use_proven_match_without_get"
+    assert duplicate_get["proof_status"] == "already_proven"
+    # The proof ledger remains internal and therefore keeps the discovery id.
+    assert state.verified_apis[canonical_id]["id"] == canonical_id
+
+
+@pytest.mark.parametrize(
+    ("description", "error_match"),
+    [
+        pytest.param(RuntimeError("describe exploded"), "describe exploded", id="describe"),
+        pytest.param(
+            {
+                "project_added": True,
+                "signature_resolved": False,
+                "export": "peaksMCP.bad.missing",
+            },
+            "not importable/resolvable",
+            id="signature-validation",
+        ),
+        pytest.param(
+            {
+                "project_added": True,
+                "signature_resolved": True,
+                "contract_input_issues": ["declared input 'typo' is invalid"],
+            },
+            "inputs do not match",
+            id="contract-validation",
+        ),
+    ],
+)
+def test_get_failure_never_records_a_proof(
+    monkeypatch, tmp_path, description, error_match
+):
+    from peaksMCP.server.jupyter_peaks.core.tools import register_safe_tools
+    from peaksMCP.server.jupyter_peaks.security import AuditLogger
+
+    canonical_id = "top_level:peaks.example:example"
+    entry = {
+        "id": canonical_id,
+        "name": "example",
+        "module": "peaks.example",
+        "scope": "top_level",
+        "tier": "native",
+        "exposure": "core",
+        "score": 1000,
+    }
+    index = Mock(peaks_version="test", fingerprint="fingerprint")
+    index.is_stale.return_value = False
+    index.get.return_value = entry
+    index.search_tiered.return_value = ("catalog", [entry])
+    state = SharedState(FakeIPython(), api_index=index)
+    registered = {}
+    fake_mcp = Mock()
+
+    def tool(**metadata):
+        def decorate(function):
+            registered[metadata["name"]] = function
+            return function
+
+        return decorate
+
+    def describe(_entry):
+        if isinstance(description, Exception):
+            raise description
+        return {**entry, **description}
+
+    fake_mcp.tool.side_effect = tool
+    monkeypatch.setattr(
+        "peaksMCP.server.jupyter_peaks.core.tools.describe_api", describe
+    )
+    register_safe_tools(
+        fake_mcp,
+        state,
+        Mock(),
+        AuditLogger(tmp_path / "audit.jsonl"),
+    )
+
+    with pytest.raises(RuntimeError, match=error_match):
+        registered["get"](canonical_id=canonical_id)
+
+    assert state.verified_apis == {}
+    result = registered["search"](query="example")
+    assert result["session_proof_ledger"] == []
+    assert result["matches"][0]["proof_status"] == "needs_get"
+
+
+def test_exact_search_next_action_excludes_prior_proofs_and_lower_fuzzy_hits(
+    monkeypatch, tmp_path
+):
+    """The latest search response must prevent the r002 duplicate-get pattern."""
+    from peaksMCP.server.jupyter_peaks.core.tools import register_safe_tools
+    from peaksMCP.server.jupyter_peaks.security import AuditLogger
+
+    k_convert_id = "dataarray:peaks.core.process.k_conversion:k_convert"
+    assign_id = "metadata:peaks.core.metadata.metadata_methods:assign_normal_emission"
+    lower_fuzzy_id = "metadata:peaks.core.metadata.metadata_methods:set_normal_emission"
+    matches = [
+        {
+            "id": assign_id,
+            "name": "assign_normal_emission",
+            "module": "peaks.core.metadata.metadata_methods",
+            "scope": "metadata",
+            "tier": "native",
+            "exposure": "core",
+            "score": 1000,
+        },
+        {
+            "id": lower_fuzzy_id,
+            "name": "set_normal_emission",
+            "module": "peaks.core.metadata.metadata_methods",
+            "scope": "metadata",
+            "tier": "native",
+            "exposure": "core",
+            "score": 450,
+        },
+    ]
+    index = Mock(peaks_version="test", fingerprint="fingerprint")
+    index.is_stale.return_value = False
+    index.search_tiered.return_value = ("catalog", matches)
+    state = SharedState(FakeIPython(), api_index=index)
+    state.verified_apis[k_convert_id] = {
+        "id": k_convert_id,
+        "name": "k_convert",
+        "module": "peaks.core.process.k_conversion",
+        "scope": "dataarray",
+    }
+    registered = {}
+    fake_mcp = Mock()
+
+    def tool(**metadata):
+        def decorate(function):
+            registered[metadata["name"]] = function
+            return function
+
+        return decorate
+
+    fake_mcp.tool.side_effect = tool
+    register_safe_tools(
+        fake_mcp,
+        state,
+        Mock(),
+        AuditLogger(tmp_path / "audit.jsonl"),
+    )
+
+    result = registered["search"](query="assign_normal_emission")
+
+    assert result["match_mode"] == "exact_name"
+    assert result["session_proof_ledger"] == [
+        {
+            "canonical_id": k_convert_id,
+            "name": "k_convert",
+            "scope": "dataarray",
+        }
+    ]
+    assert [row["proof_status"] for row in result["matches"]] == [
+        "needs_get",
+        "needs_get",
+    ]
+    assert result["next_action"] == {
+        "action": "get_only_selected_unproven",
+        "eligible_canonical_ids": [assign_id],
+        "instruction": (
+            "Choose only APIs you will call, then get each eligible id once. "
+            "Never get an id listed in session_proof_ledger."
+        ),
+    }
+
+
+def test_invalid_catalog_enumeration_requires_a_descriptive_query(monkeypatch, tmp_path):
+    from peaksMCP.server.jupyter_peaks.core.tools import register_safe_tools
+    from peaksMCP.server.jupyter_peaks.security import AuditLogger
+
+    entry = {
+        "id": "top_level:peaks.example:example",
+        "name": "example",
+        "module": "peaks.example",
+        "scope": "top_level",
+        "tier": "native",
+        "exposure": "core",
+        "score": 300,
+    }
+    index = Mock(peaks_version="test", fingerprint="fingerprint")
+    index.is_stale.return_value = False
+    index.search_tiered.return_value = ("all", [entry])
+    state = SharedState(FakeIPython(), api_index=index)
+    registered = {}
+    fake_mcp = Mock()
+
+    def tool(**metadata):
+        def decorate(function):
+            registered[metadata["name"]] = function
+            return function
+
+        return decorate
+
+    fake_mcp.tool.side_effect = tool
+    register_safe_tools(fake_mcp, state, Mock(), AuditLogger(tmp_path / "audit.jsonl"))
+
+    for query in ("", "*", "a", "list all"):
+        result = registered["search"](query=query)
+        assert result["matches"], query
+        assert result["next_action"]["action"] == "refine_search"
+        assert "eligible_canonical_ids" not in result["next_action"]
+
+
+def test_fuzzy_search_only_offers_the_highest_ranked_get_target(monkeypatch, tmp_path):
+    from peaksMCP.server.jupyter_peaks.core.tools import register_safe_tools
+    from peaksMCP.server.jupyter_peaks.security import AuditLogger
+
+    entries = [
+        {
+            "id": f"top_level:peaks.example:{name}",
+            "name": name,
+            "module": "peaks.example",
+            "scope": "top_level",
+            "tier": "native",
+            "exposure": "core",
+            "score": score,
+        }
+        for name, score in (("load_experiment", 700), ("bin_data", 500), ("extract_cut", 400))
+    ]
+    index = Mock(peaks_version="test", fingerprint="fingerprint")
+    index.is_stale.return_value = False
+    index.search_tiered.return_value = ("catalog", entries)
+    state = SharedState(FakeIPython(), api_index=index)
+    registered = {}
+    fake_mcp = Mock()
+
+    def tool(**metadata):
+        def decorate(function):
+            registered[metadata["name"]] = function
+            return function
+
+        return decorate
+
+    fake_mcp.tool.side_effect = tool
+    register_safe_tools(fake_mcp, state, Mock(), AuditLogger(tmp_path / "audit.jsonl"))
+
+    result = registered["search"](query="preprocess all 2D data")
+
+    assert result["match_mode"] == "fuzzy"
+    assert result["next_action"]["eligible_canonical_ids"] == [entries[0]["id"]]
+
+
+def test_live_tool_schemas_use_exact_model_facing_parameter_names():
+    server = JupyterPeaksMCPServer(SharedState(FakeIPython()))
+    schemas = {
+        tool.name: tool.parameters for tool in asyncio.run(server.mcp.list_tools())
+    }
+
+    assert set(schemas["search"]["properties"]) == {
+        "query", "scope", "limit", "include_advanced"
+    }
+    assert set(schemas["get"]["properties"]) == {"canonical_id"}
+    assert set(schemas["run_cell"]["properties"]) == {
+        "code", "timeout", "api_ids", "cell_type"
+    }
+    assert set(schemas["save_with_consent"]["properties"]) == {
+        "variable_name", "path", "overwrite"
+    }
+    assert all(schema.get("additionalProperties") is False for schema in schemas.values())
 
 
 def test_normalize_outputs_suppresses_plain_text_even_after_an_image():
@@ -187,8 +565,9 @@ def test_normalize_outputs_suppresses_markdown_boxes_without_figure_or_error():
             "data": {
                 "text/markdown": (
                     '<div class="alert alert-block alert-success">'
-                    "<b>Au fitting results: </b> Resolution (1st fit) "
-                    "9.08 meV, accuracy_by_2nd_fitting 9.08 meV</div>"
+                    "<b>Au fitting results: </b> Resolution (1st fit): FWHM "
+                    "9.08 meV (instrument);   Resolution (2nd fit): FWHM "
+                    "11.20 meV (effective temperature 22.0 K)</div>"
                 )
             },
         }
@@ -196,7 +575,7 @@ def test_normalize_outputs_suppresses_markdown_boxes_without_figure_or_error():
     blocks = _normalize_outputs(outputs)
     readable = "\n".join(getattr(block, "text", "") for block in blocks)
     assert "Au fitting results:" not in readable
-    assert "Resolution (1st fit) 9.08 meV" not in readable
+    assert "Resolution (1st fit): FWHM 9.08 meV" not in readable
     assert "<div>" not in readable and "<b>" not in readable
 
 

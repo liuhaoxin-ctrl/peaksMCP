@@ -157,11 +157,6 @@ def test_object_and_module_aliases_cannot_bypass_scanner(code, rule):
 @pytest.mark.parametrize("code", [
     "import os\nf = os.system\nf = print\nf('hello')",
     "import os\nf = os.system\ndef harmless(f):\n    f('hello')",
-    "from pathlib import Path\np = Path('x')\nq = p\nq.read_text()",
-    "from pathlib import Path\np = Path('x')\np.open()",
-    "from pathlib import Path\np = Path('x')\np.open('rb')",
-    "import builtins\nbuiltins.open('x', 'r')",
-    "from io import open as op\nop('x', mode='rb')",
     "from os import environ as env\nprint(env.get('A'))",
     "from os import environ\nprint(environ['A'])",
     "from os import environ as env\nenv = {}\nenv['A'] = 'B'",
@@ -172,6 +167,48 @@ def test_readonly_and_local_rebindings_remain_allowed(code):
     result = scan_code(code)
     assert result.is_safe, result.to_dict()
     assert result.requires_explicit_consent == []
+
+
+@pytest.mark.parametrize("code", [
+    "open('scan.nc')",
+    "open('scan.nc', 'rb')",
+    "import builtins\nbuiltins.open('scan.nc', mode='r')",
+    "from io import open as op\nop('scan.nc', mode='rb')",
+    "from pathlib import Path\np = Path('scan.nc')\nq = p\nq.read_text()",
+    "from pathlib import Path\nPath('scan.nc').read_bytes()",
+    "from pathlib import Path\nPath('scan.nc').open()",
+    "from pathlib import Path\np = Path('data')\nlist(p.iterdir())",
+    "from pathlib import Path\nlist(Path('data').glob('*.nc'))",
+    "from pathlib import Path\nlist(Path('data').rglob('*.nc'))",
+    "import os\nlist(os.walk('data'))",
+    "from os import listdir as ls\nls('data')",
+    "import os as operating_system\nlist(operating_system.scandir('data'))",
+    "import pandas as pd\npd.read_csv('datasheet.csv')",
+    "from pandas import read_json as load_json\nload_json('metadata.json')",
+    "import xarray as xr\nxr.open_dataset('scan.nc')",
+    "from xarray import open_dataarray as oda\noda('scan.nc')",
+    "import numpy as np\nnp.load('scan.npy')",
+    "import numpy\nnumpy.loadtxt('scan.txt')",
+    "from numpy import genfromtxt as load_table\nload_table('scan.csv')",
+    "import numpy as np\nnp.fromfile('scan.bin')",
+    "import numpy as np\nnp.memmap('scan.bin')",
+])
+def test_direct_filesystem_reads_and_listings_are_blocked(code):
+    result = scan_code(code)
+
+    assert result.blocked, result.to_dict()
+    assert any(issue.rule_id == "FILE004" for issue in result.issues), result.to_dict()
+
+
+@pytest.mark.parametrize("code", [
+    "import peaks\nexperiment = peaks.load_experiment('/data')",
+    "from peaks import load_experiment as load\nexperiment = load('/data')",
+])
+def test_peaks_load_experiment_is_not_treated_as_a_direct_file_read(code):
+    result = scan_code(code)
+
+    assert result.is_safe, result.to_dict()
+    assert not any(issue.rule_id == "FILE004" for issue in result.issues)
 
 
 @pytest.mark.parametrize("code", [
@@ -193,6 +230,7 @@ def test_network_client_aliases_require_explicit_consent(code):
     "from pathlib import Path\np = Path('x')\np.write_text('bad')",
     "import builtins\nbuiltins.open('x', 'w')",
     "from os import environ\nenviron['A'] = 'B'",
+    "import xarray as xr\nxr.open_dataset('scan.nc')",
 ])
 def test_alias_bypasses_are_rejected_before_kernel_execution(code):
     """Check the real backend gate without executing any of the unsafe source."""
@@ -234,18 +272,47 @@ def test_file_write_and_network_require_explicit_consent(code):
 
 
 @pytest.mark.parametrize("code", [
-    # Path used for read-only traversal stays allowed.
-    "from pathlib import Path\np = Path('data')\nfiles = list(p.iterdir())",
+    "df.to_json('out.json')",
+    "df.to_json(path_or_buf='out.json')",
+    "df.to_excel('out.xlsx')",
+    "df.to_parquet(path='out.parquet')",
+    "df.to_hdf('out.h5', key='data')",
+    "df.to_feather('out.feather')",
+    "df.to_pickle('out.pkl')",
+    "dataset.to_netcdf(path='out.nc')",
+    "dataset.to_zarr('out.zarr')",
+])
+def test_dataframe_and_xarray_output_targets_require_explicit_consent(code):
+    result = scan_code(code)
+    assert result.is_safe
+    assert any(
+        issue.rule_id == "SAVE002"
+        for issue in result.requires_explicit_consent
+    ), result.to_dict()
+
+
+@pytest.mark.parametrize("code", [
+    "payload = df.to_json()",
+    "payload = df.to_json(path_or_buf=None)",
+    "payload = df.to_csv()",
+    "payload = df.to_parquet(path=None)",
+    "payload = dataset.to_netcdf()",
+])
+def test_in_memory_serialization_without_output_target_is_allowed(code):
+    result = scan_code(code)
+    assert result.is_safe, result.to_dict()
+    assert result.requires_explicit_consent == []
+
+
+@pytest.mark.parametrize("code", [
+    # Path metadata checks do not expose file contents or directory listings.
     "from pathlib import Path\np = Path('data')\nprint(p.exists())",
-    # read-only open stays allowed.
-    "open('x', 'r')",
-    "open('x', mode='r')",
     # benign attribute chains that share fragments of dangerous names.
     "import os\nprint(os.path.join('a', 'b'))",
     "os.getcwd()",
     "smoothed = data.attrs.get('environ')",
 ])
-def test_read_only_path_and_open_are_allowed(code):
+def test_non_reading_path_inspection_is_allowed(code):
     assert scan_code(code).is_safe
 
 
@@ -444,13 +511,104 @@ def test_write_without_proof_blocks_exact_peaks_calls_until_get(tmp_path):
     assert "k_convert" in str(first.get("unknown_refs"))
     assert state.bridge.request.call_count == 0
     # Invented API stays blocked even after proof of an unrelated name.
-    _prove(state, state.api_index, "k_convert", "dataarray")
+    k_convert_id = _prove(state, state.api_index, "k_convert", "dataarray")
     blocked = nb.write_with_api_check("da.correct_EF()", timeout=5)
     assert blocked["blocked"] is True
     assert "correct_EF" in str(blocked.get("unknown_refs"))
     # The proven canonical call now runs.
-    second = nb.write_with_api_check("da.k_convert(quiet=True)", timeout=5)
+    second = nb.write_with_api_check(
+        "da.k_convert(quiet=True)", timeout=5, api_ids=[k_convert_id]
+    )
     assert not second.get("blocked")
+
+
+def test_cataloged_report_summary_is_generic_after_proven_pxt2nc(tmp_path):
+    """The pxt2nc contract's bounded report display must pass the API gate."""
+    from unittest.mock import Mock
+
+    from peaksMCP.discovery.index import build_index
+    from peaksMCP.server.jupyter_peaks.backend import (
+        SharedState,
+        UnsafeNotebookBackend,
+    )
+    from peaksMCP.server.jupyter_peaks.security import AuditLogger, ConsentManager
+
+    state = SharedState(Mock(user_ns={}))
+    state.require_consent = False
+    state.api_index = build_index()
+    state.bridge = Mock()
+    state.bridge.request.return_value = {"ok": True}
+    pxt2nc_id = _prove(state, state.api_index, "pxt2nc", "top_level")
+    notebook = UnsafeNotebookBackend(
+        state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl")
+    )
+
+    code = (
+        "import peaks as pks\n"
+        "first = pks.pxt2nc('/input')\n"
+        "print(first.summary_line())"
+    )
+    result = notebook.write_with_api_check(code, timeout=5, api_ids=[pxt2nc_id])
+
+    assert not result.get("blocked"), result
+    assert result["api_check"]["unknown_refs"] == []
+    assert "summary_line" in result["api_check"]["generic_refs"]
+
+
+@pytest.mark.parametrize(
+    "method_call",
+    [
+        "ax.set_aspect('equal')",
+        "ax.tick_params(labelsize=8)",
+        "fig.supxlabel('Momentum')",
+        "fig.supylabel('Intensity')",
+    ],
+)
+def test_matplotlib_formatters_are_generic(tmp_path, method_call):
+    from unittest.mock import Mock
+
+    from peaksMCP.discovery.index import build_index
+    from peaksMCP.server.jupyter_peaks.backend import SharedState, UnsafeNotebookBackend
+    from peaksMCP.server.jupyter_peaks.security import AuditLogger, ConsentManager
+
+    state = SharedState(Mock(user_ns={}))
+    state.require_consent = False
+    state.api_index = build_index()
+    state.bridge = Mock()
+    state.bridge.request.return_value = {"ok": True}
+    notebook = UnsafeNotebookBackend(
+        state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl")
+    )
+
+    result = notebook.write_with_api_check(method_call, timeout=5)
+
+    assert not result.get("blocked"), result
+    assert method_call.split(".", 1)[1].split("(", 1)[0] in result["api_check"]["generic_refs"]
+
+
+def test_xarray_null_checks_are_generic(tmp_path):
+    from unittest.mock import Mock
+
+    from peaksMCP.discovery.index import build_index
+    from peaksMCP.server.jupyter_peaks.backend import SharedState, UnsafeNotebookBackend
+    from peaksMCP.server.jupyter_peaks.security import AuditLogger, ConsentManager
+
+    state = SharedState(Mock(user_ns={}))
+    state.require_consent = False
+    state.api_index = build_index()
+    state.bridge = Mock()
+    state.bridge.request.return_value = {"ok": True}
+    notebook = UnsafeNotebookBackend(
+        state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl")
+    )
+
+    result = notebook.write_with_api_check(
+        "valid = data.notnull()\nmissing = data.isnull()", timeout=5
+    )
+
+    assert not result.get("blocked"), result
+    assert result["api_check"]["unknown_refs"] == []
+    assert {"notnull", "isnull"}.issubset(result["api_check"]["generic_refs"])
 
 
 def test_unknown_api_first_advisory_then_same_name_hard(tmp_path):
@@ -498,9 +656,10 @@ def _prove(state, index, name, scope=None):
         _record_verified_api(state, entry)
         found = True
         if scope is not None:
-            break
+            return str(entry["id"])
     if not found:
         raise AssertionError(f"no index entry {name!r} scope={scope!r}")
+    return str(next(entry["id"] for entry in index.entries if entry["name"] == name))
 
 
 def _prove_all(state, index, index_by_name):
@@ -534,24 +693,28 @@ def test_get_api_proof_unlocks_only_canonical_name(tmp_path):
 
     # A python-callable alias does not ship, so add one in-test: the alias must
     # never unlock, while the canonical name must.
-    entry = next(e for e in state.api_index.entries if e["name"] == "show_mapping_slice")
-    alias_name = "mapping_slice_alias"
+    entry = next(e for e in state.api_index.entries if e["name"] == "fit_gold")
+    alias_name = "gold_fit_alias"
     entry["aliases"] = list(entry.get("aliases") or []) + [alias_name]
 
-    first = nb.write_with_api_check(f"{alias_name}(da, dim='eV')", timeout=5)
+    first = nb.write_with_api_check(f"{alias_name}(gold)", timeout=5)
     assert first["blocked"] is True
 
     _record_verified_api(state, entry)  # what a successful get records
 
     # The alias still does not unlock a Python symbol after proof.
-    again = nb.write_with_api_check(f"{alias_name}(da, dim='eV')", timeout=5)
+    again = nb.write_with_api_check(
+        f"{alias_name}(gold)", timeout=5, api_ids=[entry["id"]]
+    )
     assert again["blocked"] is True
 
     # The canonical executable name is unlocked and runs.
-    third = nb.write_with_api_check("show_mapping_slice(da, dim='eV')", timeout=5)
+    third = nb.write_with_api_check(
+        "gold.fit_gold(plot=False)", timeout=5, api_ids=[entry["id"]]
+    )
     assert not third.get("blocked")
     verified = third.get("api_check", {}).get("verified_peaks_apis", [])
-    assert any(item["name"] == "show_mapping_slice" for item in verified)
+    assert any(item["name"] == "fit_gold" for item in verified)
 
 
 def test_savefig_is_hard_blocked_in_run_cell(tmp_path):
@@ -582,6 +745,60 @@ def test_savefig_is_hard_blocked_in_run_cell(tmp_path):
         nb.write_with_api_check(code, timeout=5)
     # Never executed, and no consent dialog was raised for the write either.
     state.bridge.request.assert_not_called()
+
+
+@pytest.mark.parametrize("code", [
+    "df.to_json('out.json')",
+    "df.to_excel('out.xlsx')",
+    "df.to_parquet('out.parquet')",
+    "dataset.to_zarr('out.zarr')",
+])
+def test_dataframe_and_xarray_writers_are_blocked_before_bridge(code, tmp_path):
+    from unittest.mock import Mock
+
+    from peaksMCP.discovery.index import build_index
+    from peaksMCP.server.jupyter_peaks.backend import (
+        SharedState,
+        UnsafeNotebookBackend,
+    )
+    from peaksMCP.server.jupyter_peaks.security import AuditLogger, ConsentManager
+
+    state = SharedState(Mock(user_ns={}))
+    state.require_consent = False
+    state.api_index = build_index()
+    state.bridge = Mock()
+    state.bridge.request.return_value = {"ok": True, "outputs": [], "id": "c1"}
+    notebook = UnsafeNotebookBackend(
+        state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl")
+    )
+
+    with pytest.raises(PermissionError, match="save_with_consent"):
+        notebook.write_with_api_check(code, timeout=5)
+    state.bridge.request.assert_not_called()
+
+
+def test_in_memory_json_serialization_can_reach_bridge(tmp_path):
+    from unittest.mock import Mock
+
+    from peaksMCP.discovery.index import build_index
+    from peaksMCP.server.jupyter_peaks.backend import (
+        SharedState,
+        UnsafeNotebookBackend,
+    )
+    from peaksMCP.server.jupyter_peaks.security import AuditLogger, ConsentManager
+
+    state = SharedState(Mock(user_ns={}))
+    state.require_consent = False
+    state.api_index = build_index()
+    state.bridge = Mock()
+    state.bridge.request.return_value = {"ok": True, "outputs": [], "id": "c1"}
+    notebook = UnsafeNotebookBackend(
+        state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl")
+    )
+
+    result = notebook.write_with_api_check("payload = df.to_json()", timeout=5)
+    assert not result.get("blocked"), result
+    state.bridge.request.assert_called_once()
 
 
 def test_write_with_api_check_classifies_generic_and_verified_calls(tmp_path):
@@ -619,16 +836,18 @@ def test_write_with_api_check_classifies_generic_and_verified_calls(tmp_path):
     # Exact-name Peaks calls need a canonical proof (get) before they run.
     pre = nb.write_with_api_check("da.k_convert(quiet=True)", timeout=5)
     assert pre.get("blocked"), "unproven exact API must not run"
-    _prove_all(nb.state, nb.state.api_index, {"fit_gold": "module", "k_convert": "module"})
-    # k_convert's module proof unlocks the unknown-receiver call; prove the
-    # dataarray-scoped id as well so a DataArray receiver also resolves.
-    _prove(nb.state, nb.state.api_index, "k_convert", "dataarray")
+    fit_gold_id = _prove(nb.state, nb.state.api_index, "fit_gold", "dataarray")
+    k_convert_id = _prove(nb.state, nb.state.api_index, "k_convert", "dataarray")
 
     # Proven APIs are reported as verified regardless of calling convention.
-    verified = nb.write_with_api_check("fit_gold(data)", timeout=5)
+    verified = nb.write_with_api_check(
+        "fit_gold(data)", timeout=5, api_ids=[fit_gold_id]
+    )
     assert not verified.get("blocked")
     assert "fit_gold" in [v["name"] for v in verified["api_check"]["verified_peaks_apis"]]
-    verified = nb.write_with_api_check("da.k_convert(quiet=True)", timeout=5)
+    verified = nb.write_with_api_check(
+        "da.k_convert(quiet=True)", timeout=5, api_ids=[k_convert_id]
+    )
     assert "k_convert" in [v["name"] for v in verified["api_check"]["verified_peaks_apis"]]
 
     # Invented / typo'd Peaks APIs are hard-blocked after unlocking.
@@ -654,12 +873,14 @@ def test_write_with_api_check_receiver_aware_and_scope_aware(monkeypatch, tmp_pa
         state.api_index = build_index()
         state.bridge = Mock()
         state.bridge.request.return_value = {"ok": True}
-        # Seed the canonical proof ledger the flows rely on (get-first).
-        _prove_all(state, state.api_index, {"load": "module", "k_convert": "module"})
-        _prove(state, state.api_index, "k_convert", "dataarray")
-        return UnsafeNotebookBackend(state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl"))
+        load_id = _prove(state, state.api_index, "load_experiment", "top_level")
+        k_convert_id = _prove(state, state.api_index, "k_convert", "dataarray")
+        backend = UnsafeNotebookBackend(
+            state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl")
+        )
+        return backend, load_id, k_convert_id
 
-    nb = make_backend()
+    nb, load_id, k_convert_id = make_backend()
 
     # 1) strict is removed from the public signature (no bypass path).
     assert "strict" not in inspect.signature(nb.write_with_api_check).parameters
@@ -668,16 +889,19 @@ def test_write_with_api_check_receiver_aware_and_scope_aware(monkeypatch, tmp_pa
     for code in (
         "import numpy as n\nn.linalg.svd(x)",
         "import matplotlib.pyplot as plt\nfig = plt.figure()\nfig.show()",
-        "data = load('/x.nc')\ndata.k_convert(quiet=True)",
-        "import peaks as pks\ndata = pks.load('/x.nc')\ndata.k_convert(quiet=True)",
+        "data = load_experiment('/x.nc')\ndata.k_convert(quiet=True)",
+        "import peaks as pks\ndata = pks.load_experiment('/x.nc')\ndata.k_convert(quiet=True)",
     ):
-        assert not nb.write_with_api_check(code, timeout=5).get("blocked"), code
+        ids = [load_id, k_convert_id] if "load_experiment" in code else None
+        assert not nb.write_with_api_check(code, timeout=5, api_ids=ids).get("blocked"), code
 
     # 4) external-module members never match Peaks APIs by name.
     assert not nb.write_with_api_check("np.linalg.svd(x)", timeout=5).get("blocked")
 
     # 6) mixed None/str receivers sort by source position without a TypeError.
-    assert not nb.write_with_api_check("da[i].mean(); da.k_convert()", timeout=5).get("blocked")
+    assert not nb.write_with_api_check(
+        "da[i].mean(); da.k_convert()", timeout=5, api_ids=[k_convert_id]
+    ).get("blocked")
 
     # 5) fail-closed: invented/typo'd APIs on unprovable receivers are blocked.
     blocked = nb.write_with_api_check("make().correct_EF()", timeout=5)
@@ -690,18 +914,33 @@ def test_write_with_api_check_receiver_aware_and_scope_aware(monkeypatch, tmp_pa
     import numpy as np
     import xarray as xr
 
-    nb2 = make_backend({"da": xr.DataArray(np.zeros((4, 4)), dims=("eV", "theta_par"))})
-    assert not nb2.write_with_api_check("da.k_convert(quiet=True)", timeout=5).get("blocked")
+    nb2, _, nb2_k_convert_id = make_backend(
+        {"da": xr.DataArray(np.zeros((4, 4)), dims=("eV", "theta_par"))}
+    )
+    assert not nb2.write_with_api_check(
+        "da.k_convert(quiet=True)", timeout=5, api_ids=[nb2_k_convert_id]
+    ).get("blocked")
     blocked = nb2.write_with_api_check("da.plot_bz(...)", timeout=5)
     assert blocked.get("blocked") and "plot_bz" in str(blocked.get("unknown_refs"))
     assert not nb2.write_with_api_check("da[i].mean()", timeout=5).get("blocked")
 
-    # 7) a stale index is hot-rebuilt in-kernel instead of erroring.
-    stale = make_backend()
+    # 7) a stale index is hot-rebuilt in-kernel, but an old proof cannot unlock
+    # the refreshed contract until it is proven again.
+    stale, _, stale_k_convert_id = make_backend()
     stale.state.api_index.fingerprint = "changed-after-build"
-    result = stale.write_with_api_check("da.k_convert()", timeout=5)
-    assert not result.get("blocked")
+    result = stale.write_with_api_check(
+        "da.k_convert()", timeout=5, api_ids=[stale_k_convert_id]
+    )
+    assert result.get("blocked") is True
+    assert result["unproven_api_ids"] == [stale_k_convert_id]
+    assert stale.state.verified_apis == {}
     assert stale.state.api_index.is_stale() is False
+    refreshed_id = _prove(stale.state, stale.state.api_index, "k_convert", "dataarray")
+    assert refreshed_id == stale_k_convert_id
+    retry = stale.write_with_api_check(
+        "da.k_convert()", timeout=5, api_ids=[refreshed_id]
+    )
+    assert not retry.get("blocked")
 
 
 def test_unique_canonical_name_is_provable_on_an_untyped_receiver(tmp_path):
@@ -733,10 +972,9 @@ def test_unique_canonical_name_is_provable_on_an_untyped_receiver(tmp_path):
         state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl")
     )
 
-    # The index carries several scoped ids for the name (dataarray / module /
-    # ...), yet search exposes exactly one row: the twins cannot be discovered.
+    # The curated index exposes exactly one canonical id for each name.
     for name in ("fit_gold", "k_convert"):
-        assert len([e for e in state.api_index.entries if e["name"] == name]) >= 2
+        assert len([e for e in state.api_index.entries if e["name"] == name]) == 1
         rows = [m for m in state.api_index.search(name, "all", 5) if m.get("name") == name]
         assert len(rows) == 1
 
@@ -747,14 +985,14 @@ def test_unique_canonical_name_is_provable_on_an_untyped_receiver(tmp_path):
 
     # After get, the method form works on a plain variable of unknown type,
     # and so does the bare form of the one-id name.
-    _prove(state, state.api_index, "fit_gold", "dataarray")
-    _prove(state, state.api_index, "k_convert", "dataarray")
-    for code in (
-        "gold.fit_gold(plot=False)",
-        "k_convert(da, quiet=True)",
-        "shifted.k_convert(quiet=True)",
+    fit_gold_id = _prove(state, state.api_index, "fit_gold", "dataarray")
+    k_convert_id = _prove(state, state.api_index, "k_convert", "dataarray")
+    for code, api_id in (
+        ("gold.fit_gold(plot=False)", fit_gold_id),
+        ("k_convert(da, quiet=True)", k_convert_id),
+        ("shifted.k_convert(quiet=True)", k_convert_id),
     ):
-        result = backend.write_with_api_check(code, timeout=5)
+        result = backend.write_with_api_check(code, timeout=5, api_ids=[api_id])
         assert not result.get("blocked"), (code, result)
 
     # An inconclusive receiver stays fail-closed for names Peaks does not have.
@@ -763,7 +1001,7 @@ def test_unique_canonical_name_is_provable_on_an_untyped_receiver(tmp_path):
 
 
 def test_project_import_gate_accepts_all_legal_import_forms(tmp_path):
-    """Legal peaksMCP import shapes must all pass the API check: plain,
+    """Legal peaks import shapes must all pass the API check: plain,
     parenthesised across lines, ``as`` renames, and module-alias calls."""
     from unittest.mock import Mock
 
@@ -780,17 +1018,18 @@ def test_project_import_gate_accepts_all_legal_import_forms(tmp_path):
     state.bridge = Mock()
     state.bridge.request.return_value = {"ok": True}
     nb = UnsafeNotebookBackend(state, ConsentManager(), AuditLogger(tmp_path / "t.jsonl"))
-    _prove_all(state, state.api_index, {"load_data": "module", "load": "module", "k_convert": "module"})
-    _prove(state, state.api_index, "k_convert", "dataarray")
+    load_id = _prove(state, state.api_index, "load_experiment", "top_level")
+    k_convert_id = _prove(state, state.api_index, "k_convert", "dataarray")
 
     for code in (
-        "from peaksMCP.overrides import load_data\nload_data('scan.pxt')",
-        "from peaksMCP.overrides import (\n    load_data,\n)\nload_data('scan.pxt')",
-        "from peaksMCP.overrides import load_data as ld\nld('scan.pxt')",
-        "import peaksMCP.overrides as ov\nov.load_data('scan.pxt')",
-        "from peaks import load\ndata = load('scan.nc')\ndata.k_convert(quiet=True)",
+        "from peaks import load_experiment\nload_experiment('data_netcdf')",
+        "from peaks import (\n    load_experiment,\n)\nload_experiment('data_netcdf')",
+        "from peaks import load_experiment as ld\nld('data_netcdf')",
+        "import peaks as pks\npks.load_experiment('data_netcdf')",
+        "from peaks import load_experiment\ndata = load_experiment('data_netcdf')\ndata.k_convert(quiet=True)",
     ):
-        result = nb.write_with_api_check(code, timeout=5)
+        ids = [load_id, k_convert_id] if "k_convert" in code else [load_id]
+        result = nb.write_with_api_check(code, timeout=5, api_ids=ids)
         assert not result.get("blocked"), (code, result)
 
 
@@ -850,11 +1089,15 @@ def test_scope_mismatch_hint_distinguishes_proven_name(tmp_path):
 
     # 只证明 dataarray scope 的 k_convert：未定型调用点（裸调用 / 无法推断
     # 接收者）接受该证明 —— search 只能给出这一条 id，找不到 module twin。
-    _prove(state, state.api_index, "k_convert", "dataarray")
-    assert not nb.write_with_api_check("k_convert(da, quiet=True)", timeout=5).get("blocked")
-    assert not nb.write_with_api_check("shifted.k_convert(quiet=True)", timeout=5).get("blocked")
+    k_convert_id = _prove(state, state.api_index, "k_convert", "dataarray")
+    assert not nb.write_with_api_check(
+        "k_convert(da, quiet=True)", timeout=5, api_ids=[k_convert_id]
+    ).get("blocked")
+    assert not nb.write_with_api_check(
+        "shifted.k_convert(quiet=True)", timeout=5, api_ids=[k_convert_id]
+    ).get("blocked")
 
-    # 接收者 scope 已知时仍然严格：模块级 plot_bz 用在 DataArray 上 → scope 不匹配。
+    # 接收者 scope 已知时仍然严格：模块级 drift_correction 用在 DataArray 上。
     import numpy as np
     import xarray as xr
 
@@ -866,8 +1109,10 @@ def test_scope_mismatch_hint_distinguishes_proven_name(tmp_path):
     nb_typed = UnsafeNotebookBackend(
         typed, ConsentManager(), AuditLogger(tmp_path / "typed.jsonl")
     )
-    _prove(typed, typed.api_index, "plot_bz", "module")
-    result = nb_typed.write_with_api_check("da.plot_bz(...)", timeout=5)
+    drift_id = _prove(typed, typed.api_index, "drift_correction", "module")
+    result = nb_typed.write_with_api_check(
+        "da.drift_correction(...)", timeout=5, api_ids=[drift_id]
+    )
     assert result.get("blocked") is True
     assert "不匹配" in result["message"] or "scope" in result["message"]
 

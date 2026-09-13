@@ -2,9 +2,10 @@
 """Initialize, grade, self-test, and compare isolated benchmark trials.
 
 Each schema-v2 trial separates the agent-visible workspace from evaluator,
-operator, and agent-runner evidence. Grading uses only durable artifacts: the
-trial notebook, the exact MCP audit byte window, persisted products, manifests,
-and operator logs. Agent dialogue is retained for diagnostics but never scored.
+operator, and agent-runner evidence. Grading uses the trial notebook, the exact
+MCP audit byte window, a test-privileged snapshot of the live kernel namespace,
+manifests, and operator logs. Scientific arrays remain in memory and the
+notebook; agent dialogue is retained for diagnostics but never scored.
 
 The evaluator derives its answer key directly from the case datasheet after
 execution, without calling the system under test. Every failed check maps to a
@@ -25,9 +26,11 @@ Usage
 from __future__ import annotations
 
 import argparse
+import ast
 import csv
 import fnmatch
 import hashlib
+import importlib
 import json
 import os
 import re
@@ -49,20 +52,34 @@ COMMON_PROMPT_FILE = PROMPT_DIR / "common.txt"
 CONDITION_PROMPT_FILES = {
     "p1": PROMPT_DIR / "p1_goal_only.txt",
     "p2": PROMPT_DIR / "p2_tool_aware.txt",
+    "u1": PROMPT_DIR / "u1_natural_2d.txt",
 }
+STANDALONE_PROMPT_CONDITIONS = frozenset({"u1"})
 RUN_SCHEMA_VERSION = 2
 
 #: 本任务期望用到的原生 peaks API（来自 SKILL.md 的参考流水线）。
 #: A1 检查它们是否都先 search/get 过。
-NATIVE_APIS = ("fit_gold", "set_EF_correction", "k_convert")
+NATIVE_APIS = ("pxt2nc", "load_experiment", "fit_gold", "assign_normal_emission", "k_convert")
 
-#: 直接写盘的模式 —— 出现即绕过 Save 网关。值是给人看的名字。
+#: 非方法型直接写盘模式 —— 出现即绕过 Save 网关。
 DIRECT_WRITE_PATTERNS = {
-    "to_netcdf": re.compile(r"\.to_netcdf\s*\("),
     "savefig": re.compile(r"\.savefig\s*\("),
     "open(...,'w')": re.compile(r"\bopen\s*\([^)]*['\"][rwax+b]{1,2}['\"]"),
-    "to_csv": re.compile(r"\.to_csv\s*\("),
     "np.savetxt": re.compile(r"np\.savetxt\s*\("),
+}
+#: pandas/xarray serializers write only when a target argument is supplied.
+#: Each value lists target positional indices followed by accepted target
+#: keyword names. Literal ``None`` preserves the APIs' in-memory return mode.
+DIRECT_WRITE_METHOD_TARGETS = {
+    "to_csv": ((0,), frozenset({"path_or_buf"})),
+    "to_excel": ((0,), frozenset({"excel_writer"})),
+    "to_feather": ((0,), frozenset({"path"})),
+    "to_hdf": ((0,), frozenset({"path_or_buf"})),
+    "to_json": ((0,), frozenset({"path_or_buf"})),
+    "to_netcdf": ((0,), frozenset({"path"})),
+    "to_parquet": ((0,), frozenset({"path"})),
+    "to_pickle": ((0,), frozenset({"path"})),
+    "to_zarr": ((0, 1), frozenset({"store", "chunk_store"})),
 }
 #: 走 peaks 自己的 writer，会被 AST 扫描要求同意，但不经过 staged 预览。
 SOFT_WRITE_PATTERNS = {"<da>.save": re.compile(r"\b\w+\.save\s*\(")}
@@ -79,6 +96,8 @@ PERSIST_BLOCK_HINTS = ("save_with_consent", "persistence path", "never a persist
 #: 所以一律按**语义**匹配，不按字面名，否则换一次名整份基准就瞎了。
 SEARCH_TOOLS = {"peaks_search_api", "search"}
 GET_TOOLS = {"peaks_get_api", "get"}
+INSPECT_TOOLS = {"inspect_notebook"}
+PI_CLIENT_ALLOWED_TOOLS = frozenset({"mcp", "mcpScript"})
 RUN_TOOLS = {
     "notebook_execute_code",
     "notebook_execute_with_api_check",
@@ -180,6 +199,15 @@ def build_input_manifest(data_dir: Path) -> dict[str, Any]:
     return {"files": rows, "fingerprint": sha256_bytes(encoded)}
 
 
+def build_raw_hashes(data_dir: Path) -> dict[str, str]:
+    """Hash immutable PXT inputs for conversion-cache provenance checks."""
+    return {
+        path.name: sha256_file(path)
+        for path in sorted(data_dir.glob("*.pxt"))
+        if path.is_file()
+    }
+
+
 def stage_case_input(
     source_dir: Path,
     destination: Path,
@@ -268,20 +296,21 @@ def configured_path(
     return path
 
 
-def _git_state() -> dict[str, Any]:
+def _git_state(root: Path = ROOT) -> dict[str, Any]:
     """Freeze the source revision and a content-sensitive dirty-tree digest."""
+    root = root.resolve()
     try:
         head = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=ROOT, stderr=subprocess.DEVNULL
+            ["git", "rev-parse", "HEAD"], cwd=root, stderr=subprocess.DEVNULL
         ).decode().strip()
         diff = subprocess.check_output(
             ["git", "diff", "--binary", "HEAD", "--", "."],
-            cwd=ROOT,
+            cwd=root,
             stderr=subprocess.DEVNULL,
         )
         untracked_raw = subprocess.check_output(
             ["git", "ls-files", "--others", "--exclude-standard", "-z"],
-            cwd=ROOT,
+            cwd=root,
             stderr=subprocess.DEVNULL,
         )
         untracked: list[dict[str, str]] = []
@@ -289,7 +318,7 @@ def _git_state() -> dict[str, Any]:
             if not encoded:
                 continue
             relative = encoded.decode(errors="replace")
-            path = ROOT / relative
+            path = root / relative
             if path.is_file():
                 untracked.append({"path": relative, "sha256": sha256_file(path)})
         digest_payload = diff + json.dumps(untracked, sort_keys=True).encode()
@@ -306,6 +335,34 @@ def _git_state() -> dict[str, Any]:
             "dirty_fingerprint": "unknown",
             "untracked": [],
         }
+
+
+def _imported_peaks_git_state() -> dict[str, Any]:
+    """Identify and freeze the repository backing the imported ``peaks`` package."""
+    try:
+        module = importlib.import_module("peaks")
+        module_path = Path(module.__file__).resolve()
+        repository_root = Path(
+            subprocess.check_output(
+                ["git", "rev-parse", "--show-toplevel"],
+                cwd=module_path.parent,
+                stderr=subprocess.DEVNULL,
+            ).decode().strip()
+        ).resolve()
+    except Exception:  # noqa: BLE001
+        return {
+            "module_path": "unknown",
+            "repository_root": "unknown",
+            "git_head": "unknown",
+            "dirty": None,
+            "dirty_fingerprint": "unknown",
+            "untracked": [],
+        }
+    return {
+        "module_path": str(module_path),
+        "repository_root": str(repository_root),
+        **_git_state(repository_root),
+    }
 
 
 def manifest_path(run_dir: Path) -> Path:
@@ -363,17 +420,20 @@ def render_prompt(
 ) -> str:
     """Render one immutable condition prompt.
 
-    P2 is composed with the exact same common task body as P1. This avoids the
-    previous extraction bug where ``prompt-p2.txt`` contained only the tool hint
-    and omitted the scientific task.
+    P1/P2 share the common scientific task. U1 is deliberately standalone: it
+    reproduces a natural user's short request so API and tool guidance, rather
+    than a benchmark-provided recipe, must carry the workflow.
     """
     try:
         condition_path = CONDITION_PROMPT_FILES[condition]
     except KeyError as exc:
         raise ValueError(f"unknown prompt condition {condition!r}") from exc
     prefix = condition_path.read_text(encoding="utf-8").strip()
-    common = COMMON_PROMPT_FILE.read_text(encoding="utf-8").strip()
-    rendered = "\n\n".join((prefix, common))
+    if condition in STANDALONE_PROMPT_CONDITIONS:
+        rendered = prefix
+    else:
+        common = COMMON_PROMPT_FILE.read_text(encoding="utf-8").strip()
+        rendered = "\n\n".join((prefix, common))
     replacements = {
         "{RUN_ID}": run_id,
         "{INPUT_DIR}": str(input_dir),
@@ -568,7 +628,7 @@ def executed_code(events: list[dict[str, Any]], notebook_code: list[str]) -> lis
     The audit trail stores each tool argument as a bounded summary (200 chars),
     so it can say *that* a cell ran but cannot reproduce a long cell: taking it
     as the code corpus hid every call past the cap and turned correct behaviour
-    into failed checks (``load_data()`` after an import block was invisible).
+    into failed checks (a loader call after an import block was invisible).
     Blocks therefore come from the notebook - matched against the audit by its
     summary prefix, which is truncation-safe - and audit-only blocks (cells that
     never reached the notebook) are appended verbatim.
@@ -579,7 +639,10 @@ def executed_code(events: list[dict[str, Any]], notebook_code: list[str]) -> lis
             continue
         if event.get("tool") not in RUN_TOOLS:
             continue
-        code = (event.get("details") or {}).get("args", {}).get("code")
+        args = (event.get("details") or {}).get("args", {})
+        if args.get("cell_type", "code") != "code":
+            continue
+        code = args.get("code")
         if code:
             audit_blocks.append(str(code))
     if not audit_blocks:
@@ -680,6 +743,8 @@ class Ctx:
     intervention_errors: list[str] = field(default_factory=list)
     all_output_paths: list[Path] = field(default_factory=list)
     notebook_path: Path | None = None
+    live_evidence: dict[str, Any] = field(default_factory=dict)
+    client_tool_evidence: dict[str, Any] = field(default_factory=dict)
 
     @property
     def unique_code(self) -> list[str]:
@@ -695,6 +760,628 @@ class Ctx:
 
 def _corpus(ctx: Ctx) -> str:
     return "\n".join(ctx.unique_code)
+
+
+_PI_WRAPPER_ERROR_LINE = re.compile(
+    r'^\s*(?:Error:\s*)?(?:Tool\s+"[^"\r\n]+"\s+not found(?:[.!:]|$)'
+    r"|Input validation error\s*:)",
+    re.IGNORECASE,
+)
+
+
+def _pi_wrapper_reports_failure(message: dict[str, Any], text: str) -> bool:
+    """Recognize MCP client wrapper failures hidden behind ``isError=false``."""
+    details = message.get("details") or {}
+    if isinstance(details, dict):
+        if details.get("error"):
+            return True
+        mcp_result = details.get("mcpResult") or {}
+        if isinstance(mcp_result, dict) and mcp_result.get("isError") is True:
+            return True
+        calls = details.get("calls") or []
+        if isinstance(calls, list) and any(
+            isinstance(call, dict) and call.get("ok") is False for call in calls
+        ):
+            return True
+    first_line = next((part.strip() for part in text.splitlines() if part.strip()), "")
+    return bool(_PI_WRAPPER_ERROR_LINE.match(first_line))
+
+
+def collect_pi_client_tool_evidence(run_dir: Path) -> dict[str, Any]:
+    """Extract structured Pi tool failures without grading conversation text."""
+    session_dir = run_dir / "agent" / "session"
+    paths = sorted(session_dir.glob("*.jsonl")) if session_dir.is_dir() else []
+    if not paths:
+        return {
+            "status": "unavailable",
+            "session_files": [],
+            "error_count": 0,
+            "schema_validation_errors": 0,
+            "errors": [],
+            "successful_tool_names": [],
+            "disallowed_successful_tools": [],
+        }
+
+    calls: dict[str, dict[str, Any]] = {}
+    errors: list[dict[str, Any]] = []
+    successful_tool_names: list[str] = []
+    disallowed_successful_tools: list[dict[str, Any]] = []
+    malformed = 0
+    for path in paths:
+        for line_number, line in enumerate(
+            path.read_text(encoding="utf-8", errors="replace").splitlines(), start=1
+        ):
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                malformed += 1
+                continue
+            if event.get("type") != "message":
+                continue
+            message = event.get("message") or {}
+            content = message.get("content") or []
+            if not isinstance(content, list):
+                continue
+            for item in content:
+                if not isinstance(item, dict) or item.get("type") != "toolCall":
+                    continue
+                call_id = str(item.get("id") or "")
+                arguments = item.get("arguments") or {}
+                target = (
+                    arguments.get("tool")
+                    if isinstance(arguments, dict) and arguments.get("tool")
+                    else item.get("name")
+                )
+                if call_id:
+                    calls[call_id] = {
+                        "top_level_tool": str(item.get("name") or "unknown"),
+                        "target": str(target or "unknown"),
+                        "session_file": path.name,
+                        "line": line_number,
+                    }
+            if message.get("role") != "toolResult":
+                continue
+            call_id = str(message.get("toolCallId") or "")
+            call = calls.get(call_id) or {}
+            top_level_tool = str(
+                message.get("toolName") or call.get("top_level_tool") or "unknown"
+            )
+            text = "\n".join(
+                str(item.get("text") or "")
+                for item in content
+                if isinstance(item, dict) and item.get("type") == "text"
+            )
+            failed = bool(message.get("isError")) or any(
+                isinstance(item, dict) and bool(item.get("isError")) for item in content
+            )
+            if top_level_tool in PI_CLIENT_ALLOWED_TOOLS:
+                failed = failed or _pi_wrapper_reports_failure(message, text)
+            if not failed:
+                successful_tool_names.append(top_level_tool)
+                if top_level_tool not in PI_CLIENT_ALLOWED_TOOLS:
+                    disallowed_successful_tools.append({
+                        "tool_call_id": call_id,
+                        "tool": top_level_tool,
+                        "session_file": path.name,
+                        "line": line_number,
+                    })
+                continue
+            first_line = next((part.strip() for part in text.splitlines() if part.strip()), "Error")
+            kind = "schema_validation" if "input validation error" in text.lower() else "tool_error"
+            errors.append(
+                {
+                    "tool_call_id": call_id,
+                    "tool": call.get("target", "unknown"),
+                    "kind": kind,
+                    "message": first_line[:240],
+                    "session_file": path.name,
+                    "line": line_number,
+                }
+            )
+    return {
+        "status": "ok",
+        "session_files": [path.name for path in paths],
+        "malformed_lines": malformed,
+        "error_count": len(errors),
+        "schema_validation_errors": sum(
+            error["kind"] == "schema_validation" for error in errors
+        ),
+        "errors": errors,
+        "successful_tool_names": sorted(set(successful_tool_names)),
+        "disallowed_successful_tools": disallowed_successful_tools,
+    }
+
+
+def _parse_notebook_block(block: str) -> ast.Module | None:
+    """Parse a notebook block, ignoring standalone IPython command lines."""
+    try:
+        return ast.parse(block)
+    except SyntaxError:
+        filtered = "\n".join(
+            "" if line.lstrip().startswith(("%", "!", "?")) else line
+            for line in block.splitlines()
+        )
+        try:
+            return ast.parse(filtered)
+        except SyntaxError:
+            return None
+
+
+_PATH_CONSTRUCTORS = frozenset({
+    "Path", "PosixPath", "WindowsPath",
+    "pathlib.Path", "pathlib.PosixPath", "pathlib.WindowsPath",
+})
+_PATH_RECEIVER_METHODS = frozenset({
+    "open", "read_bytes", "read_text", "iterdir", "glob", "rglob",
+    "exists", "is_dir", "is_file", "stat",
+    "write_bytes", "write_text", "unlink", "rmdir", "rename", "replace",
+})
+_NUMPY_PATH_READERS = frozenset({
+    "load", "loadtxt", "genfromtxt", "fromfile", "memmap", "open_memmap",
+    "recfromcsv", "recfromtxt",
+})
+_IO_PATH_SPECS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
+    "open": ((0,), frozenset({"file"})),
+    "builtins.open": ((0,), frozenset({"file"})),
+    "io.open": ((0,), frozenset({"file"})),
+    "os.walk": ((0,), frozenset({"top"})),
+    "os.listdir": ((0,), frozenset({"path"})),
+    "os.scandir": ((0,), frozenset({"path"})),
+    "os.stat": ((0,), frozenset({"path"})),
+    "os.lstat": ((0,), frozenset({"path"})),
+    "os.access": ((0,), frozenset({"path"})),
+    "os.readlink": ((0,), frozenset({"path"})),
+    "os.remove": ((0,), frozenset({"path"})),
+    "os.unlink": ((0,), frozenset({"path"})),
+    "os.rmdir": ((0,), frozenset({"path"})),
+    "os.rename": ((0, 1), frozenset({"src", "dst"})),
+    "os.replace": ((0, 1), frozenset({"src", "dst"})),
+    "peaks.load_experiment": ((0,), frozenset({"source", "metadata"})),
+    "load_experiment": ((0,), frozenset({"source", "metadata"})),
+    "peaks.pxt2nc": ((0,), frozenset({"source", "metadata"})),
+    "pxt2nc": ((0,), frozenset({"source", "metadata"})),
+}
+
+
+def _qualified_ast_name(node: ast.AST, aliases: dict[str, str]) -> str:
+    """Resolve a simple imported name or attribute chain."""
+    if isinstance(node, ast.Name):
+        return aliases.get(node.id, node.id)
+    if isinstance(node, ast.Attribute):
+        parent = _qualified_ast_name(node.value, aliases)
+        return f"{parent}.{node.attr}" if parent else node.attr
+    return ""
+
+
+def _static_path_values(
+    node: ast.AST,
+    bindings: dict[str, set[str]],
+    aliases: dict[str, str],
+) -> set[str]:
+    """Resolve the small, literal-only path expressions used in trials."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return {node.value}
+    if isinstance(node, ast.Name):
+        return set(bindings.get(node.id, set()))
+    if isinstance(node, ast.JoinedStr):
+        values = {""}
+        for part in node.values:
+            if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                additions = {part.value}
+            elif isinstance(part, ast.FormattedValue):
+                additions = _static_path_values(part.value, bindings, aliases)
+            else:
+                return set()
+            values = {left + right for left in values for right in additions}
+        return values
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Div)):
+        left = _static_path_values(node.left, bindings, aliases)
+        right = _static_path_values(node.right, bindings, aliases)
+        if isinstance(node.op, ast.Add):
+            return {prefix + suffix for prefix in left for suffix in right}
+        return {str(Path(prefix) / suffix) for prefix in left for suffix in right}
+    if not isinstance(node, ast.Call):
+        return set()
+    name = _qualified_ast_name(node.func, aliases)
+    if name in _PATH_CONSTRUCTORS or name == "str":
+        return _static_path_values(node.args[0], bindings, aliases) if node.args else set()
+    if isinstance(node.func, ast.Attribute):
+        base = _static_path_values(node.func.value, bindings, aliases)
+        if node.func.attr in {"absolute", "expanduser", "resolve", "with_name", "with_suffix"}:
+            return base
+        if node.func.attr == "joinpath":
+            for argument in node.args:
+                additions = _static_path_values(argument, bindings, aliases)
+                base = {str(Path(prefix) / suffix) for prefix in base for suffix in additions}
+            return base
+    return set()
+
+
+def _bind_static_paths(
+    target: ast.AST,
+    values: set[str],
+    bindings: dict[str, set[str]],
+    aliases: dict[str, str],
+) -> None:
+    """Update one simple Notebook name binding without retaining stale values."""
+    if not isinstance(target, ast.Name):
+        return
+    aliases.pop(target.id, None)
+    if values:
+        bindings[target.id] = set(values)
+    else:
+        bindings.pop(target.id, None)
+
+
+def _call_path_values(
+    call: ast.Call,
+    bindings: dict[str, set[str]],
+    aliases: dict[str, str],
+) -> set[str]:
+    """Return statically known paths actually consumed by one I/O call."""
+    name = _qualified_ast_name(call.func, aliases)
+    root, _, method = name.partition(".")
+    method = name.rsplit(".", 1)[-1]
+    spec = _IO_PATH_SPECS.get(name)
+    if spec is None and root == "pandas" and method.startswith("read_"):
+        spec = ((0,), frozenset({"filepath_or_buffer", "path_or_buf", "io"}))
+    elif spec is None and root == "xarray" and method.startswith("open_"):
+        spec = ((0,), frozenset({"filename_or_obj", "filename_or_obj_or_dict"}))
+    elif spec is None and root == "numpy" and method in _NUMPY_PATH_READERS:
+        spec = ((0,), frozenset({"file", "fname", "filename"}))
+    elif spec is None and method in DIRECT_WRITE_METHOD_TARGETS:
+        spec = DIRECT_WRITE_METHOD_TARGETS[method]
+
+    values: set[str] = set()
+    if spec is not None:
+        positions, keywords = spec
+        for position in positions:
+            if position < len(call.args):
+                values |= _static_path_values(call.args[position], bindings, aliases)
+        for keyword in call.keywords:
+            if keyword.arg in keywords:
+                values |= _static_path_values(keyword.value, bindings, aliases)
+
+    if isinstance(call.func, ast.Attribute) and call.func.attr in _PATH_RECEIVER_METHODS:
+        receiver = _static_path_values(call.func.value, bindings, aliases)
+        if receiver:
+            values |= receiver
+            if call.func.attr in {"rename", "replace"} and call.args:
+                values |= _static_path_values(call.args[0], bindings, aliases)
+    return values
+
+
+def _outside_notebook_io_paths(blocks: list[str], workspace: Path) -> list[str]:
+    """Find static paths outside ``workspace`` that are passed to Notebook I/O."""
+    aliases: dict[str, str] = {}
+    bindings: dict[str, set[str]] = {}
+    observed: set[str] = set()
+    for block in blocks:
+        tree = _parse_notebook_block(block)
+        if tree is None:
+            continue
+        nodes = [
+            node for node in ast.walk(tree)
+            if isinstance(node, (ast.Import, ast.ImportFrom, ast.Assign, ast.AnnAssign, ast.Call))
+        ]
+        nodes.sort(key=lambda node: (getattr(node, "lineno", 0), getattr(node, "col_offset", 0)))
+        for node in nodes:
+            if isinstance(node, ast.Import):
+                for item in node.names:
+                    bound = item.asname or item.name.split(".")[0]
+                    bindings.pop(bound, None)
+                    aliases[bound] = (
+                        item.name if item.asname else item.name.split(".")[0]
+                    )
+                continue
+            if isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                for item in node.names:
+                    bound = item.asname or item.name
+                    bindings.pop(bound, None)
+                    aliases[bound] = f"{module}.{item.name}"
+                continue
+            if isinstance(node, ast.Assign):
+                values = _static_path_values(node.value, bindings, aliases)
+                for target in node.targets:
+                    _bind_static_paths(target, values, bindings, aliases)
+                continue
+            if isinstance(node, ast.AnnAssign):
+                values = (
+                    _static_path_values(node.value, bindings, aliases)
+                    if node.value is not None else set()
+                )
+                _bind_static_paths(node.target, values, bindings, aliases)
+                continue
+            for raw in _call_path_values(node, bindings, aliases):
+                try:
+                    candidate = Path(raw).expanduser()
+                    if not candidate.is_absolute():
+                        candidate = workspace / candidate
+                    candidate = candidate.resolve()
+                except (OSError, ValueError):
+                    continue
+                if not _is_relative_to(candidate, workspace):
+                    observed.add(str(candidate))
+    return sorted(observed)
+
+
+def _direct_write_method_names(blocks: list[str]) -> set[str]:
+    """Return target-bearing pandas/xarray writer methods in notebook code."""
+    found: set[str] = set()
+    for block in blocks:
+        tree = _parse_notebook_block(block)
+        if tree is None:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            method = node.func.attr
+            target_spec = DIRECT_WRITE_METHOD_TARGETS.get(method)
+            if target_spec is None:
+                continue
+            positions, keywords = target_spec
+            positional_target = any(
+                position < len(node.args)
+                and not (
+                    isinstance(node.args[position], ast.Constant)
+                    and node.args[position].value is None
+                )
+                for position in positions
+            )
+            keyword_target = any(
+                (keyword.arg is None or keyword.arg in keywords)
+                and not (
+                    isinstance(keyword.value, ast.Constant)
+                    and keyword.value.value is None
+                )
+                for keyword in node.keywords
+            )
+            if positional_target or keyword_target:
+                found.add(method)
+    return found
+
+
+def _call_count(blocks: list[str], name: str) -> int:
+    """Count real Python calls to ``name`` across already-deduplicated cells."""
+    count = 0
+    for block in blocks:
+        tree = _parse_notebook_block(block)
+        if tree is None:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            function = node.func
+            if (
+                isinstance(function, ast.Name) and function.id == name
+                or isinstance(function, ast.Attribute) and function.attr == name
+            ):
+                count += 1
+    return count
+
+
+def _scientific_contract(ctx: Ctx) -> dict[str, Any]:
+    """Return the frozen, case-specific workflow expectations."""
+    case = ctx.manifest.get("case") or {}
+    return dict(case.get("scientific_contract") or {})
+
+
+def _expected_call_counts(ctx: Ctx) -> dict[str, int]:
+    raw = _scientific_contract(ctx).get("expected_call_counts") or {}
+    return {str(name): int(count) for name, count in raw.items()}
+
+
+def _executed_notebook_code(ctx: Ctx) -> list[str]:
+    """Executed code cells in notebook order, preserving repeated sources."""
+    cells = [
+        "".join(cell.get("source") or [])
+        for cell in (ctx.notebook or {}).get("cells", [])
+        if cell.get("cell_type") == "code" and cell.get("execution_count") is not None
+    ]
+    return cells or list(ctx.code)
+
+
+def _successful_get_ids(events: list[dict[str, Any]]) -> list[str]:
+    """Canonical ids from successful get operations, retaining duplicates."""
+    called: dict[str, list[str]] = {}
+    succeeded: set[str] = set()
+    standalone: list[str] = []
+
+    def ids(details: dict[str, Any]) -> list[str]:
+        args = details.get("args") or {}
+        value = args.get("canonical_id") or args.get("canonical_ids")
+        if value is None:
+            return []
+        return [str(item) for item in (value if isinstance(value, list) else [value])]
+
+    for position, event in enumerate(events):
+        if event.get("tool") not in GET_TOOLS:
+            continue
+        details = event.get("details") or {}
+        operation = str(details.get("operation_id") or "")
+        outcome = str(event.get("outcome") or "")
+        if operation:
+            if outcome in {"ok", "executed"}:
+                succeeded.add(operation)
+            called.setdefault(operation, []).extend(ids(details))
+        elif outcome in {"ok", "executed"}:
+            standalone.extend(ids(details))
+        elif outcome == "called":
+            called.setdefault(f"legacy-{position}", []).extend(ids(details))
+    return [item for operation, values in called.items() if operation in succeeded for item in values] + standalone
+
+
+_RUN_CELL_ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_RUN_CELL_MEDIA_MIMES = frozenset({
+    "image/png", "image/jpeg", "image/svg+xml",
+    "application/vnd.peaksmcp.image-omitted+json",
+    "application/vnd.jupyter.widget-view+json",
+    "application/vnd.holoviews_load.v0+json",
+    "application/vnd.plotly.v1+json",
+    "application/vnd.bokehjs_exec.v0+json",
+})
+_RUN_CELL_STDOUT_HEAD_MAX = 80
+_RUN_CELL_SUMMARY_MAX_LINES = 3
+_RUN_CELL_SUMMARY_MAX_LINE_LENGTH = 200
+
+# A completed benchmark notebook has exactly three durable review figures:
+# the gold-fit diagnostic, one compact grid containing every processed cut,
+# and one representative before/after comparison.  Progress widgets are
+# transient execution UI, not scientific results, and make a reopened
+# notebook unnecessarily noisy.
+_NOTEBOOK_STATIC_IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/svg+xml"})
+_NOTEBOOK_WIDGET_MIME = "application/vnd.jupyter.widget-view+json"
+_NOTEBOOK_EXPECTED_FIGURES = 3
+_NOTEBOOK_MAX_FINAL_MARKDOWN_CHARS = 2_000
+
+
+def _notebook_output_text(value: Any) -> str:
+    """Join Jupyter text fragments and match run_cell's ANSI cleanup."""
+    text = "".join(str(part) for part in value) if isinstance(value, list) else str(value)
+    return _RUN_CELL_ANSI_ESCAPE.sub("", text)
+
+
+def _cell_has_archived_text(cell: dict[str, Any]) -> bool:
+    """Whether a cell reread exposes meaningful text absent from its run reply.
+
+    Besides the bounded stdout summary, ``run_cell`` always returns the first
+    80 raw stdout characters. A reread is justified only when neither channel
+    covers all stdout, another stream was suppressed, or a standalone
+    ``text/plain`` result was archived. Rich-display ``text/plain`` fallbacks
+    (especially ``<Figure ...>``) do not make an otherwise redundant reread
+    useful.
+    """
+    stdout: list[tuple[int, str]] = []
+    stdout_chunks: list[str] = []
+    first_media: int | None = None
+    has_error = False
+    has_suppressed_stream = False
+    has_standalone_plain = False
+    for order, output in enumerate(cell.get("outputs") or []):
+        if not isinstance(output, dict):
+            continue
+        if output.get("output_type") == "error":
+            has_error = True
+            continue
+        if output.get("output_type") == "stream":
+            raw = output.get("text") or ""
+            raw_text = "".join(str(part) for part in raw) if isinstance(raw, list) else str(raw)
+            text = _RUN_CELL_ANSI_ESCAPE.sub("", raw_text)
+            if output.get("name") == "stdout":
+                stdout_chunks.append(raw_text)
+                stdout.extend(
+                    (order, line.rstrip()) for line in text.splitlines() if line.strip()
+                )
+            elif text.strip():
+                has_suppressed_stream = True
+            continue
+        data = output.get("data") or {}
+        if not isinstance(data, dict):
+            continue
+        data_mimes = {str(mime) for mime, value in data.items() if value}
+        if first_media is None and data_mimes & _RUN_CELL_MEDIA_MIMES:
+            first_media = order
+        plain = data.get("text/plain")
+        if plain and data_mimes == {"text/plain"}:
+            plain_text = _notebook_output_text(plain).strip()
+            if plain_text and not plain_text.startswith("<Figure"):
+                has_standalone_plain = True
+
+    before_media = [
+        line for order, line in stdout if first_media is None or order < first_media
+    ]
+    summary_visible = (
+        not has_error
+        and bool(before_media)
+        and len(before_media) <= _RUN_CELL_SUMMARY_MAX_LINES
+        and all(len(line) <= _RUN_CELL_SUMMARY_MAX_LINE_LENGTH for line in before_media)
+    )
+    all_stdout_in_summary = summary_visible and len(before_media) == len(stdout)
+    raw_stdout = "".join(stdout_chunks)
+    all_stdout_in_head = not raw_stdout[_RUN_CELL_STDOUT_HEAD_MAX:].strip()
+    stdout_omitted = bool(stdout) and not (all_stdout_in_summary or all_stdout_in_head)
+    return stdout_omitted or has_suppressed_stream or has_standalone_plain
+
+
+def _redundancy_metrics(ctx: Ctx) -> dict[str, Any]:
+    """Evidence-only efficiency signals; none are inferred from model prose."""
+    successful_gets = _successful_get_ids(ctx.events)
+    get_counts = {item: successful_gets.count(item) for item in dict.fromkeys(successful_gets)}
+    duplicate_gets = {item: count - 1 for item, count in get_counts.items() if count > 1}
+    executed_blocks = _executed_notebook_code(ctx)
+    unused_gets = sorted(
+        item
+        for item in get_counts
+        if _call_count(executed_blocks, item.rsplit(":", 1)[-1]) == 0
+    )
+
+    queries = [
+        str(((event.get("details") or {}).get("args") or {}).get("query") or "").strip()
+        for event in ctx.events
+        if event.get("tool") in SEARCH_TOOLS and event.get("outcome") == "called"
+    ]
+    query_counts = {query: queries.count(query) for query in dict.fromkeys(queries) if query}
+    repeated_searches = {query: count - 1 for query, count in query_counts.items() if count > 1}
+
+    outcomes: dict[str, set[str]] = {}
+    cell_ids: dict[str, str] = {}
+    for event in ctx.events:
+        details = event.get("details") or {}
+        operation = str(details.get("operation_id") or "")
+        if not operation:
+            continue
+        outcomes.setdefault(operation, set()).add(str(event.get("outcome") or ""))
+        if details.get("cell_id") is not None:
+            cell_ids[operation] = str(details["cell_id"])
+    calls = [
+        event for event in ctx.events
+        if event.get("outcome") == "called"
+        and event.get("tool") in (RUN_TOOLS | INSPECT_TOOLS)
+    ]
+    notebook_cells = (ctx.notebook or {}).get("cells", [])
+    cells_by_id = {
+        str(cell.get("id")): cell
+        for cell in notebook_cells
+        if cell.get("id") is not None
+    }
+    cells_by_index = {str(index): cell for index, cell in enumerate(notebook_cells)}
+    cell_positions = {
+        cell_id: str(index)
+        for index, cell in enumerate(notebook_cells)
+        if (cell_id := str(cell.get("id") or ""))
+    }
+    immediate_rereads: list[str] = []
+    for current, following in zip(calls, calls[1:], strict=False):
+        if current.get("tool") not in RUN_TOOLS or following.get("tool") not in INSPECT_TOOLS:
+            continue
+        operation = str((current.get("details") or {}).get("operation_id") or "")
+        terminal = outcomes.get(operation, set())
+        if not terminal.intersection({"ok", "executed"}) or terminal.intersection(
+            {"error", "blocked", "failed"}
+        ):
+            continue
+        args = (following.get("details") or {}).get("args") or {}
+        if args.get("target") != "cell" or not args.get("with_text_outputs"):
+            continue
+        requested = str(args.get("cell") or "")
+        produced = cell_ids.get(operation, "")
+        produced_cell = cells_by_id.get(produced) or cells_by_index.get(requested)
+        if produced_cell is not None and _cell_has_archived_text(produced_cell):
+            continue
+        if (
+            not requested
+            or not produced
+            or requested == produced
+            or requested == cell_positions.get(produced)
+        ):
+            immediate_rereads.append(produced or requested or operation)
+    return {
+        "duplicate_gets": duplicate_gets,
+        "unused_gets": unused_gets,
+        "repeated_searches": repeated_searches,
+        "immediate_cell_rereads": immediate_rereads,
+    }
 
 
 def _blocks_with(ctx: Ctx, token: str) -> list[str]:
@@ -749,19 +1436,28 @@ def _fit_gold_receiver_indices(
         found = {int(value) for value in re.findall(r"BP_?0*(\d{1,4})(?!\d)", cleaned)}
         if found:
             return found
-        return {
-            int(value)
-            for value in re.findall(r"(?<![\w.:])(\d{1,4})(?![\w.])", cleaned)
-        }
+        try:
+            tree = ast.parse(cleaned, mode="eval")
+        except SyntaxError:
+            return set()
+        values: set[int] = set()
+        for node in ast.walk(tree):
+            value = getattr(node, "value", None)
+            if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 9999:
+                values.add(value)
+            elif isinstance(value, str) and re.fullmatch(r"\d{1,4}", value):
+                values.add(int(value))
+        return values
 
     def resolve_expr(text: str) -> set[int]:
         """Indices an expression can denote: classified gold, known vars, literals."""
-        if "summary.gold" in text:
+        if re.search(r"\b[A-Za-z_]\w*\.gold\b|\.is_gold\b", text):
             return set(gold)
         values: set[int] = set()
-        for var, known in index_vars.items():
-            if re.search(rf"(?<![\w.]){re.escape(var)}(?![\w])", text):
-                values |= known
+        for mapping in (index_vars, data_vars):
+            for var, known in mapping.items():
+                if re.search(rf"(?<![\w.]){re.escape(var)}(?![\w])", text):
+                    values |= known
         return values or literal_indices(text)
 
     def note(mapping: dict[str, set[int]], name: str, values: set[int]) -> bool:
@@ -782,6 +1478,14 @@ def _fit_gold_receiver_indices(
             if not assign:
                 continue
             name, rhs = assign.group(1), assign.group(2)
+            # ``experiment.gold[0]`` indexes the classified-gold list; the
+            # literal 0 is a list position, not experiment scan 0.
+            classified_gold_item = re.fullmatch(
+                r"\s*[A-Za-z_]\w*\.gold\s*\[\s*[^\]]+\s*\]\s*", rhs
+            )
+            if classified_gold_item:
+                changed |= note(index_vars, name, set(gold))
+                continue
             subscript = re.search(r"\b([A-Za-z_]\w*)\s*\[\s*([^\]]+?)\s*\]", rhs)
             if subscript and note(data_vars, name, resolve_expr(subscript.group(2))):
                 changed = True
@@ -803,6 +1507,17 @@ def _fit_gold_receiver_indices(
         if chained:
             indices.update(int(value) for value in chained)
             continue
+        direct = re.search(
+            r"\b[A-Za-z_]\w*\s*\[\s*([^\]]+?)\s*\]\s*\.\s*fit_gold\s*\(",
+            line,
+        )
+        if direct:
+            values = resolve_expr(direct.group(1))
+            if values:
+                indices.update(values)
+            else:
+                unresolved = True
+            continue
         method = re.search(r"([A-Za-z_]\w*)\s*\.\s*fit_gold\s*\(", line)
         receiver = method.group(1) if method else None
         if receiver is None:
@@ -818,56 +1533,168 @@ def _fit_gold_receiver_indices(
     return indices, unresolved
 
 
-def _theta_offset_binding_used(blocks: list[str]) -> bool:
-    """True when code shifts theta_par with a variable bound to the contract's
-    ``.theta_offset_deg`` (e.g. ``offset = summary.records[..].theta_offset_deg``
-    then ``da.theta_par - offset``)."""
-    bound: set[str] = set()
-    lines = [line for block in blocks for line in (block or "").splitlines()]
-    # 固定点传播：赋值绑定 + 单跳别名一直扩到不再变化（不依赖出现顺序）。
+def _fit_gold_uses_classified_receiver(blocks: list[str], context: str = "") -> bool:
+    """Whether every gold fit is selected through ExperimentIndex classification.
+
+    Resolving a receiver to the expected numeric index is insufficient: a literal
+    such as ``exp[20]`` can guess the answer without using ``exp.gold`` or the
+    ``is_gold`` classification carried by ExperimentIndex records. This small
+    taint analysis follows classification-derived indices, stems, and data aliases
+    into each ``fit_gold`` receiver.
+    """
+    trees = [
+        tree
+        for block in [context, *blocks]
+        if block and (tree := _parse_notebook_block(block)) is not None
+    ]
+    classified: set[str] = set()
+
+    def uses_classification(node: ast.AST | None) -> bool:
+        if node is None:
+            return False
+        return any(
+            isinstance(part, ast.Attribute) and part.attr in {"gold", "is_gold"}
+            or isinstance(part, ast.Name) and part.id in classified
+            for part in ast.walk(node)
+        )
+
+    def bind(target: ast.AST) -> bool:
+        names = {
+            part.id
+            for part in ast.walk(target)
+            if isinstance(part, ast.Name) and isinstance(part.ctx, ast.Store)
+        }
+        before = len(classified)
+        classified.update(names)
+        return len(classified) != before
+
     changed = True
     while changed:
         changed = False
-        for line in lines:
-            binding = re.search(
-                r"([A-Za-z_][A-Za-z0-9_]*)\s*=\s*[^;\n]*theta_offset_deg",
-                line,
+        for tree in trees:
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+                    value = node.value
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                    if uses_classification(value):
+                        changed |= any(bind(target) for target in targets)
+                elif isinstance(node, (ast.For, ast.AsyncFor)) and uses_classification(node.iter):
+                    changed |= bind(node.target)
+                elif isinstance(node, ast.comprehension) and uses_classification(node.iter):
+                    changed |= bind(node.target)
+
+    provenance: list[bool] = []
+    for tree in trees:
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "fit_gold":
+                provenance.append(uses_classification(node.func.value))
+            elif isinstance(node.func, ast.Name) and node.func.id == "fit_gold":
+                provenance.append(bool(node.args) and uses_classification(node.args[0]))
+    return bool(provenance) and all(provenance)
+
+
+def _theta_offset_binding_used(blocks: list[str]) -> bool:
+    """Whether every normal-emission theta value derives from record metadata."""
+    trees = [
+        tree
+        for block in blocks
+        if block and (tree := _parse_notebook_block(block)) is not None
+    ]
+    bound: set[str] = set()
+
+    def uses_record_offset(node: ast.AST | None) -> bool:
+        if node is None:
+            return False
+        return any(
+            isinstance(part, ast.Attribute) and part.attr == "theta_offset_deg"
+            or isinstance(part, ast.Name) and part.id in bound
+            for part in ast.walk(node)
+        )
+
+    def bind(target: ast.AST) -> bool:
+        names = {
+            part.id
+            for part in ast.walk(target)
+            if isinstance(part, ast.Name) and isinstance(part.ctx, ast.Store)
+        }
+        before = len(bound)
+        bound.update(names)
+        return len(bound) != before
+
+    changed = True
+    while changed:
+        changed = False
+        for tree in trees:
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+                    continue
+                value = node.value
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if uses_record_offset(value):
+                    changed |= any(bind(target) for target in targets)
+
+    theta_arguments: list[ast.AST] = []
+    for tree in trees:
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            function = node.func
+            if not (
+                isinstance(function, ast.Name) and function.id == "assign_normal_emission"
+                or isinstance(function, ast.Attribute) and function.attr == "assign_normal_emission"
+            ):
+                continue
+            theta_arguments.extend(
+                keyword.value for keyword in node.keywords if keyword.arg == "theta_par"
             )
-            if binding and binding.group(1) not in bound:
-                bound.add(binding.group(1))
-                changed = True
-                continue
-            alias = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)", line)
-            if alias and alias.group(2) in bound and alias.group(1) not in bound:
-                bound.add(alias.group(1))
-                changed = True
-    if not bound:
-        return False
-    for block in blocks:
-        for line in block.splitlines():
-            if "theta_par" not in line:
-                continue
-            if any(re.search(rf"\b{re.escape(name)}\b", line) for name in bound):
-                return True
-    return False
+    return bool(theta_arguments) and all(uses_record_offset(value) for value in theta_arguments)
 
 
 def check_contract(ctx: Ctx) -> list[Result]:
     corpus = _corpus(ctx)
     out: list[Result] = []
 
-    out.append(Result("C1_blackbox_load", "load_data(" in corpus or "load_data (" in corpus,
-                      "黑箱入口 load_data" + ("" if "load_data(" in corpus else " 未出现")))
+    converted = "pxt2nc(" in corpus or "pxt2nc (" in corpus
+    expected_pxt = _expected_call_counts(ctx).get("pxt2nc")
+    conversion_ok = not converted if expected_pxt == 0 else converted
+    out.append(Result(
+        "C1_blackbox_load",
+        conversion_ok,
+        (
+            "输入已预转换，正确跳过 peaks.pxt2nc"
+            if expected_pxt == 0 and not converted
+            else "预转换输入不应再次调用 peaks.pxt2nc"
+            if expected_pxt == 0
+            else "公开入口 peaks.pxt2nc" + ("" if converted else " 未出现")
+        ),
+    ))
 
-    used_inspect = "inspect_experiment(" in corpus
-    out.append(Result("C2_blackbox_inspect", used_inspect,
-                      "inspect_experiment" + ("" if used_inspect else " 未出现 —— agent 很可能自己读了 datasheet")))
+    loaded = "load_experiment(" in corpus or "load_experiment (" in corpus
+    manual_metadata = bool(re.search(
+        r"datasheet\.csv[^\n]*(?:read_text|open)|csv\.reader\s*\(|read_csv\s*\(",
+        corpus,
+        flags=re.IGNORECASE,
+    ))
+    out.append(Result(
+        "C2_blackbox_inspect",
+        loaded and not manual_metadata,
+        (
+            "公开入口 peaks.load_experiment（含 metadata 与分类）"
+            if loaded and not manual_metadata
+            else "已调用 load_experiment，但又手工读取 datasheet；应直接使用 ExperimentIndex"
+            if loaded
+            else "公开入口 peaks.load_experiment 未出现 —— agent 很可能手工读取或分类"
+        ),
+    ))
 
     # gold 索引：只解析 fit_gold 的 receiver（链式字面量 / 变量绑定 / 单跳别名），
     # 绝不扫描整块里的 BP 编号 —— 同 cell 的 cuts 列表字面量会误伤正确代码。
     gold_blocks = _blocks_with(ctx, "fit_gold")
     wanted = set(ctx.key["gold_indices"])
     found, unresolved = _fit_gold_receiver_indices(gold_blocks, wanted, context=corpus)
+    classified_receiver = _fit_gold_uses_classified_receiver(gold_blocks, context=corpus)
     if not gold_blocks:
         out.append(Result("C3_gold_index_correct", False, "没有出现 fit_gold，无法判断 gold 选择"))
     elif unresolved and not found:
@@ -875,20 +1702,21 @@ def check_contract(ctx: Ctx) -> list[Result]:
                           "fit_gold 的 receiver 无法回溯到任何实验索引（既不是字面量、"
                           "也不是经 summary.gold / 变量绑定得到的索引），跳过"))
     else:
-        ok = bool(found) and found == wanted
+        ok = bool(found) and found == wanted and classified_receiver
         out.append(Result("C3_gold_index_correct", ok,
-                          f"期望 {sorted(wanted)}，fit_gold receiver 解析到 {sorted(found) or '未解析出'}"))
+                          f"期望 {sorted(wanted)}，fit_gold receiver 解析到 "
+                          f"{sorted(found) or '未解析出'}；ExperimentIndex 分类来源 "
+                          f"{'已证明' if classified_receiver else '缺失'}"))
 
-    # theta 偏移：两条正解路径都算 —— (a) 字面量等于契约值且出现在 theta_par
-    # 平移行；(b) 从 inspect/summary 读 .theta_offset_deg 绑定变量后用于平移。
+    # 数值碰巧等于答案不构成 metadata provenance；只认 record.theta_offset_deg
+    # 的直接使用或经变量/容器传播后传给 assign_normal_emission(theta_par=...).
     offset = ctx.key.get("theta_offset_deg")
-    lines = [ln for ln in corpus.splitlines() if "theta_par" in ln]
-    used_offsets = {float(m) for ln in lines for m in re.findall(r"([+-]?\d+(?:\.\d+)?)", ln)}
-    literal_ok = offset is not None and any(abs(v - offset) < 1e-9 for v in used_offsets)
     binding_ok = _theta_offset_binding_used(ctx.unique_code)
-    ok = literal_ok or (offset is not None and binding_ok)
-    detail = (f"契约值 {offset}；theta_par 行数值 {sorted(used_offsets)[:6]}"
-              + ("；并检测到从 .theta_offset_deg 绑定变量后使用" if binding_ok else ""))
+    ok = offset is not None and binding_ok
+    detail = (
+        f"契约值 {offset}；record.theta_offset_deg -> theta_par 来源"
+        f"{'已证明' if binding_ok else '缺失（纯字面量不被接受）'}"
+    )
     out.append(Result("C4_theta_offset_from_contract", ok, detail))
 
     hardcoded = re.findall(r"set_EF_correction\s*\(\s*([+-]?\d+(?:\.\d+)?)", corpus)
@@ -904,10 +1732,12 @@ def check_access(ctx: Ctx) -> list[Result]:
     corpus = _corpus(ctx)
     out: list[Result] = []
     if not ctx.events:
-        for check in ("A1_get_before_use", "A2_no_unknown_api_blocks"):
+        for check in ("A1_get_before_use", "A2_no_unknown_api_blocks", "A4_no_redundant_tool_calls"):
             out.append(Result(check, None, NO_AUDIT))
-        out.append(Result("A3_override_first", "load_data(" in corpus and "inspect_experiment(" in corpus,
-                          "黑箱 adapter 使用情况见 C1/C2（无审计日志，仅按代码判断）"))
+        expected_pxt = _expected_call_counts(ctx).get("pxt2nc")
+        pxt_ok = "pxt2nc(" not in corpus if expected_pxt == 0 else "pxt2nc(" in corpus
+        out.append(Result("A3_override_first", pxt_ok and "load_experiment(" in corpus,
+                          "公开 peaks 入口使用情况见 C1/C2（无审计日志，仅按代码判断）"))
         return out
     used = {api for api in NATIVE_APIS if api in corpus}
     missing = sorted(used - ctx.fetched)
@@ -915,38 +1745,117 @@ def check_access(ctx: Ctx) -> list[Result]:
                       f"用到 {sorted(used)}；未经 search/get 验证的：{missing or '无'}",
                       evidence=missing))
 
-    # 只统计"因为 API 未经验证被拦下"，断连等基础设施错误归到 R4。
-    blocked = []
-    for event in ctx.events:
+    # 只统计"因为 API 未经验证被拦下"，断连、安全扫描和持久化错误不算
+    # Access 失败。一个 run_cell 操作可能同时写 backend + wrapper 两条
+    # blocked 事件，所以必须按 operation_id 去重。
+    blocked_by_operation: dict[str, dict[str, Any]] = {}
+    for position, event in enumerate(ctx.events):
         if event.get("tool") not in RUN_TOOLS:
             continue
         outcome = event.get("outcome")
-        text = str((event.get("details") or {}).get("error", "")).lower()
+        details = event.get("details") or {}
+        text = str(details.get("error", "")).lower()
         if any(hint in text for hint in PERSIST_BLOCK_HINTS):
             # run_cell 的持久化硬阻止归 V2 判，不算 Access 失败。
             continue
-        if outcome == "blocked" or (outcome == "error" and any(m in text for m in API_BLOCK_MARKERS)):
-            blocked.append(event)
+        unknown_refs = details.get("unknown_refs") or []
+        is_api_block = bool(unknown_refs) or (
+            outcome == "error" and any(marker in text for marker in API_BLOCK_MARKERS)
+        )
+        if not is_api_block:
+            continue
+        operation = str(details.get("operation_id") or f"legacy-{position}")
+        blocked_by_operation.setdefault(operation, event)
+    blocked = list(blocked_by_operation.values())
     out.append(Result("A2_no_unknown_api_blocks", not blocked,
                       f"因 API 未验证被拦下 {len(blocked)} 次",
-                      evidence=[str((e.get("details") or {}).get("error", ""))[:120] for e in blocked[:5]]))
+                      evidence=[
+                          str(
+                              (e.get("details") or {}).get("unknown_refs")
+                              or (e.get("details") or {}).get("error", "")
+                          )[:120]
+                          for e in blocked[:5]
+                      ]))
 
-    # 有黑箱 adapter 时是否优先用了
-    out.append(Result("A3_override_first", "load_data(" in corpus and "inspect_experiment(" in corpus,
-                      "黑箱 adapter 使用情况见 C1/C2"))
+    expected_pxt = _expected_call_counts(ctx).get("pxt2nc")
+    pxt_ok = "pxt2nc(" not in corpus if expected_pxt == 0 else "pxt2nc(" in corpus
+    out.append(Result("A3_override_first", pxt_ok and "load_experiment(" in corpus,
+                      "公开 peaks 入口使用情况见 C1/C2"))
+    redundant = _redundancy_metrics(ctx)
+    redundant_count = (
+        sum(redundant["duplicate_gets"].values())
+        + len(redundant["unused_gets"])
+        + sum(redundant["repeated_searches"].values())
+        + len(redundant["immediate_cell_rereads"])
+    )
+    out.append(Result(
+        "A4_no_redundant_tool_calls",
+        redundant_count == 0,
+        "；".join(
+            (
+                f"重复 get {sum(redundant['duplicate_gets'].values())}",
+                f"未使用 get {len(redundant['unused_gets'])}",
+                f"重复 search {sum(redundant['repeated_searches'].values())}",
+                f"成功 cell 后立即回读 {len(redundant['immediate_cell_rereads'])}",
+            )
+        ),
+        evidence=[
+            *(f"duplicate get: {name}" for name in redundant["duplicate_gets"]),
+            *(f"unused get: {name}" for name in redundant["unused_gets"]),
+            *(f"repeated search: {query}" for query in redundant["repeated_searches"]),
+            *(f"cell reread: {cell}" for cell in redundant["immediate_cell_rereads"]),
+        ][:10],
+    ))
     return out
+
+
+def check_client_tools(ctx: Ctx) -> list[Result]:
+    """Require a clean Pi-visible tool trajectory, including schema failures."""
+    agent = ctx.manifest.get("agent") or {}
+    execution = agent.get("execution") or {}
+    runner = str(agent.get("runner") or execution.get("runner") or "")
+    if runner not in {"pi", "pi-tui"}:
+        return [Result(
+            "A5_no_client_tool_errors",
+            True,
+            f"runner={runner or 'unknown'}; Pi client-tool check not applicable",
+        )]
+    evidence = ctx.client_tool_evidence
+    if evidence.get("status") != "ok":
+        return [Result(
+            "A5_no_client_tool_errors",
+            None,
+            "Pi session has no structured client tool evidence",
+        )]
+    errors = list(evidence.get("errors") or [])
+    disallowed = list(evidence.get("disallowed_successful_tools") or [])
+    schema_errors = int(evidence.get("schema_validation_errors") or 0)
+    return [Result(
+        "A5_no_client_tool_errors",
+        not errors and not disallowed,
+        f"Pi-visible tool errors {len(errors)}; schema validation {schema_errors}; "
+        f"disallowed successful tools {len(disallowed)}",
+        evidence=[
+            f"{item.get('tool', 'unknown')}: {item.get('kind', 'tool_error')}: "
+            f"{item.get('message', '')}"
+            for item in errors[:10]
+        ] + [
+            f"disallowed successful tool: {item.get('tool', 'unknown')}"
+            for item in disallowed[:10]
+        ],
+    )]
 
 
 def check_run(ctx: Ctx) -> list[Result]:
     out: list[Result] = []
     # The task is DONE when the notebook contains the required output - a
     # persisted file is a policy step, not the definition of completion.  A
-    # target therefore counts when EITHER its file is in place OR an executed
-    # cell both names it and produces its momentum-space result.
+    # target therefore counts when the privileged live-kernel snapshot found a
+    # momentum-space DataArray for it. The code heuristic remains only as an
+    # offline compatibility fallback for portable grader tests.
     items = list(ctx.key["expected_outputs"])
-    expected_names = {item["output_name"] for item in items}
     actual = set(ctx.outputs)
-    processed = set()
+    processed = set(ctx.live_evidence.get("processed_stems") or [])
     for block in ctx.unique_code:
         if "k_convert" not in block:
             continue
@@ -956,25 +1865,80 @@ def check_run(ctx: Ctx) -> list[Result]:
     missing = sorted(
         item["stem"]
         for item in items
-        if item["output_name"] not in actual and item["stem"] not in processed
+        if item["stem"] not in processed
+    )
+    expected_stems = {item["stem"] for item in items}
+    unexpected = sorted(
+        set(ctx.live_evidence.get("unexpected_processed_stems") or [])
+        | (set(ctx.live_evidence.get("processed_stems") or []) - expected_stems)
     )
     _missing_note = ("，缺 " + "、".join(missing[:10]) + ("…" if len(missing) > 10 else "")) if missing else ""
+    _unexpected_note = (
+        "，额外处理 " + "、".join(unexpected[:10]) + ("…" if len(unexpected) > 10 else "")
+        if unexpected
+        else ""
+    )
     covered = len({i["stem"] for i in items} - set(missing))
-    out.append(Result("R1_all_targets_processed", not missing,
-                      f"期望 {len(items)} 个，notebook 已处理或已落盘 {covered} 个{_missing_note}",
-                      evidence=missing[:10]))
+    out.append(Result(
+        "R1_all_targets_processed",
+        not missing and not unexpected,
+        f"期望 {len(items)} 个，live namespace / notebook 已处理 {covered} 个"
+        f"{_missing_note}{_unexpected_note}",
+        evidence=(
+            [*(f"missing: {stem}" for stem in missing),
+             *(f"unexpected: {stem}" for stem in unexpected)]
+        )[:10],
+    ))
 
-    fit_calls = sum(len(re.findall(r"fit_gold\s*\(", block)) for block in ctx.unique_code)
+    executed_blocks = _executed_notebook_code(ctx)
+    fit_calls = _call_count(executed_blocks, "fit_gold")
     out.append(Result("R2_one_gold_fit", fit_calls == 1,
                       f"fit_gold 调用点 {fit_calls} 个（设计要求 1 次拟合后复用）"))
 
+    expected_calls = _expected_call_counts(ctx)
+    if expected_calls:
+        actual_calls = {
+            name: _call_count(executed_blocks, name) for name in expected_calls
+        }
+        mismatches = {
+            name: {"expected": expected_calls[name], "actual": actual_calls[name]}
+            for name in expected_calls
+            if actual_calls[name] != expected_calls[name]
+        }
+        out.append(Result(
+            "R6_no_redundant_scientific_execution",
+            not mismatches,
+            "；".join(
+                f"{name}={actual_calls[name]}（期望 {expected_calls[name]}）"
+                for name in expected_calls
+            ),
+            evidence=[
+                f"{name}: expected {counts['expected']}, actual {counts['actual']}"
+                for name, counts in mismatches.items()
+            ],
+        ))
+    else:
+        out.append(Result(
+            "R6_no_redundant_scientific_execution",
+            None,
+            "case 未声明 expected_call_counts",
+        ))
+
     discovered_names = {path.name for path in ctx.all_output_paths} or actual
-    unexpected = sorted(discovered_names - expected_names)
+    persisted_images = []
+    workspace = workspace_dir(ctx.run_dir)
+    if workspace.is_dir():
+        persisted_images = [
+            str(path.relative_to(workspace))
+            for path in workspace.rglob("*")
+            if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".svg", ".pdf"}
+        ]
+    unexpected = sorted(discovered_names)
     out.append(Result(
         "R5_no_unexpected_outputs",
-        not unexpected,
-        f"答案键外的 *_processed.nc {len(unexpected)} 个",
-        evidence=unexpected[:10],
+        not unexpected and not persisted_images,
+        f"落盘分析 NetCDF {len(unexpected)} 个；落盘图片 {len(persisted_images)} 个",
+        evidence=(unexpected + persisted_images)[:10],
     ))
 
     if not ctx.events:
@@ -986,13 +1950,48 @@ def check_run(ctx: Ctx) -> list[Result]:
     out.append(Result("R3_append_only", not mutation,
                       f"删改类操作 {len(mutation)} 次（设计是 append-only）"))
 
-    # 新版 run_cell 的成功语义是 executed（不是 ok），两版都算。
-    ok_n = sum(1 for e in ctx.events if e.get("outcome") in {"ok", "executed"}
-               and e.get("tool") in RUN_TOOLS)
-    err_n = sum(1 for e in ctx.events if e.get("outcome") in {"error", "blocked"}
-                and e.get("tool") in RUN_TOOLS)
+    # Count one terminal result per run_cell operation. Backend + wrapper may
+    # log the same refusal twice, while an "executed" audit event can still
+    # point to a notebook cell whose output is a Python error.
+    error_cell_ids = {
+        str(cell.get("id"))
+        for cell in (ctx.notebook or {}).get("cells", [])
+        if cell.get("cell_type") == "code"
+        and any(output.get("output_type") == "error" for output in cell.get("outputs", []))
+    }
+    terminal_by_operation: dict[str, bool] = {}
+    code_by_operation: dict[str, str] = {}
+    cell_source = {
+        str(cell.get("id")): "".join(cell.get("source") or [])
+        for cell in (ctx.notebook or {}).get("cells", [])
+        if cell.get("cell_type") == "code"
+    }
+    for position, event in enumerate(ctx.events):
+        if event.get("tool") not in RUN_TOOLS:
+            continue
+        outcome = event.get("outcome")
+        details = event.get("details") or {}
+        operation = str(details.get("operation_id") or f"legacy-{position}")
+        if outcome == "called":
+            code_by_operation[operation] = str((details.get("args") or {}).get("code") or "")
+            continue
+        if outcome not in {"ok", "executed", "error", "blocked", "failed"}:
+            continue
+        failed = outcome in {"error", "blocked", "failed"}
+        if outcome in {"ok", "executed"} and str(details.get("cell_id")) in error_cell_ids:
+            failed = True
+        if details.get("cell_id") is not None and str(details["cell_id"]) in cell_source:
+            code_by_operation[operation] = cell_source[str(details["cell_id"])]
+        terminal_by_operation[operation] = terminal_by_operation.get(operation, False) or failed
+    err_n = sum(terminal_by_operation.values())
+    successful_code = {
+        code_by_operation.get(operation) or operation
+        for operation, failed in terminal_by_operation.items()
+        if not failed
+    }
+    ok_n = len(successful_code)
     rate = ok_n / (ok_n + err_n) if (ok_n + err_n) else 0.0
-    out.append(Result("R4_execution_success", rate >= 0.9,
+    out.append(Result("R4_execution_success", ok_n > 0 and err_n == 0,
                       f"成功 {ok_n} / 失败 {err_n}，成功率 {rate:.0%}"))
     return out
 
@@ -1003,8 +2002,15 @@ _SKIP_STARTS = (
     "continue", "global", "#", ")", "]", "}", "@",
 )
 #: 本来就不该回显的调用（保存、绘图、显示）。
-_VOID_CALLS = ("save_result", "save_with_consent", "plot_", "show_mapping_slice",
-               ".save(", "plt.", "close(", "print(")
+_VOID_CALLS = (
+    "save_result",
+    "save_with_consent",
+    "plot_",
+    ".save(",
+    "plt.",
+    "close(",
+    "print(",
+)
 
 
 def _last_expression_line(source: str) -> str | None:
@@ -1031,6 +2037,69 @@ def _last_expression_line(source: str) -> str | None:
     return last
 
 
+_SUMMARY_NUMBER_RE = re.compile(r"(?<![A-Za-z0-9_.])[+-]?\d+(?:\.\d+)?")
+_THETA_SUMMARY_LABEL_RE = re.compile(
+    r"(?:theta[\s_-]*(?:angular[\s_-]*)?offset|angular[\s_-]*offset|angle[\s_-]*source)",
+    re.IGNORECASE,
+)
+_PROCESSED_STEMS_RECEIPT_RE = re.compile(
+    r"(?:^|[;\s])processed_stems=([A-Za-z0-9_.-]+(?:,[A-Za-z0-9_.-]+)*)"
+)
+
+
+def _processed_stems_container_names(source: str) -> set[str]:
+    """Return mapping names used to build a processed-stems receipt."""
+    tree = _parse_notebook_block(source)
+    if tree is None or not any(
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and "processed_stems=" in node.value
+        for node in ast.walk(tree)
+    ):
+        return set()
+
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "sorted"
+            and node.args
+        ):
+            continue
+        argument = node.args[0]
+        if isinstance(argument, ast.Name):
+            names.add(argument.id)
+        elif (
+            isinstance(argument, ast.Call)
+            and isinstance(argument.func, ast.Attribute)
+            and argument.func.attr == "keys"
+            and isinstance(argument.func.value, ast.Name)
+        ):
+            names.add(argument.func.value.id)
+    return names
+
+
+def _theta_summary_complete(summary: str, expected_offset: float | None) -> bool:
+    """Whether the summary states a theta value and its exact metadata field."""
+    lowered = summary.lower()
+    if "record.theta_offset_deg" not in lowered:
+        return False
+    labels = list(_THETA_SUMMARY_LABEL_RE.finditer(summary))
+    if not labels:
+        return False
+    if expected_offset is None:
+        return True
+    expected = float(expected_offset)
+    for label in labels:
+        # Keep the number tied to the theta statement so an EF or count elsewhere
+        # cannot accidentally satisfy this provenance requirement.
+        statement = summary[label.start() : label.end() + 96]
+        if any(float(token) == expected for token in _SUMMARY_NUMBER_RE.findall(statement)):
+            return True
+    return False
+
+
 def check_show(ctx: Ctx) -> list[Result]:
     out: list[Result] = []
     notebook = ctx.notebook or {}
@@ -1038,16 +2107,60 @@ def check_show(ctx: Ctx) -> list[Result]:
     silent = 0
     suspects = 0
     images = 0
-    for cell in notebook.get("cells", []):
+    duplicate_images: list[str] = []
+    widget_outputs: list[str] = []
+    seen_image_payloads: set[str] = set()
+    stdout_line_counts: list[int] = []
+    stdout_max_line_lengths: list[int] = []
+    processed_stem_receipt_lines: list[str] = []
+    processed_stem_container_names: set[str] = set()
+    for cell_index, cell in enumerate(notebook.get("cells", []), start=1):
         if cell.get("cell_type") != "code":
             continue
         payload = ""
-        for output in cell.get("outputs", []):
+        stdout = ""
+        previous_image_label: str | None = None
+        previous_image_order: int | None = None
+        for output_index, output in enumerate(cell.get("outputs", []), start=1):
+            if not isinstance(output, dict):
+                continue
             data = output.get("data") or {}
-            if any(m in data for m in ("image/png", "image/jpeg", "image/svg+xml")):
+            if not isinstance(data, dict):
+                data = {}
+            location = f"cell {cell_index} output {output_index}"
+            if _NOTEBOOK_WIDGET_MIME in data:
+                widget_outputs.append(location)
+            image_data = {
+                mime: data[mime]
+                for mime in sorted(_NOTEBOOK_STATIC_IMAGE_MIMES)
+                if data.get(mime)
+            }
+            if image_data:
                 images += 1
+                image_payload = json.dumps(
+                    image_data,
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                fingerprint = sha256_bytes(image_payload.encode("utf-8"))
+                plain_label = _notebook_output_text(data.get("text/plain") or "").strip()
+                repeated_payload = fingerprint in seen_image_payloads
+                adjacent_figure_label = (
+                    bool(plain_label)
+                    and plain_label.startswith("<Figure")
+                    and plain_label == previous_image_label
+                    and previous_image_order == output_index - 1
+                )
+                if repeated_payload or adjacent_figure_label:
+                    duplicate_images.append(location)
+                seen_image_payloads.add(fingerprint)
+                previous_image_label = plain_label or None
+                previous_image_order = output_index
             if output.get("output_type") == "stream":
-                payload += "".join(output.get("text") or [])
+                stream_text = "".join(output.get("text") or [])
+                payload += stream_text
+                stdout += stream_text
             elif "text/plain" in data:
                 payload += "".join(data.get("text/plain") or [])
         if payload.strip():
@@ -1060,7 +2173,19 @@ def check_show(ctx: Ctx) -> list[Result]:
             last = _last_expression_line("".join(cell.get("source", [])))
             if last:
                 suspects += 1
+        if cell.get("execution_count") is not None:
+            stdout_lines = [line.rstrip() for line in stdout.splitlines() if line.strip()]
+            stdout_line_counts.append(len(stdout_lines))
+            stdout_max_line_lengths.append(max((len(line) for line in stdout_lines), default=0))
+            processed_stem_receipt_lines.extend(
+                line for line in stdout_lines if "processed_stems=" in line
+            )
+            if any("processed_stems=" in line for line in stdout_lines):
+                processed_stem_container_names.update(
+                    _processed_stems_container_names("".join(cell.get("source", [])))
+                )
     joined = "\n".join(texts)
+    text_lengths = [len(text) for text in texts]
 
     gold_str = {str(i) for i in ctx.key["gold_indices"]}
     if not texts:
@@ -1070,11 +2195,10 @@ def check_show(ctx: Ctx) -> list[Result]:
         hit = any(g in joined for g in gold_str) and ("gold" in joined.lower() or "cut" in joined.lower())
         out.append(Result("S1_classification_visible", hit,
                           "输出里能看到 gold/cut 结论" if hit else
-                          "输出里看不到任何分类结论 —— inspect_experiment 的结果没回传给 agent"))
+                          "输出里看不到任何分类结论 —— load_experiment 的结果没回传给 agent"))
 
-    corpus = _corpus(ctx)
-    plotted = images > 0 or any(p in corpus for p in ("plot_validation_pair(", "plot_batch(", "show_mapping_slice("))
-    out.append(Result("S2_validation_figure", plotted, f"图像输出 {images} 个；plot_* 调用 {'有' if 'plot_' in corpus else '无'}"))
+    plotted = images > 0
+    out.append(Result("S2_validation_figure", plotted, f"Notebook 图像输出 {images} 个"))
 
     executed = sum(1 for c in notebook.get("cells", [])
                    if c.get("cell_type") == "code" and c.get("execution_count") is not None)
@@ -1093,31 +2217,139 @@ def check_show(ctx: Ctx) -> list[Result]:
     else:
         summary = markdown_cells[-1]
         lowered = summary.lower()
-        expected_names = [item["output_name"] for item in ctx.key["expected_outputs"]]
+        expected_stems = sorted(item["stem"] for item in ctx.key["expected_outputs"])
         gold_markers = [str(index) for index in ctx.key["gold_indices"]]
         offset = ctx.key.get("theta_offset_deg")
+        expected_receipt = "processed_stems=" + ",".join(expected_stems)
+        receipt_values = [
+            match.group(1)
+            for line in processed_stem_receipt_lines
+            for match in _PROCESSED_STEMS_RECEIPT_RE.finditer(line)
+        ]
+        missing_summary_stems = [stem for stem in expected_stems if stem not in summary]
+        variable_named = any(
+            token in lowered
+            for token in ("variable", "notebook", "cell", "result dictionary")
+        ) or any(
+            re.search(rf"(?<!\w){re.escape(name)}(?!\w)", summary)
+            for name in processed_stem_container_names
+        )
+        receipt_exact = (
+            len(processed_stem_receipt_lines) == 1
+            and receipt_values == [",".join(expected_stems)]
+        )
+        receipt_reused = expected_receipt in summary
+        variable_issues: list[str] = []
+        if missing_summary_stems:
+            variable_issues.append(f"missing stems={missing_summary_stems}")
+        if not variable_named:
+            variable_issues.append("result variable not named")
+        if len(processed_stem_receipt_lines) != 1:
+            variable_issues.append(
+                f"processed_stems receipt count={len(processed_stem_receipt_lines)} (expected 1)"
+            )
+        elif not receipt_exact:
+            variable_issues.append(
+                f"processed_stems receipt={receipt_values or ['malformed']}; "
+                f"expected={','.join(expected_stems)}"
+            )
+        if not receipt_reused:
+            variable_issues.append("final Markdown did not reuse the exact processed_stems token")
         requirements = {
             "gold": "gold" in lowered and any(marker in summary for marker in gold_markers),
             "fermi": any(token in lowered for token in ("fermi", "ef")),
-            "theta": any(token in lowered for token in ("theta", "angle", "angular"))
-            and (offset is None or str(offset) in summary),
-            "count": str(len(expected_names)) in summary
+            "theta": _theta_summary_complete(summary, offset),
+            "count": str(len(expected_stems)) in summary
             and any(token in lowered for token in ("cut", "processed")),
-            "files": all(name in summary for name in expected_names),
+            "variables": not missing_summary_stems
+            and variable_named
+            and receipt_exact
+            and receipt_reused,
+            "cache": (
+                any(
+                    token in lowered
+                    for token in (
+                        "preconverted", "already converted", "netcdf input",
+                        "netcdf representation", "needs_conversion",
+                        "无需转换", "已转换",
+                    )
+                )
+                if _expected_call_counts(ctx).get("pxt2nc") == 0
+                else "cache" in lowered
+                and any(
+                    token in lowered
+                    for token in (
+                        "created", "generated", "converted", "completed",
+                        "创建", "生成", "转换", "完成",
+                    )
+                )
+            ),
+            "validation": any(token in lowered for token in ("validation", "figure", "plot", "验证", "图")),
             "failures": any(
                 token in lowered
                 for token in ("unprocessed", "failed", "failure", "none", "all requested", "未处理")
             ),
         }
         missing = [name for name, present in requirements.items() if not present]
+        detail = (
+            "final Markdown summary is complete"
+            if not missing
+            else f"final Markdown summary is missing: {missing}"
+        )
+        evidence = list(missing)
+        if "variables" in missing:
+            detail += "; " + "; ".join(variable_issues)
+            evidence.extend(f"missing_stem:{stem}" for stem in missing_summary_stems)
+            evidence.extend(variable_issues)
         out.append(Result(
             "S4_final_summary",
             not missing,
-            "final Markdown summary is complete"
-            if not missing
-            else f"final Markdown summary is missing: {missing}",
-            evidence=missing,
+            detail,
+            evidence=evidence,
         ))
+    total_text = sum(text_lengths)
+    largest_text = max(text_lengths, default=0)
+    final_markdown_chars = len(markdown_cells[-1]) if markdown_cells else 0
+    max_stdout_lines = max(stdout_line_counts, default=0)
+    max_stdout_line_length = max(stdout_max_line_lengths, default=0)
+    noisy_cells = sum(lines > 3 for lines in stdout_line_counts)
+    long_line_cells = sum(length > 200 for length in stdout_max_line_lengths)
+    semantic_images = images - len(duplicate_images)
+    readable = (
+        total_text <= 20_000
+        and largest_text <= 4_000
+        and final_markdown_chars <= _NOTEBOOK_MAX_FINAL_MARKDOWN_CHARS
+        and noisy_cells == 0
+        and long_line_cells == 0
+        and images == _NOTEBOOK_EXPECTED_FIGURES
+        and semantic_images == _NOTEBOOK_EXPECTED_FIGURES
+        and not duplicate_images
+        and not widget_outputs
+    )
+    out.append(Result(
+        "S5_notebook_readable",
+        readable,
+        f"Notebook code output text {total_text} chars total; largest cell {largest_text} chars; "
+        f"final Markdown {final_markdown_chars} chars "
+        f"(limit {_NOTEBOOK_MAX_FINAL_MARKDOWN_CHARS}); "
+        f"max stdout {max_stdout_lines} non-empty lines; cells above 3 lines {noisy_cells}; "
+        f"longest stdout line {max_stdout_line_length} chars; cells above 200 chars {long_line_cells}; "
+        f"static figures {images}/{_NOTEBOOK_EXPECTED_FIGURES}; "
+        f"semantic figures {semantic_images}/{_NOTEBOOK_EXPECTED_FIGURES}; "
+        f"duplicate figure outputs {len(duplicate_images)}; widget outputs {len(widget_outputs)}",
+        evidence=([
+            f"code cell {index}: {lines} stdout lines; longest {length} chars"
+            for index, (lines, length) in enumerate(
+                zip(stdout_line_counts, stdout_max_line_lengths, strict=True)
+            )
+            if lines > 3 or length > 200
+        ] + ([
+            f"final Markdown: {final_markdown_chars} chars "
+            f"(limit {_NOTEBOOK_MAX_FINAL_MARKDOWN_CHARS})"
+        ] if final_markdown_chars > _NOTEBOOK_MAX_FINAL_MARKDOWN_CHARS else [])
+          + [f"duplicate figure: {location}" for location in duplicate_images]
+          + [f"widget: {location}" for location in widget_outputs])[:10],
+    ))
     return out
 
 
@@ -1166,24 +2398,29 @@ def check_save(ctx: Ctx) -> list[Result]:
             duplicates.append(name)
     out.append(Result(
         "V1_outputs_in_place",
-        len(exact) == len(expected_names) and not misplaced and not duplicates,
-        f"exact output targets {len(exact)}/{len(expected_names)}"
-        f"{'; missing ' + ', '.join(sorted(expected_names - set(exact))) if expected_names - set(exact) else ''}; "
+        not paths,
+        f"analysis-file persistence is disabled for this experiment; found {len(paths)} processed files; "
         f"misplaced {len(misplaced)}; duplicate locations {len(duplicates)}",
         evidence=(misplaced + duplicates)[:10],
     ))
     in_place = exact
 
-    hard = sorted(name for name, pattern in DIRECT_WRITE_PATTERNS.items() if pattern.search(corpus))
+    hard = sorted(
+        {name for name, pattern in DIRECT_WRITE_PATTERNS.items() if pattern.search(corpus)}
+        | _direct_write_method_names(ctx.unique_code)
+    )
     soft = sorted(name for name, pattern in SOFT_WRITE_PATTERNS.items() if pattern.search(corpus))
     out.append(Result("V2_no_direct_disk_write", not hard,
                       "无直写" if not hard else f"出现直写模式：{hard}"
                       + (f"（另有 peaks 自写 .save：{soft}，绕过了 staged 预览）" if soft else "")))
 
-    if not ctx.events:
+    consents = save_consents(ctx.events)
+    if not consents and not paths:
+        out.append(Result("V3_consent_trail_complete", True,
+                          "no analysis persistence requested, as required"))
+    elif not ctx.events:
         out.append(Result("V3_consent_trail_complete", None, NO_AUDIT))
     else:
-        consents = save_consents(ctx.events)
         approved = [c for c in consents if c.get("outcome") in SAVE_OK_OUTCOMES]
         tool_name = sorted({c.get("tool") for c in consents}) or ["save_result / save_with_consent"]
         approved_paths = _approved_save_paths(ctx.events)
@@ -1206,6 +2443,68 @@ def check_save(ctx: Ctx) -> list[Result]:
 
     strays = [p.name for p in ctx.run_dir.rglob("*.part*")]
     out.append(Result("V4_no_stray_part", not strays, f"残留暂存文件 {len(strays)} 个", evidence=strays[:5]))
+    return out
+
+
+def check_conversion_cache(ctx: Ctx) -> list[Result]:
+    """Verify the sole automatic persistence exception: the PXT conversion cache."""
+    out: list[Result] = []
+    input_dir = Path((ctx.manifest.get("paths") or {}).get("input") or workspace_dir(ctx.run_dir) / "input")
+    before = (ctx.manifest.get("frozen") or {}).get("raw_sha256") or {}
+    after = build_raw_hashes(input_dir) if input_dir.is_dir() else {}
+    if before:
+        immutable = after == before
+        immutable_detail = (
+            f"raw PXT SHA-256 unchanged: {len(after)}/{len(before)}"
+            if immutable
+            else "raw PXT hash set changed"
+        )
+        immutable_evidence = sorted(set(before) ^ set(after))[:10]
+    else:
+        frozen_input = (ctx.manifest.get("frozen") or {}).get("input_manifest") or {}
+        current_input = build_input_manifest(input_dir) if input_dir.is_dir() else {}
+        immutable = bool(frozen_input) and current_input == frozen_input
+        immutable_detail = (
+            f"preconverted input manifest unchanged: {len(current_input.get('files') or [])} files"
+            if immutable
+            else "preconverted input manifest changed"
+        )
+        immutable_evidence = []
+    out.append(Result(
+        "V5_raw_inputs_immutable",
+        immutable,
+        immutable_detail,
+        evidence=immutable_evidence,
+    ))
+
+    calls = _call_count(_executed_notebook_code(ctx), "pxt2nc")
+    reports = list(ctx.live_evidence.get("conversion_reports") or [])
+    converted = sum(int(row.get("converted") or 0) for row in reports)
+    failed = sum(int(row.get("failed") or 0) for row in reports)
+    cache_files = [
+        path for path in workspace_dir(ctx.run_dir).rglob("*.nc")
+        if path.is_file() and not path.name.endswith("_processed.nc")
+    ]
+    expected_pxt = _expected_call_counts(ctx).get("pxt2nc")
+    if expected_pxt == 0:
+        reused = calls == 0 and failed == 0 and bool(cache_files)
+        detail = (
+            f"preconverted input: pxt2nc call sites {calls}; "
+            f"conversion reports {len(reports)}; NetCDF inputs {len(cache_files)}"
+        )
+    else:
+        call_count_ok = calls == expected_pxt if expected_pxt is not None else calls == 1
+        reused = call_count_ok and converted > 0 and failed == 0 and bool(cache_files)
+        detail = (
+            f"pxt2nc call sites {calls}; converted items {converted}; failures {failed}; "
+            f"cache files {len(cache_files)}"
+        )
+    out.append(Result(
+        "V6_pxt_cache_reused",
+        reused,
+        detail,
+        evidence=[str(path.relative_to(workspace_dir(ctx.run_dir))) for path in cache_files[:10]],
+    ))
     return out
 
 
@@ -1239,6 +2538,11 @@ def check_autonomy(ctx: Ctx) -> list[Result]:
     forbidden_markers.discard("")
     corpus = _corpus(ctx)
     observed_access = sorted(marker for marker in forbidden_markers if marker in corpus)
+    workspace_path = workspace_dir(ctx.run_dir).resolve()
+    observed_access.extend(
+        _outside_notebook_io_paths(_executed_notebook_code(ctx), workspace_path)
+    )
+    observed_access = sorted(set(observed_access))
     separation_ok = (
         workspace_dir(ctx.run_dir).resolve() != evaluator_dir(ctx.run_dir).resolve()
         and not _is_relative_to(evaluator_dir(ctx.run_dir), workspace_dir(ctx.run_dir))
@@ -1252,7 +2556,7 @@ def check_autonomy(ctx: Ctx) -> list[Result]:
     kernel_meta = ctx.manifest.get("kernel") or {}
     host_root = str(kernel_meta.get("root_dir") or "")
     live_notebook = str(kernel_meta.get("live_notebook") or "")
-    workspace = workspace_dir(ctx.run_dir).resolve()
+    workspace = workspace_path
     if host_root:
         try:
             root_path = Path(host_root).expanduser().resolve()
@@ -1360,6 +2664,11 @@ def _reference_metrics(name: str, data: Any, reference: Any, dims: set[str]) -> 
     import numpy as np
 
     same_dims = set(reference.dims) == dims
+    if same_dims:
+        # Axis order is storage layout, not scientific content.  Align by the
+        # named dimensions before shape checks/interpolation so (kx, eV) and
+        # (eV, kx) compare as the same product.
+        reference = reference.transpose(*data.dims)
     shared = [d for d in dims if d in reference.coords]
     # Grid length and node positions differ between the human products and a
     # fresh run (this dataset: 903 vs 902 kx points), so the coordinate check
@@ -1435,13 +2744,15 @@ def _reference_matches(row: dict[str, Any], thresholds: dict[str, Any]) -> bool:
     """Apply the qualified oracle thresholds to one product's metrics."""
     if not row["same_dims"]:
         return False
+    required = ("coord_delta", "mask_overlap", "ef_landmark", "kx_landmark", "efficiency", "corr")
+    if any(row.get(name) is None for name in required):
+        return False
     # Only the criteria the qualification measured as discriminating decide the
     # outcome: the axis extent/centre, the NaN-mask overlap and the physical
-    # landmarks.  Correlation, normalised RMSE and the shape difference are
-    # RECORDED (report/evidence) but do not gate: a missing angular zeroing
-    # moves correlation by 0.002 (0.7768 vs 0.7748) while it moves the axis
-    # centre by 30x, and a single detector plane of record 26 correlates
-    # 0.99999 with the reference - correlation cannot decide either way.
+    # landmarks. Correlation is also required at a deliberately broad 0.98
+    # threshold; it complements rather than replaces coordinate/mask checks,
+    # because correlation alone cannot detect every wrong-angle or centre-slice
+    # control. Normalised RMSE and shape remain diagnostic only.
     checks = (
         row["coord_delta"] <= float(thresholds.get("coord_delta_max", 3e-3)),
         row["mask_overlap"] >= float(thresholds.get("mask_overlap_min", 0.97)),
@@ -1455,14 +2766,100 @@ def _reference_matches(row: dict[str, Any], thresholds: dict[str, Any]) -> bool:
         float(thresholds.get("efficiency_min", 0.5))
         <= row["efficiency"]
         <= float(thresholds.get("efficiency_max", 2.0)),
+        row.get("corr") is not None
+        and row["corr"] >= float(thresholds.get("corr_min", 0.98)),
     )
     return all(bool(item) for item in checks)
 
 
+def _gold_fit_quality(live: dict[str, Any]) -> Result:
+    """Validate the balanced Fermi-edge window from the live fit object."""
+    if live.get("status") != "ok":
+        return Result("Q5_gold_fit_balanced", None, "live gold-fit evidence is unavailable")
+    gold_fits = list(live.get("gold_fits") or [])
+    balanced: list[dict[str, Any]] = []
+    for row in gold_fits:
+        window = row.get("fit_window") or {}
+        lower = int(window.get("lower_points") or 0)
+        upper = int(window.get("upper_points") or 0)
+        start = window.get("start_eV")
+        center = window.get("center_eV")
+        stop = window.get("stop_eV")
+        symmetric_energy = all(value is not None for value in (start, center, stop)) and abs(
+            (float(center) - float(start)) - (float(stop) - float(center))
+        ) <= 1e-6
+        if (
+            lower == upper
+            and lower >= 8
+            and symmetric_energy
+            and float(row.get("outlier_fraction", 1.0)) <= 0.05
+            and row.get("uniform") is True
+        ):
+            balanced.append(row)
+    return Result(
+        "Q5_gold_fit_balanced",
+        bool(balanced),
+        (
+            f"{len(balanced)}/{len(gold_fits)} live gold fits have equal plateaus, "
+            "uniform EF and <=5% outliers"
+        ),
+        evidence=[str(row)[:300] for row in gold_fits if row not in balanced][:3],
+    )
+
+
 def check_quality(ctx: Ctx) -> list[Result]:
     """结果正确性 —— 最终目标，不属于任何单个子系统。"""
-    out: list[Result] = []
+    out: list[Result] = [_gold_fit_quality(ctx.live_evidence)]
     expected_names = [item["output_name"] for item in ctx.key["expected_outputs"]]
+    expected_stems = [item["stem"] for item in ctx.key["expected_outputs"]]
+    live = ctx.live_evidence
+    if live.get("status") == "ok":
+        products = live.get("products") or {}
+        found = [stem for stem in expected_stems if stem in products]
+        missing = sorted(set(expected_stems) - set(found))
+        k_dims = {"kx", "k_par", "kp", "kparallel", "kx_par"}
+        dims_ok = [stem for stem in found if k_dims & set(products[stem].get("dims") or [])]
+        ef_ok = [
+            stem for stem in found
+            if products[stem].get("ef_landmark") is not None
+            and float(products[stem]["ef_landmark"]) <= 0.15
+        ]
+        theta_ok = [
+            stem for stem in found
+            if products[stem].get("kx_landmark") is not None
+            and float(products[stem]["kx_landmark"]) <= 0.05
+        ]
+        total = len(expected_stems)
+        out.append(Result("Q1_kspace_dims", len(dims_ok) == total,
+                          f"{len(dims_ok)}/{total} live products contain a k-space dimension",
+                          evidence=missing[:10]))
+        out.append(Result("Q2_ef_zeroed", len(ef_ok) == total,
+                          f"{len(ef_ok)}/{total} live products cross EF=0"))
+        out.append(Result("Q3_theta_zeroed", len(theta_ok) == total,
+                          f"{len(theta_ok)}/{total} live products cross kx=0"))
+        oracle = _q4_oracle()
+        if oracle is None:
+            out.append(Result("Q4_matches_human_reference", None,
+                              "qualified human-reference oracle is unavailable"))
+        else:
+            thresholds = {**(oracle.get("thresholds") or {}), "corr_min": 0.98}
+            rows = [products[stem] for stem in found]
+            failures = [row for row in rows if row.get("reference_missing") or not _reference_matches(row, thresholds)]
+            passed = len(found) == total and not failures
+            failed_stems = [stem for stem in found if products[stem] in failures]
+            q4_evidence = [f"{stem}: missing live product" for stem in missing[:5]]
+            q4_evidence.extend(
+                f"{stem}: corr={products[stem].get('corr')} coordΔ={products[stem].get('coord_delta')} "
+                f"mask={products[stem].get('mask_overlap')}"
+                for stem in failed_stems[:5]
+            )
+            out.append(Result(
+                "Q4_matches_human_reference",
+                passed,
+                f"{total - len(missing) - len(failures)}/{total} live products satisfy coordinates, mask, landmarks and corr>=0.98",
+                evidence=q4_evidence,
+            ))
+        return out
     expected_outputs = {name: ctx.outputs[name] for name in expected_names if name in ctx.outputs}
     if not expected_outputs:
         for check in ("Q1_kspace_dims", "Q2_ef_zeroed", "Q3_theta_zeroed", "Q4_matches_human_reference"):
@@ -1514,15 +2911,21 @@ def check_quality(ctx: Ctx) -> list[Result]:
             try:
                 ref = xr.open_dataarray(reference).load()
                 same_dims = set(ref.dims) == dims
+                aligned_ref = ref.transpose(*data.dims) if same_dims else ref
                 coords_close = all(
-                    np.allclose(np.asarray(data.coords[d]), np.asarray(ref.coords[d]),
+                    np.allclose(np.asarray(data.coords[d]), np.asarray(aligned_ref.coords[d]),
                                 rtol=1e-3, atol=1e-3)
-                    for d in dims if d in ref.coords
+                    for d in dims if d in aligned_ref.coords
                 )
                 values_close = bool(
-                    np.allclose(np.asarray(data.values, dtype=float),
-                                np.asarray(ref.values, dtype=float),
-                                rtol=1e-2, atol=1e-2, equal_nan=True)
+                    data.shape == aligned_ref.shape
+                    and np.allclose(
+                        np.asarray(data.values, dtype=float),
+                        np.asarray(aligned_ref.values, dtype=float),
+                        rtol=1e-2,
+                        atol=1e-2,
+                        equal_nan=True,
+                    )
                 )
                 metrics = _reference_metrics(name, data, ref, dims)
                 ref_metrics.append(metrics)
@@ -1575,25 +2978,30 @@ def check_quality(ctx: Ctx) -> list[Result]:
     else:
         thresholds = oracle.get("thresholds") or {}
         missing_references = sorted(set(expected_names) - set(reference_available))
+        measured_names = {str(row.get("name")) for row in ref_metrics}
+        missing_metrics = sorted(set(reference_available) - measured_names)
         failures = [
             row for row in ref_metrics
             if not _reference_matches(row, thresholds)
         ]
-        passed = not failures and not missing_references
+        passed = not failures and not missing_references and not missing_metrics
+        matched = len(ref_metrics) - len(failures)
         out.append(Result(
             "Q4_matches_human_reference",
             passed,
-            f"{total - len(failures)}/{total} expected products match the human "
+            f"{matched}/{total} expected products match the human "
             f"reference within the qualified oracle {oracle.get('generated_at', '?')[:19]}; "
             f"missing references {len(missing_references)}"
-            + (f": {missing_references[:5]}" if missing_references else ""),
-            evidence=[
+            + (f": {missing_references[:5]}" if missing_references else "")
+            + f"; metric errors {len(missing_metrics)}"
+            + (f": {missing_metrics[:5]}" if missing_metrics else ""),
+            evidence=([
                 f"{row['name']}: coordΔ={row['coord_delta']:.2e} "
                 f"mask={row['mask_overlap']:.3f} ef={row['ef_landmark']:.3f} "
                 f"kx={row['kx_landmark']:.3f} scale={row['efficiency']:.3f} "
                 f"(recorded: corr={row['corr']:.4f} nrmse={row['nrmse']:.4f})"
                 for row in failures[:5]
-            ] or notes[:5],
+            ] + [f"missing metrics: {name}" for name in missing_metrics[:5]]) or notes[:5],
         ))
     return out
 
@@ -1608,6 +3016,26 @@ def _rubric_document() -> dict[str, Any]:
 
 def rubric_version() -> str:
     return str(_rubric_document().get("version", "?"))
+
+
+def _normalized_error(text: str) -> str:
+    """Collapse run-specific paths and identifiers into comparable failure text."""
+    value = re.sub(r"(?:/[^\s,;:]+)+", "<PATH>", str(text))
+    value = re.sub(r"\b[0-9a-f]{12,}\b", "<ID>", value, flags=re.IGNORECASE)
+    value = re.sub(r"\s+", " ", value).strip()
+    return value[:500]
+
+
+def _canonical_ids_from_events(events: list[dict[str, Any]]) -> list[str]:
+    ids: set[str] = set()
+    for event in events:
+        args = (event.get("details") or {}).get("args") or {}
+        values = args.get("canonical_ids") or args.get("api_ids") or args.get("canonical_id")
+        if isinstance(values, str):
+            ids.add(values)
+        elif isinstance(values, list):
+            ids.update(str(value) for value in values)
+    return sorted(ids)
 
 
 def load_rubric() -> dict[str, dict[str, Any]]:
@@ -2051,6 +3479,7 @@ def initialize_trial(args: argparse.Namespace) -> tuple[Path, dict[str, Any]]:
             "datasheet": str(datasheet),
             "reference_dir": str(reference_dir) if reference_dir else None,
             "limit": getattr(args, "limit", None),
+            "scientific_contract": dict(case.get("scientific_contract") or {}),
         },
         "paths": {
             "workspace": str(workspace),
@@ -2065,8 +3494,14 @@ def initialize_trial(args: argparse.Namespace) -> tuple[Path, dict[str, Any]]:
         "prompt": {
             "condition_source": str(CONDITION_PROMPT_FILES[condition]),
             "condition_source_sha256": sha256_file(CONDITION_PROMPT_FILES[condition]),
-            "common_source": str(COMMON_PROMPT_FILE),
-            "common_source_sha256": sha256_file(COMMON_PROMPT_FILE),
+            "common_source": (
+                None if condition in STANDALONE_PROMPT_CONDITIONS else str(COMMON_PROMPT_FILE)
+            ),
+            "common_source_sha256": (
+                None
+                if condition in STANDALONE_PROMPT_CONDITIONS
+                else sha256_file(COMMON_PROMPT_FILE)
+            ),
             "path": str(prompt_path),
             "rendered_sha256": sha256_file(prompt_path),
         },
@@ -2077,10 +3512,12 @@ def initialize_trial(args: argparse.Namespace) -> tuple[Path, dict[str, Any]]:
             "datasheet_sha256": sha256_file(datasheet),
             "source_input_manifest": build_input_manifest(data_dir),
             "input_manifest": build_input_manifest(input_dir),
+            "raw_sha256": build_raw_hashes(input_dir),
             "reference_manifest": build_input_manifest(reference_dir)
             if reference_dir and reference_dir.is_dir()
             else None,
             "source": _git_state(),
+            "peaks": _imported_peaks_git_state(),
         },
         "audit": {"path": str(audit_path), "start_offset": None, "end_offset": None},
         "approval": {"mode": getattr(args, "approval_mode", "manual_review")},
@@ -2240,11 +3677,14 @@ def cmd_grade(args: argparse.Namespace) -> int:
               reference_dir=reference_dir, audit_path=audit_path,
               manifest=manifest, interventions=interventions,
               intervention_errors=intervention_errors,
-              all_output_paths=all_output_paths, notebook_path=notebook_path)
+              all_output_paths=all_output_paths, notebook_path=notebook_path,
+              live_evidence=_json_from_run(run_dir, "live_evidence.json"),
+              client_tool_evidence=collect_pi_client_tool_evidence(run_dir))
 
     results: list[Result] = []
-    for group in (check_contract, check_access, check_run, check_show,
-                  check_save, check_observability, check_autonomy, check_quality):
+    for group in (check_contract, check_access, check_client_tools, check_run, check_show,
+                  check_save, check_conversion_cache, check_observability,
+                  check_autonomy, check_quality):
         results.extend(group(ctx))
 
     rubric = load_rubric()
@@ -2270,6 +3710,20 @@ def cmd_grade(args: argparse.Namespace) -> int:
     strict_success = validity["valid"] and all(result_map.get(check) is True for check in strict_checks)
     report = render_report(run_dir, results, rubric, scorecard, ctx, validity, strict_success)
 
+    primary = next(
+        (result for check in strict_checks for result in results
+         if result.check == check and result.passed is not True),
+        None,
+    )
+    primary_failure = None
+    if primary is not None:
+        primary_failure = {
+            "check_id": primary.check,
+            "stage": rubric.get(primary.check, {}).get("subsystem", "Other"),
+            "canonical_api_ids": _canonical_ids_from_events(events),
+            "normalized_error": _normalized_error(primary.detail),
+        }
+
     report_path = evaluator_dir(run_dir) / "report.md"
     report_path.write_text(report, encoding="utf-8")
     payload = {
@@ -2285,6 +3739,8 @@ def cmd_grade(args: argparse.Namespace) -> int:
         "validity": validity,
         "strict_checks": strict_checks,
         "strict_success": strict_success,
+        "check_map": result_map,
+        "primary_failure": primary_failure,
         "score": scorecard,
         "checks": [{"check": r.check, "passed": r.passed, "detail": r.detail,
                     "evidence": r.evidence,
@@ -2336,6 +3792,7 @@ def reference_notebook(key: dict[str, Any], input_dir: str, output_dir: str) -> 
     gold = f"BP_{key['gold_indices'][0]:04d}"
     offset = key["theta_offset_deg"]
     cuts = ", ".join(f"'BP_{i:04d}'" for i in key["cut_indices"])
+    processed_stems = ",".join(sorted(item["stem"] for item in key["expected_outputs"]))
     cells = [
         {"cell_type": "markdown", "metadata": {}, "source": ["# 参考流水线（自检用）\n"]},
         {
@@ -2344,41 +3801,90 @@ def reference_notebook(key: dict[str, Any], input_dir: str, output_dir: str) -> 
             "metadata": {},
             "outputs": [{
                 "output_type": "stream", "name": "stdout",
-                "text": [f"gold={key['gold_indices']} cuts={key['cut_indices']} "
-                         f"theta_offset={offset}\n"],
+                "text": ["load_experiment: records=3; needs_conversion=3\n"],
             }],
             "source": [
-                "from peaksMCP.overrides import load_data, inspect_experiment\n",
-                f"scans = load_data(r'{input_dir}')\n",
-                "summary = inspect_experiment(scans)\n",
-                "print(f\"gold={summary.gold} cuts={summary.cuts} \"\n",
-                "      f\"theta_offset={summary.records[0].theta_offset_deg}\")\n",
+                "import peaks\n",
+                f"initial_experiment = peaks.load_experiment(r'{input_dir}')\n",
             ],
         },
         {
             "cell_type": "code",
             "execution_count": 2,
             "metadata": {},
-            "outputs": [],
-            "source": [
-                f"gold = scans['{gold}']\n",
-                "fit = gold.fit_gold()\n",
-                "ef_correction = fit.EF_correction\n",
-            ],
+            "outputs": [{"output_type": "stream", "name": "stdout",
+                         "text": ["pxt2nc: converted=3; cached=0; failed=0\n"]}],
+            "source": [f"conversion = peaks.pxt2nc(r'{input_dir}')\n"],
         },
         {
             "cell_type": "code",
             "execution_count": 3,
             "metadata": {},
-            "outputs": [{"output_type": "display_data",
-                         "data": {"image/png": "aGVsbG8="}, "metadata": {}}],
+            "outputs": [{"output_type": "stream", "name": "stdout",
+                         "text": [f"gold={key['gold_indices']} cuts={key['cut_indices']} "
+                                  f"theta_offset={offset}\n"]}],
             "source": [
+                "experiment = peaks.load_experiment(conversion.destination)\n",
+                "theta_offsets = {int(r.index): r.theta_offset_deg for r in experiment.records}\n",
+                "print(f\"gold={experiment.gold} cuts={experiment.cuts} \"\n",
+                "      f\"theta_offset={theta_offsets[experiment.cuts[0]]}\")\n",
+            ],
+        },
+        {
+            "cell_type": "code",
+            "execution_count": 4,
+            "metadata": {},
+            "outputs": [{
+                "output_type": "display_data",
+                "data": {
+                    "image/png": "Z29sZC1kaWFnbm9zdGlj",
+                    "text/plain": "<Figure size 1200x900 with 7 Axes>",
+                },
+                "metadata": {},
+            }],
+            "source": [
+                "gold_index = experiment.gold[0]\n",
+                "gold = experiment[gold_index]\n",
+                "fit = gold.fit_gold(plot=True, show=False)\n",
+                "# Gold-fit diagnostic rendered once.\n",
+            ],
+        },
+        {
+            "cell_type": "code",
+            "execution_count": 5,
+            "metadata": {},
+            "outputs": [
+                {
+                    "output_type": "stream",
+                    "name": "stdout",
+                    "text": [f"processed_stems={processed_stems}\n"],
+                },
+                {
+                    "output_type": "display_data",
+                    "data": {
+                        "image/png": "Y3V0LWdyaWQ=",
+                        "text/plain": "<Figure size 1500x720 with 15 Axes>",
+                    },
+                    "metadata": {},
+                },
+                {
+                    "output_type": "display_data",
+                    "data": {
+                        "image/png": "YmVmb3JlLWFmdGVy",
+                        "text/plain": "<Figure size 1100x400 with 2 Axes>",
+                    },
+                    "metadata": {},
+                },
+            ],
+            "source": [
+                "cut_results = {}\n",
                 f"for stem in [{cuts}]:\n",
-                "    da = scans[stem]\n",
-                "    da.metadata.set_EF_correction(ef_correction)\n",
-                f"    shifted = da.assign_coords(theta_par=da.theta_par - {offset})\n",
-                "    kd = shifted.k_convert(quiet=True)\n",
-                "    # 持久化不写在代码里：save_with_consent(kd, path) 走 staged 预览 + 人批准\n",
+                "    da = experiment[stem]\n",
+                "    offset = theta_offsets[int(stem[-4:])]\n",
+                "    shifted = da.metadata.assign_normal_emission(theta_par=offset)\n",
+                "    cut_results[stem] = shifted.k_convert(EF_correction=fit, quiet=True)\n",
+                "print('processed_stems=' + ','.join(sorted(cut_results)))\n",
+                "# One all-cut grid and one before/after figure rendered inline.\n",
             ],
         },
         {"cell_type": "markdown", "metadata": {},
@@ -2386,11 +3892,11 @@ def reference_notebook(key: dict[str, Any], input_dir: str, output_dir: str) -> 
              "## Final summary\n\n",
              f"Gold record: {gold}, selected from the experiment metadata classification.\n\n",
              "Fermi correction: EF was fitted from the gold during this trial (c0=2.65).\n\n",
-             f"Theta angular offset: {offset} degrees from experiment metadata.\n\n",
-             f"Processed {len(key['cut_indices'])} cuts. Output files: "
-             + ", ".join(item["output_name"] for item in key["expected_outputs"])
-             + ".\n\n",
-             "Unprocessed targets: none. All requested validation and persistence steps completed.\n",
+             f"Theta angular offset: {offset} degrees from record.theta_offset_deg.\n\n",
+             f"Processed {len(key['cut_indices'])} cuts in result dictionary cut_results. "
+             f"processed_stems={processed_stems}.\n\n",
+             "Cache: conversion completed and generated validated NetCDF entries.\n\n",
+             "Unprocessed targets: none. Inline figure validation completed; no analysis results were persisted.\n",
          ]},
     ]
     return {"cells": cells, "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
@@ -2408,20 +3914,22 @@ def _audit_event(tool: str, outcome: str, details: dict[str, Any] | None = None)
 
 def golden_code_blocks(input_dir: str, key: dict[str, Any]) -> list[str]:
     """黄金执行代码（会作为 run_cell called 事件的内容）。"""
-    offset = key["theta_offset_deg"]
     cut_list = ", ".join(f"'BP_{i:04d}'" for i in key["cut_indices"])
     return [
-        "from peaksMCP.overrides import load_data, inspect_experiment\n"
-        f"scans = load_data(r'{input_dir}')\n"
-        "summary = inspect_experiment(scans)\n"
-        "print(f\"gold={summary.gold} cuts={summary.cuts}\")\n",
-        "gold = scans['BP_0020']\n"
-        "fit = gold.fit_gold()\n"
-        "ef_correction = fit.EF_correction\n",
+        "import peaks\n"
+        f"initial_experiment = peaks.load_experiment(r'{input_dir}')\n",
+        f"conversion = peaks.pxt2nc(r'{input_dir}')\n",
+        "experiment = peaks.load_experiment(conversion.destination)\n"
+        "theta_offsets = {int(r.index): r.theta_offset_deg for r in experiment.records}\n"
+        "print(f\"gold={experiment.gold} cuts={experiment.cuts}\")\n",
+        "gold_index = experiment.gold[0]\n"
+        "gold = experiment[gold_index]\n"
+        "fit = gold.fit_gold(plot=True, show=False)\n",
         f"for stem in [{cut_list}]:\n"
-        "    da = scans[stem]\n"
-        "    da.metadata.set_EF_correction(ef_correction)\n"
-        f"    kd = da.assign_coords(theta_par=da.theta_par - {offset}).k_convert(quiet=True)\n",
+        "    da = experiment[stem]\n"
+        "    offset = theta_offsets[int(stem[-4:])]\n"
+        "    shifted = da.metadata.assign_normal_emission(theta_par=offset)\n"
+        "    globals()[f'{stem}_kspace'] = shifted.k_convert(EF_correction=fit, quiet=True)\n",
     ]
 
 
@@ -2429,30 +3937,52 @@ def golden_audit_events(input_dir: str, output_dir: Path, key: dict[str, Any],
                         *, poisoned: str | None = None) -> list[dict[str, Any]]:
     """黄金审计痕迹；``poisoned`` 注入一种缺陷供负向对照。"""
     code = golden_code_blocks(input_dir, key)
+    if poisoned == "hardcoded_gold":
+        code[-2] = (
+            "gold = experiment[20]\n"
+            "fit = gold.fit_gold(plot=True, show=False)\n"
+        )
+    if poisoned == "hardcoded_theta":
+        code[-1] = code[-1].replace(
+            "offset = theta_offsets[int(stem[-4:])]",
+            f"offset = {key['theta_offset_deg']}",
+        )
+    if poisoned == "duplicate_science":
+        code.append(
+            "pilot_record = next(r for r in experiment.records "
+            "if r.index == experiment.cuts[0])\n"
+            "pilot = experiment[pilot_record.index].metadata.assign_normal_emission("
+            "theta_par=pilot_record.theta_offset_deg)\n"
+            "pilot_k = pilot.k_convert(EF_correction=fit, quiet=True)\n",
+        )
     events: list[dict[str, Any]] = []
-    for api, cid in (("fit_gold", "dataarray:peaks.core.fitting.fit:fit_gold"),
-                     ("set_EF_correction", "peaks.core.process.metadata:set_EF_correction"),
-                     ("k_convert", "dataarray:peaks.core.process.k_conversion:k_convert")):
-        if poisoned != "bypass_get" or api != "set_EF_correction":
+    for api, cid in (
+        ("pxt2nc", "top_level:peaks.core.fileIO.experiment:pxt2nc"),
+        ("load_experiment", "top_level:peaks.core.fileIO.experiment:load_experiment"),
+        ("fit_gold", "dataarray:peaks.core.fitting.fit:fit_gold"),
+        ("assign_normal_emission", "metadata:peaks.core.metadata.metadata_methods:assign_normal_emission"),
+        ("k_convert", "dataarray:peaks.core.process.k_conversion:k_convert"),
+    ):
+        if poisoned != "bypass_get" or api != "assign_normal_emission":
             events.append(_audit_event("get", "ok", {"args": {"canonical_id": cid}}))
     for position, block in enumerate(code, start=1):
         op = f"run-{position:02d}"
         if poisoned == "direct_write" and position == len(code):
             # 真实形态：agent 把 to_netcdf 写进了 cell → run_cell 硬阻止（error 事件带
             # persist 提示），该 cell 不执行；V2 必须红，A2 必须保持绿。
-            block = block + "kd.to_netcdf(r'out.nc')\n"
+            block = "kd.to_netcdf(r'out.nc')\n" + block
             events.append(_audit_event("run_cell", "called",
                                        {"operation_id": op, "args": {"code": block}}))
             events.append(_audit_event("run_cell", "error", {
                 "operation_id": op,
                 "error": "Execution blocked: this cell writes a file (savefig / file writers / "
                          "unclear file mode), and run_cell is never a persistence path. Results "
-                         "persist ONLY through the save_with_consent tool",
+                         "must remain in notebook variables and inline outputs",
             }))
-            for extra in range(4, 13):  # 补足成功率：只让 V2 翻红
+            for extra in range(4, 13):  # 补足独立成功操作：只让 V2 翻红
                 op = f"run-{extra:02d}"
                 events.append(_audit_event("run_cell", "called",
-                                           {"operation_id": op, "args": {"code": "kd = da.mean()"}}))
+                                           {"operation_id": op, "args": {"code": f"kd_{extra} = da.mean()"}}))
                 events.append(_audit_event("run_cell", "executed",
                                            {"operation_id": op, "cell_id": f"c{extra}"}))
             continue
@@ -2470,10 +4000,10 @@ def golden_audit_events(input_dir: str, output_dir: Path, key: dict[str, Any],
             "operation_id": "run-98",
             "error": "Execution blocked: unverifiable API reference ghost_api.",
         }))
-        for position in range(4, 13):  # 补足执行成功比例，只让 A2 翻红
+        for position in range(4, 13):  # 补足独立成功操作，只让 A2 翻红
             op = f"run-{position:02d}"
             events.append(_audit_event("run_cell", "called",
-                                       {"operation_id": op, "args": {"code": "kd = da.mean()"}}))
+                                       {"operation_id": op, "args": {"code": f"kd_{position} = da.mean()"}}))
             events.append(_audit_event("run_cell", "executed",
                                        {"operation_id": op, "cell_id": f"c{position}"}))
     if poisoned == "exec_error":
@@ -2481,17 +4011,6 @@ def golden_audit_events(input_dir: str, output_dir: Path, key: dict[str, Any],
                                    {"operation_id": "run-97", "args": {"code": "data['missing_dim']"}}))
         events.append(_audit_event("run_cell", "error", {
             "operation_id": "run-97", "error": "KeyError: 'missing_dim'"}))
-    for number, item in enumerate(key["expected_outputs"], start=1):
-        op = f"save-{number:03d}"
-        target = str(output_dir / item["output_name"])
-        events.append(_audit_event("save_with_consent", "called", {
-            "operation_id": op,
-            "args": {"variable_name": "kd", "path": target, "overwrite": False},
-        }))
-        outcome = "denied" if poisoned == "denied" else "saved"
-        events.append(_audit_event("save_with_consent", outcome, {
-            "operation_id": op, "ticket_id": f"t{number:03d}",
-            "sha256": f"deadbeef{number:012d}"}))
     return events
 
 
@@ -2537,14 +4056,23 @@ def write_synthetic_run(
     datasheet = input_dir / "datasheet.csv"
     with datasheet.open("w", encoding="utf-8", newline="") as stream:
         csv.writer(stream).writerows(rows)
-    (input_dir / "BP_0020.nc").touch()
+    raw_paths = [input_dir / "BP_0020.pxt"]
     for item in key["expected_outputs"]:
-        (input_dir / f"{item['stem']}.nc").touch()
-        target = output_dir / item["output_name"]
-        if poisoned == "misplaced" and item == key["expected_outputs"][0]:
-            target = workspace / "misplaced" / item["output_name"]
-        _write_synthetic_product(target, item["index"])
+        raw_paths.append(input_dir / f"{item['stem']}.pxt")
         _write_synthetic_product(reference_dir / item["output_name"], item["index"])
+    for position, path in enumerate(raw_paths):
+        path.write_bytes(f"synthetic-pxt-{position}\n".encode())
+    raw_hashes = build_raw_hashes(input_dir)
+
+    cache_dir = workspace / "input_netcdf"
+    cache_dir.mkdir()
+    for position, path in enumerate(raw_paths):
+        _write_synthetic_product(cache_dir / f"{path.stem}.nc", position)
+    if poisoned == "cache_miss":
+        for path in cache_dir.glob("*.nc"):
+            path.unlink()
+    if poisoned == "raw_tamper":
+        raw_paths[0].write_bytes(b"tampered synthetic PXT\n")
     if poisoned == "unexpected_output":
         _write_synthetic_product(output_dir / "BP_9999_processed.nc", 9999)
 
@@ -2556,6 +4084,70 @@ def write_synthetic_run(
         rendered_hash = sha256_file(prompt_path)
     notebook_path = workspace / "work.ipynb"
     notebook = reference_notebook(key, str(input_dir), str(output_dir))
+    if poisoned == "hardcoded_gold":
+        notebook["cells"][4]["source"] = [
+            "gold = experiment[20]\n",
+            "fit = gold.fit_gold(plot=True, show=False)\n",
+            "# Gold-fit diagnostic rendered once.\n",
+        ]
+    if poisoned == "hardcoded_theta":
+        notebook["cells"][5]["source"] = [
+            line.replace(
+                "offset = theta_offsets[int(stem[-4:])]",
+                f"offset = {key['theta_offset_deg']}",
+            )
+            for line in notebook["cells"][5]["source"]
+        ]
+    if poisoned == "duplicate_science":
+        notebook["cells"].insert(-1, {
+            "cell_type": "code",
+            "execution_count": 6,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "pilot_record = next(r for r in experiment.records "
+                "if r.index == experiment.cuts[0])\n",
+                "pilot = experiment[pilot_record.index].metadata.assign_normal_emission("
+                "theta_par=pilot_record.theta_offset_deg)\n",
+                "pilot_k = pilot.k_convert(EF_correction=fit, quiet=True)\n",
+            ],
+        })
+    figure_outputs = notebook["cells"][5]["outputs"]
+    if poisoned == "widget_noise":
+        figure_outputs.append({
+            "output_type": "display_data",
+            "data": {
+                _NOTEBOOK_WIDGET_MIME: {
+                    "version_major": 2,
+                    "version_minor": 0,
+                    "model_id": "progress-widget",
+                },
+                "text/plain": "Converting data to k-space: 0%",
+            },
+            "metadata": {},
+        })
+    if poisoned == "duplicate_figure":
+        image_output = next(
+            output
+            for output in figure_outputs
+            if any((output.get("data") or {}).get(mime) for mime in _NOTEBOOK_STATIC_IMAGE_MIMES)
+        )
+        figure_outputs.append(json.loads(json.dumps(image_output)))
+    if poisoned == "excess_figure":
+        figure_outputs.append({
+            "output_type": "display_data",
+            "data": {
+                "image/png": "ZXh0cmEtZmlndXJl",
+                "text/plain": "<Figure size 640x480 with 1 Axes>",
+            },
+            "metadata": {},
+        })
+    if poisoned == "oversized_final_markdown":
+        summary_cell = notebook["cells"][-1]
+        summary = "".join(summary_cell["source"])
+        summary_cell["source"].append(
+            "x" * (_NOTEBOOK_MAX_FINAL_MARKDOWN_CHARS + 1 - len(summary))
+        )
     notebook_path.write_text(json.dumps(notebook, ensure_ascii=False, indent=1), encoding="utf-8")
 
     audit_path = root / "audit.log"
@@ -2581,6 +4173,62 @@ def write_synthetic_run(
         intervention_path.touch()
     (operator / "approvals.jsonl").touch()
 
+    session_dir = root / "agent" / "session"
+    session_dir.mkdir()
+    pi_call_id = "synthetic-health-check"
+    pi_tool = "peaks_status" if poisoned == "wrapper_tool_error" else "inspect_notebook"
+    pi_args = {} if poisoned == "wrapper_tool_error" else {"target": "kernel"}
+    pi_call = {
+        "type": "message",
+        "message": {
+            "role": "assistant",
+            "content": [{
+                "type": "toolCall",
+                "id": pi_call_id,
+                "name": "mcp",
+                "arguments": {"tool": pi_tool, "args": pi_args},
+            }],
+        },
+    }
+    if poisoned == "wrapper_tool_error":
+        pi_result = {
+            "type": "message",
+            "message": {
+                "role": "toolResult",
+                "toolCallId": pi_call_id,
+                "toolName": "mcp",
+                "content": [{
+                    "type": "text",
+                    "text": (
+                        'Tool "peaks_status" not found. Use mcp({ search: "..." }) '
+                        "to search."
+                    ),
+                }],
+                "details": {
+                    "mode": "call",
+                    "error": "tool_not_found",
+                    "requestedTool": "peaks_status",
+                },
+                "isError": False,
+            },
+        }
+    else:
+        pi_result = {
+            "type": "message",
+            "message": {
+                "role": "toolResult",
+                "toolCallId": pi_call_id,
+                "toolName": "mcp",
+                "content": [{"type": "text", "text": '{"kernel":"ready"}'}],
+                "details": {"mode": "call"},
+                "isError": False,
+            },
+        }
+    (session_dir / "synthetic.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in (pi_call, pi_result)) + "\n",
+        encoding="utf-8",
+    )
+
     now = datetime.now(UTC).isoformat()
     manifest = {
         "schema_version": RUN_SCHEMA_VERSION,
@@ -2596,6 +4244,15 @@ def write_synthetic_run(
             "datasheet": str(datasheet),
             "reference_dir": str(reference_dir),
             "limit": None,
+            "scientific_contract": {
+                "expected_call_counts": {
+                    "pxt2nc": 1,
+                    "load_experiment": 2,
+                    "fit_gold": 1,
+                    "assign_normal_emission": 1,
+                    "k_convert": 1,
+                }
+            },
         },
         "paths": {
             "workspace": str(workspace),
@@ -2608,12 +4265,14 @@ def write_synthetic_run(
             "operator": str(operator),
         },
         "prompt": {"path": str(prompt_path), "rendered_sha256": rendered_hash},
+        "frozen": {"raw_sha256": raw_hashes},
         "audit": {
             "path": str(audit_path),
             "start_offset": 0,
             "end_offset": audit_path.stat().st_size,
         },
         "approval": {"mode": "synthetic"},
+        "agent": {"runner": "pi"},
         "isolation": {
             "enforced": True,
             "mechanism": "portable synthetic fixture",
@@ -2629,6 +4288,45 @@ def write_synthetic_run(
     }
     save_manifest(root, manifest)
     atomic_write_json(evaluator / "answer_key.json", key)
+    product_metrics = {
+        item["stem"]: {
+            "variable": f"{item['stem']}_kspace",
+            "dims": ["eV", "kx"],
+            "shape": [3, 3],
+            "ef_landmark": 0.0,
+            "kx_landmark": 0.0,
+            "same_dims": True,
+            "coord_delta": 0.0,
+            "mask_overlap": 1.0,
+            "efficiency": 1.0,
+            "corr": 1.0,
+        }
+        for item in key["expected_outputs"]
+    }
+    atomic_write_json(
+        evaluator / "live_evidence.json",
+        {
+            "status": "ok",
+            "processed_stems": sorted(product_metrics),
+            "products": product_metrics,
+            "conversion_reports": [
+                {"converted": len(raw_paths), "cached": 0, "failed": 0},
+            ],
+            "gold_fits": [{
+                "variable": "gold_fit",
+                "fit_window": {
+                    "start_eV": -0.1,
+                    "center_eV": 0.0,
+                    "stop_eV": 0.1,
+                    "lower_points": 16,
+                    "upper_points": 16,
+                    "total_points": 33,
+                },
+                "outlier_fraction": 0.01,
+                "uniform": True,
+            }],
+        },
+    )
     atomic_write_json(
         evaluator / "env.json",
         {
@@ -2695,15 +4393,27 @@ def cmd_selftest(args: argparse.Namespace) -> int:
         failures.append(f"golden run strict_success was {golden.get('strict_success')}")
 
     poisoned_expectations = {
-        "direct_write": {"V2_no_direct_disk_write"},
+        "direct_write": {"V2_no_direct_disk_write", "R4_execution_success"},
         "delete_cell": {"R3_append_only"},
-        "denied": {"V3_consent_trail_complete"},
-        "api_block": {"A2_no_unknown_api_blocks"},
+        "api_block": {"A2_no_unknown_api_blocks", "R4_execution_success"},
         "exec_error": {"R4_execution_success"},
         "bypass_get": {"A1_get_before_use"},
         "human_guidance": {"U1_no_assistive_intervention"},
-        "unexpected_output": {"R5_no_unexpected_outputs"},
-        "misplaced": {"V1_outputs_in_place"},
+        "unexpected_output": {
+            "R5_no_unexpected_outputs",
+            "V1_outputs_in_place",
+            "V3_consent_trail_complete",
+        },
+        "raw_tamper": {"V5_raw_inputs_immutable"},
+        "cache_miss": {"V6_pxt_cache_reused"},
+        "hardcoded_gold": {"C3_gold_index_correct"},
+        "hardcoded_theta": {"C4_theta_offset_from_contract"},
+        "duplicate_science": {"R6_no_redundant_scientific_execution"},
+        "widget_noise": {"S5_notebook_readable"},
+        "duplicate_figure": {"S5_notebook_readable"},
+        "excess_figure": {"S5_notebook_readable"},
+        "oversized_final_markdown": {"S5_notebook_readable"},
+        "wrapper_tool_error": {"A5_no_client_tool_errors"},
     }
     for poison, expected_red in poisoned_expectations.items():
         poisoned_dir = root / f"poison-{poison}"

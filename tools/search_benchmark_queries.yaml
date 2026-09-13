@@ -9,18 +9,18 @@ version: 1
 cases:
   # --- load / conversion --------------------------------------------------
   - query: "加载一个pxt文件"
-    expect: load_data
+    expect: load_experiment
   - query: "读取实验数据"
-    expect: load_data
+    expect: load_experiment
   - query: "open a pxt file"
-    expect: load_data
+    expect: load_experiment
   - query: "load the dataset from disk"
-    expect: load_data
+    expect: load_experiment
   # Persistence phrasing ("保存数据 / write the data out / export to a file")
   # is deliberately absent: saving is the MCP-level save flow (Phase 3), not a
   # searchable API.  "Save as netcdf" phrasing resolves to the conversion verb.
   - query: "保存成netcdf文件"
-    expect: convert_experiment
+    expect: pxt2nc
   # --- cuts / selection --------------------------------------------------
   - query: "提取一条线cut"
     expect: extract_cut
@@ -143,10 +143,6 @@ cases:
     expect: drift_correction
   - query: "校正两张图的漂移"
     expect: drift_correction
-  - query: "dispersion from photon energy"
-    expect: disp_from_hv
-  - query: "由光子能算色散"
-    expect: disp_from_hv
   # --- calibration / fitting ----------------------------------------------
   - query: "估计费米能级"
     expect: estimate_EF

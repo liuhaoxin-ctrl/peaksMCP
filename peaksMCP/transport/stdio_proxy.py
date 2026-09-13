@@ -6,13 +6,15 @@ from collections import Counter
 from typing import Any
 
 from fastmcp import Client, FastMCP
-from fastmcp.server.providers.proxy import ProxyClient
+from fastmcp.server import create_proxy
 
+from peaksMCP.config import prompts as load_prompts
 from peaksMCP.config.metadata import tool_names
 
 #: Single source of truth is the ``tools:`` block in metadata_baseline.yaml; the
 #: proxy only verifies the live kernel server exposes exactly that set.
 EXPECTED_TOOL_NAMES = tool_names()
+SERVER_INSTRUCTIONS = load_prompts()["server_instructions"]
 
 
 def endpoint(host: str = "127.0.0.1", port: int = 8123) -> str:
@@ -41,7 +43,14 @@ def create_stdio_proxy(host: str = "127.0.0.1", port: int = 8123) -> FastMCP:
     >>> proxy.name
     'peaksMCP Claude Proxy'
     """
-    return FastMCP.as_proxy(ProxyClient(endpoint(host, port)), name="peaksMCP Claude Proxy")
+    # The proxy mirrors upstream tools, but its initialize response does not
+    # inherit the HTTP server's instructions. Pi asks this STDIO endpoint for
+    # them explicitly, so attach the same curated contract here.
+    return create_proxy(
+        endpoint(host, port),
+        name="peaksMCP Claude Proxy",
+        instructions=SERVER_INSTRUCTIONS,
+    )
 
 
 async def check_http_mcp_server(host: str = "127.0.0.1", port: int = 8123) -> dict[str, Any]:
