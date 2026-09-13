@@ -24,7 +24,7 @@ window) once, then verify with `type conda` (it should print `conda is a shell f
 ### 2. Get the source and install the scientific dependency
 
 ```bash
-git clone https://github.com/phrgab/peaksMCP && cd peaksMCP
+git clone https://github.com/liuhaoxin-ctrl/peaksMCP && cd peaksMCP
 # ARPES analysis library (peaksMCP data tools call it at runtime)
 pip install git+https://github.com/phrgab/peaks
 ```
