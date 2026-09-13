@@ -25,9 +25,13 @@ window) once, then verify with `type conda` (it should print `conda is a shell f
 
 ```bash
 git clone https://github.com/liuhaoxin-ctrl/peaksMCP && cd peaksMCP
-# ARPES analysis library (peaksMCP data tools call it at runtime)
-pip install git+https://github.com/phrgab/peaks
+# ARPES analysis library (peaksMCP data tools call it at runtime).
+# Install the revision CI pins, so the library matches the tested surface.
+pip install 'peaks-arpes @ git+https://github.com/phrgab/peaks.git@5574127f83b88db4fafe4d13d2e0283310f03534'
 ```
+
+`peaks` is deliberately not a declared dependency of `peaksMCP` (it is installed
+from source), which is why this is a separate step.
 
 ### 3. Install peaksMCP
 
@@ -80,7 +84,18 @@ peaksMCP mcp-ping        # expect ok: true, 5 tools (search/get/inspect_notebook
 The dashboard host must be running before Claude Desktop uses the tools (the STDIO
 proxy forwards to the kernel-hosted MCP endpoint).
 
-### Dashboard host (co-hosted operator console)
+### Repository layout
+
+| Path | What lives there |
+|---|---|
+| `peaksMCP/` | The product: in-kernel MCP server + notebook gates (`server/jupyter_peaks/`), external dashboard host (`app/`), the strict API catalog and its schema (`config/`), discovery index (`discovery/`), PXT→NetCDF conversion (`pxt_utils/`), JupyterLab extension (`extensions/jupyterlab/`) |
+| `tests/` | Deterministic suites; `tests/README.md` maps layers and picks tests per changed subsystem |
+| `tools/` | `test.py` (named test suites) and `trial.py` (live model trials) |
+| `benchmark/` | The autonomous-agent evaluation platform: protocol, cases, rubric, grader, campaign runner (`PROTOCOL.md`, `README.md`) |
+| `claude_plugin/` | Claude Desktop plugin (`.mcp.json`, skills) |
+| `docs/` | Architecture, prompt/API inventory, and dated review records |
+
+## Dashboard host (co-hosted operator console)
 
 `peaksMCP dash` starts the host (a detached background process) if it is not
 already running and opens the console. The dashboard is served within a second
@@ -177,6 +192,32 @@ python tools/test.py check
 ```
 
 `quick` is the deterministic offline feedback loop. `check` adds lint and the
-grader's golden/poisoned self-test. Real-data, browser, managed campaign, and
-autonomous Pi experiments are deliberately separate; see `tests/README.md` for
-the suite matrix and the focused command for each changed subsystem.
+grader's golden/poisoned self-test. Real-data, browser and managed-campaign
+suites are separate and opt-in; see `tests/README.md` for the suite matrix and
+the focused command for each changed subsystem.
+
+No pytest layer drives a model. The autonomous-agent path is Pi:
+
+```bash
+# Live trial: the Pi TUI against a fresh managed kernel, sessions in .pi_sessions/
+python tools/trial.py run --name trial --repetitions 3 \
+  --provider deepseek --model deepseek-v4-flash --thinking low
+python tools/trial.py verify --strict
+python tools/trial.py status
+python tools/trial.py restore
+
+# Paired campaign: the same Pi TUI inside the benchmark design
+# (validity gates, grading, promotion comparison)
+python benchmark/run_campaign.py preflight --case bp260623
+python benchmark/run_campaign.py create --name baseline-001 --case bp260623 \
+  --repetitions 3 --provider deepseek --model deepseek-v4-flash --thinking low
+python benchmark/run_campaign.py run benchmark/campaigns/baseline-001 \
+  --runner pi-tui --provider deepseek --model deepseek-v4-flash --thinking low \
+  --manage-stack --approval-mode harness_allowlist
+```
+
+Use `tools/trial.py` to observe a single or repeated trial; use
+`benchmark/run_campaign.py` when configurations must be compared. Model evidence
+is only valid from a fresh run of the current revision - never from regraded or
+combined older trials. `benchmark/PROTOCOL.md` states the design and validity
+rules.
