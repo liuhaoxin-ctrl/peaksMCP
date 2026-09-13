@@ -2,15 +2,17 @@
 
 ## Purpose
 
-Use Claude Desktop to process ARPES data in natural language and produce publication-quality
-ARPES spectra, and measure whether an autonomous agent can do the same unprompted (see
-`benchmark/PROTOCOL.md`).
+Use an agent to process ARPES data in natural language and produce publication-quality ARPES
+spectra, and measure whether an autonomous agent can do the same unprompted (see
+`benchmark/PROTOCOL.md`). The recommended agent is the **Pi** coding agent: it speaks to the
+in-kernel MCP directly, trials are driven by `tools/trial.py`, and Claude Desktop remains
+supported over the STDIO proxy.
 
 ## Flow
 
 ```text
-Claude Desktop -> STDIO proxy -> kernel HTTP MCP server -> notebook backend
-                                                     <-> JupyterLab Comm frontend
+Agent (Pi directly, Claude Desktop via the STDIO proxy)
+     -> kernel HTTP MCP server -> notebook backend <-> JupyterLab Comm frontend
 Supervisor      -> JupyterLab process, health, logs, dashboard and restart recovery
 ```
 

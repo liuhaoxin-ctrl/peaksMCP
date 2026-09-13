@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "peaksMCP"
 version = "0.1.0"
-description = "Claude Desktop MCP bridge for natural-language ARPES analysis with Peaks and JupyterLab"
+description = "MCP bridge that lets an agent drive natural-language ARPES analysis with Peaks and JupyterLab"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

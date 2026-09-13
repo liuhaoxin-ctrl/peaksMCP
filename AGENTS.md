@@ -1,8 +1,11 @@
 # Agent instructions — peaksMCP
 
-peaksMCP connects Claude Desktop to a live Jupyter kernel so ARPES data can be explored,
+peaksMCP connects an agent to a live Jupyter kernel so ARPES data can be explored,
 processed, converted and plotted using natural language, while every executable analysis
-remains visible in the notebook.
+remains visible in the notebook. The **Pi** coding agent is the recommended one: live trials
+run through `tools/trial.py` and paired campaigns through
+`benchmark/run_campaign.py --runner pi-tui`. Claude Desktop is supported through the bundled
+STDIO proxy and plugin.
 
 This file is the single agent-guidance document for this repository. Agents (Claude,
 Codex, etc.) must follow it when working here. It is modelled on the development-guide
@@ -66,8 +69,8 @@ Formatting/typing tooling may be added as dev dependencies; keep `ruff check` cl
 ### Communication flow
 
 ```text
-Claude Desktop <-> STDIO proxy <-> HTTP MCP <-> Jupyter kernel <-> JupyterLab Comm
-                   (cli stdio-proxy)   (127.0.0.1:8123/mcp)   (in-kernel)   (frontend)
+Agent (Pi directly, or Claude Desktop through the STDIO proxy)
+   -> kernel HTTP MCP server (127.0.0.1:8123/mcp) -> notebook backend <-> JupyterLab Comm
 ```
 
 - `peaksMCP dash` starts the external **dashboard host** (`python -m peaksMCP _serve`,
@@ -79,8 +82,10 @@ Claude Desktop <-> STDIO proxy <-> HTTP MCP <-> Jupyter kernel <-> JupyterLab Co
 - The **in-kernel MCP server** (`FastMCP`, HTTP on `127.0.0.1:8123/mcp`) only exists
   while the kernel runs; the supervisor is *outside* the kernel and never executes
   analysis code.
-- Claude Desktop talks to the kernel MCP through the **STDIO proxy**
-  (`peaksMCP stdio-proxy`), so no URL/https configuration is needed.
+- Every agent talks to the same in-kernel MCP: the recommended **Pi** coding agent
+  connects directly over HTTP MCP (its MCP config points at `127.0.0.1:8123/mcp`),
+  while Claude Desktop goes through the **STDIO proxy** (`peaksMCP stdio-proxy`), so
+  no URL/https configuration is needed.
 
 ### Key directories
 
@@ -324,7 +329,7 @@ Notes:
 
 - The in-kernel MCP only listens while the dashboard host / kernel are running; the
   STDIO proxy forwards to it, so a running host (`peaksMCP dash` / `status`) must
-  precede Claude Desktop usage.
+  precede any agent usage - Pi connects to the same endpoint directly.
 - Running instances load code at process start — after editing source, restart the
   kernel (`peaksMCP restart kernel` or `peaksMCP restart 'kernel&mcp'`) for changes
   to take effect.

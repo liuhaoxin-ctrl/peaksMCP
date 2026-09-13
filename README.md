@@ -1,11 +1,15 @@
 # peaksMCP
 
-peaksMCP connects Claude Desktop to a live Jupyter kernel so ARPES data can be explored,
-processed, converted and plotted using natural language while every executable analysis remains
-visible in the notebook.
+peaksMCP connects an agent to a live Jupyter kernel so ARPES data can be explored,
+processed, converted and plotted using natural language while every executable analysis
+remains visible in the notebook. The **Pi** coding agent is the recommended one - drive it
+with `tools/trial.py` (or `benchmark/run_campaign.py --runner pi-tui` for a paired campaign);
+Claude Desktop is supported through the bundled STDIO proxy and plugin.
 
 ```text
-Claude Desktop <-> STDIO proxy <-> HTTP MCP <-> Jupyter kernel <-> JupyterLab Comm
+Agent                     transport                 server
+  Pi (recommended)  <->  direct HTTP MCP      <->  Jupyter kernel  <->  JupyterLab Comm
+  Claude Desktop    <->  STDIO proxy -> HTTP MCP
 ```
 
 ## Quick start
