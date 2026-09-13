@@ -3,7 +3,8 @@
 ## Purpose
 
 Use Claude Desktop to process ARPES data in natural language and produce publication-quality
-ARPES spectra.
+ARPES spectra, and measure whether an autonomous agent can do the same unprompted (see
+`benchmark/PROTOCOL.md`).
 
 ## Flow
 
@@ -22,6 +23,8 @@ Supervisor      -> JupyterLab process, health, logs, dashboard and restart recov
 - `plotting` and `batch`: publication layout and bounded parallel execution.
 - `app`: profile-driven supervisor, status API and static dashboard.
 - `claude_plugin`: Claude Desktop MCP declaration and analysis skill.
+- `benchmark`: the autonomous-agent evaluation platform - protocol, cases, rubric, grader and
+  campaign runner. It observes the product from outside; the product never imports it.
 
 ## Public Analysis Surface
 
@@ -73,4 +76,8 @@ and neither can edit, delete, or reorder notebook history.
 
 - `peaksMCP dash`
 - `%load_ext peaksMCP.server.jupyter_peaks.jupyter_mcp_extension`
-- `python tools/test.py --list` (test layers and stable agent-facing entry points)
+- `python tools/test.py --list` (deterministic test layers; no pytest layer drives a model)
+- `python tools/trial.py run --provider deepseek --model deepseek-v4-flash` (live model trial: the
+  Pi TUI against a fresh managed kernel, sessions under `.pi_sessions/`)
+- `python benchmark/run_campaign.py ... --runner pi-tui` (the same Pi TUI inside the paired
+  campaign design, for comparing configurations)
