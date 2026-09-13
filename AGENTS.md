@@ -151,13 +151,18 @@ $PY tools/test.py e2e         # real Dashboard/Jupyter/MCP/Chrome path
   skips without it; copies are converted inside the test home, never beside
   the source.
 - `tests/e2e/test_campaign_acceptance.py` is a separate deterministic scripted-
-  agent campaign (`acceptance` suite). Autonomous Pi behavior is evaluated only
-  by a fresh `benchmark/run_campaign.py` campaign; it is not a pytest layer.
-- Live pi trials against the managed stack (fresh notebook + fresh kernel per
-  trial, fixed prompt, locked figure format, deterministic verification) are
-  encoded end-to-end in `tools/trial.py` (`status` / `run` / `verify` /
-  `restore`); use it instead of hand-orchestrating stack switches, pi
+  agent campaign (`acceptance` suite). No pytest layer drives a model: both e2e
+  and acceptance are deterministic drivers of the product path.
+- Live model trials (the `pi` TUI on `deepseek-v4-flash`, a fresh managed kernel
+  and browser-backed JupyterLab per trial, fixed prompt, locked figure format,
+  deterministic verification) run through `tools/trial.py`
+  (`status` / `run` / `verify` / `restore`) and keep their sessions under
+  `.pi_sessions/`. Use it instead of hand-orchestrating stack switches, pi
   invocations, or figure checks.
+- `benchmark/run_campaign.py --runner pi-tui` is the campaign-level path: it
+  drives the same pi TUI but adds the paired-replicate design, validity gates,
+  grading and promotion comparison. Use it to compare configurations; use
+  `tools/trial.py` for a single interactive or repeated trial run.
 - CI runs the `quick` selection. The complete suite map and change-to-test
   routing table live in `tests/README.md`.
 - When changing API discovery, run the full name-coverage and natural-language ranking

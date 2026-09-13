@@ -53,8 +53,13 @@ an explicit `-m` expression, or the named `realdata` / `e2e` suite, for an exter
   poisoned control. It does not prove an autonomous model succeeds.
 - `e2e` proves the human product path works with a deterministic driver. It does not assess model
   planning or API discovery.
-- A fresh `benchmark/run_campaign.py` run is the only evidence for autonomous Pi behavior. Never
-  regrade or combine old trials after code, prompt, catalog, rubric, or Peaks source changes.
+- Autonomous model evidence comes from a <em>fresh</em> run of the current revision, never from
+  regraded or combined old trials (code, prompt, catalog, rubric or Peaks source changes invalidate
+  them). Two entry points produce it: `python tools/trial.py run` drives the pi TUI against the
+  managed stack for a single or repeated live trial, and
+  `python benchmark/run_campaign.py run --runner pi-tui` drives the same pi TUI inside the paired
+  campaign design (validity gates, grading, promotion comparison). No pytest layer drives a model -
+  `e2e` and `acceptance` are deterministic product-path drivers.
 
 All tests inherit the isolation and native-thread caps in `tests/conftest.py`; do not bypass that
 fixture for convenience. Real-data tests copy inputs into temporary directories and must never
